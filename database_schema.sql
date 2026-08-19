@@ -855,4 +855,35 @@ CREATE TABLE IF NOT EXISTS source_semantics_admissions (
     recorded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS index_constituents_pit (
+
+    universe_name VARCHAR NOT NULL,
+    symbol VARCHAR NOT NULL,
+    token VARCHAR NOT NULL,
+    exchange VARCHAR NOT NULL DEFAULT 'NSE',
+    effective_from DATE NOT NULL,
+    effective_until DATE,
+    weight DOUBLE,
+    inclusion_reason VARCHAR,
+    exclusion_reason VARCHAR,
+    recorded_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (universe_name, symbol, effective_from)
+);
+
+CREATE TABLE IF NOT EXISTS live_market_data_quarantine (
+    quarantine_id VARCHAR NOT NULL PRIMARY KEY,
+    token VARCHAR NOT NULL,
+    symbol VARCHAR,
+    exchange VARCHAR NOT NULL,
+    tick_timestamp TIMESTAMPTZ NOT NULL,
+    received_timestamp TIMESTAMPTZ NOT NULL,
+    action VARCHAR NOT NULL,
+    reasons VARCHAR NOT NULL,
+    last_price DOUBLE,
+    volume DOUBLE,
+    raw_payload_json VARCHAR,
+    quarantined_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+
 

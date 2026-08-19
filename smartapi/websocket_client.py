@@ -19,6 +19,7 @@ from data_platform.contracts import (
     LiveTickerMode,
     MarketDataEvent,
 )
+from data_platform.live_admission import LiveMarketDataAdmissionValidator
 from smartapi.auth import SmartAPIAuth
 from smartapi.instrument import InstrumentMaster
 from smartapi.stream_decoder import SmartStreamDecoder
@@ -45,6 +46,7 @@ class SmartAPIWebSocketClient:
         self,
         auth: SmartAPIAuth,
         instrument_master: InstrumentMaster | None = None,
+        admission_validator: LiveMarketDataAdmissionValidator | None = None,
         max_dispatch_queue_size: int = 50_000,
         watchdog_timeout_seconds: float = 30.0,
         ping_interval_seconds: int = 10,
@@ -54,6 +56,7 @@ class SmartAPIWebSocketClient:
         backoff_rng: Callable[[float, float], float] = random.uniform,
         websocket_factory: Any = websocket.WebSocketApp,
     ) -> None:
+
         """Initialize the WebSocket client.
 
         Args:
@@ -70,9 +73,11 @@ class SmartAPIWebSocketClient:
         """
         self.auth = auth
         self.instrument_master = instrument_master
+        self.admission_validator = admission_validator
         self.watchdog_timeout = watchdog_timeout_seconds
         self.ping_interval = ping_interval_seconds
         self.allow_insecure_tls = allow_insecure_tls
+
 
         self._clock = clock
         self._monotonic = monotonic_clock
@@ -333,10 +338,23 @@ class SmartAPIWebSocketClient:
                 if is_dup:
                     self.metrics.duplicate_packets_total += 1
 
+            # Admission validation gate
+            if self.admission_validator is not None:
+                admission = self.admission_validator.validate(event, received_at_utc=recv_utc)
+                if not admission.is_accepted:
+                    logger.debug(
+                        "Admission filtered live tick: token={} action={} reasons={}",
+                        getattr(event, "token", ""),
+                        admission.action.value,
+                        [r.value for r in admission.reasons],
+                    )
+                    return
+
             # Enqueue to bounded dispatch queue
             try:
                 self._dispatch_queue.put_nowait(event)
                 self.metrics.dispatch_queue_depth = self._dispatch_queue.qsize()
+
             except queue.Full:
                 self.metrics.dispatch_queue_drops += 1
 
