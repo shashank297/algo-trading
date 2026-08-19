@@ -1,0 +1,38 @@
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+exclude = ["venv", "logs", "reports", "data", ".pytest_cache"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"tools/*.py" = ["E402"]
+
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+check_untyped_defs = true
+warn_unused_ignores = true
+exclude = "^(venv|logs|reports|data|tests)/"
+
+[tool.coverage.run]
+branch = true
+source = [
+  "ai_research",
+  "data_platform",
+  "experiments",
+  "operations",
+  "orchestration",
+  "risk",
+  "smartapi",
+  "storage",
+  "trading_stack",
+  "validators",
+]
+
+[tool.coverage.report]
+fail_under = 60
+show_missing = true
+skip_covered = true

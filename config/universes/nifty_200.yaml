@@ -1,0 +1,9 @@
+name: "NIFTY 200"
+snapshot_id: "NIFTY200_CURRENT"
+source_url: "https://nsearchives.nseindia.com/content/indices/ind_nifty200list.csv"
+methodology_url: "https://archives.nseindia.com/content/indices/Method_NIFTY_Equity_Indices.pdf"
+benchmark_symbol: "NIFTY"
+exchange: "NSE"
+survivorship_bias: true
+refresh_policy: "manual_versioned_snapshot"
+notes: "Current constituents only; do not claim point-in-time or survivorship-free results."

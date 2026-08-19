@@ -1,0 +1,8 @@
+-r requirements.txt
+coverage[toml]>=7.6,<8
+mypy>=1.11,<2
+pyright>=1.1.350
+pip-audit>=2.7,<3
+ruff>=0.6,<1
+types-PyYAML>=6.0.12,<7
+

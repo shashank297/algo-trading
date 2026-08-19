@@ -1,0 +1,169 @@
+"""Unit tests for SmartAPIWebSocketClient with dependency injection and deterministic state verification."""
+
+from __future__ import annotations
+
+import time
+from typing import Any
+import unittest
+from unittest.mock import MagicMock
+
+
+from smartapi.auth import SmartAPIAuth
+from smartapi.websocket_client import ConnectionState, SmartAPIWebSocketClient
+from tests.fixtures.smartstream_packets import build_ltp_packet
+
+
+class FakeWebSocketApp:
+    """Mock WebSocketApp for deterministic testing without network calls."""
+
+    def __init__(self, url: str, **kwargs: Any) -> None:
+        self.url = url
+        self.kwargs = kwargs
+        self.sent_messages: list[str] = []
+        self.closed = False
+
+    def run_forever(self, **kwargs: Any) -> None:
+        pass
+
+    def send(self, data: str) -> None:
+        self.sent_messages.append(data)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class TestSmartAPIWebSocketClient(unittest.TestCase):
+    def setUp(self) -> None:
+        self.mock_auth = MagicMock(spec=SmartAPIAuth)
+        self.mock_auth.websocket_authorization = "Bearer eyJhbGciOi..."
+        self.mock_auth.api_key = "test_key"
+        self.mock_auth.client_code = "TEST01"
+        self.mock_auth.feed_token = "feed_123"
+
+        self.fake_time = 1000.0
+        self.fake_monotonic = 500.0
+
+        self.client = SmartAPIWebSocketClient(
+            auth=self.mock_auth,
+            max_dispatch_queue_size=10,
+            watchdog_timeout_seconds=30.0,
+            clock=lambda: self.fake_time,
+            monotonic_clock=lambda: self.fake_monotonic,
+            backoff_rng=lambda a, b: 0.01,  # Fast deterministic delay for tests
+            websocket_factory=FakeWebSocketApp,
+        )
+
+    def tearDown(self) -> None:
+        self.client.stop()
+
+    def test_connection_state_machine_and_generation_id(self) -> None:
+        self.assertEqual(self.client.state, ConnectionState.STOPPED)
+        self.assertEqual(self.client.generation_id, 0)
+
+        # Start transitions to CONNECTING and increments generation ID
+        self.client.start()
+        self.assertEqual(self.client.state, ConnectionState.CONNECTING)
+        self.assertEqual(self.client.generation_id, 1)
+
+        # Trigger on_open
+        self.client._on_open(self.client._ws, generation=1)
+        self.assertEqual(self.client.state, ConnectionState.CONNECTED)
+
+        # Trigger on_close
+        self.client._on_close(self.client._ws, close_status=1000, close_msg="Normal closure", generation=1)
+        self.assertEqual(self.client.state, ConnectionState.RECONNECTING)
+
+        # Stop transitions to STOPPED
+        self.client.stop()
+        self.assertEqual(self.client.state, ConnectionState.STOPPED)
+
+    def test_stale_generation_callbacks_discarded(self) -> None:
+        """Callbacks from old socket generations must not mutate state or enqueue data."""
+        self.client.start()
+        self.client._on_open(self.client._ws, generation=1)
+        self.assertEqual(self.client.generation_id, 1)
+
+        received_events: list[Any] = []
+        self.client.subscribe_tick(lambda ev: received_events.append(ev))
+
+        # Stale data from generation 0
+        packet = build_ltp_packet(token="2885", seq_num=100)
+        self.client._on_data(self.client._ws, packet, opcode=2, fin=1, generation=0)
+        time.sleep(0.05)
+        self.assertEqual(len(received_events), 0)
+
+        # Valid data from generation 1
+        self.client._on_data(self.client._ws, packet, opcode=2, fin=1, generation=1)
+        time.sleep(0.05)
+        self.assertEqual(len(received_events), 1)
+
+    def test_selective_auth_refresh_on_401_only(self) -> None:
+        """Token refresh should only be triggered on authentication failure (e.g. status 401)."""
+        self.client.start()
+        self.client._on_open(self.client._ws, generation=1)
+
+        # Normal disconnect (status=1006)
+        self.client._on_close(self.client._ws, close_status=1006, close_msg="Connection reset", generation=1)
+        time.sleep(0.05)
+        self.mock_auth.refresh_token.assert_not_called()
+
+        # Re-open and disconnect with 401 Unauthorized
+        self.client._on_open(self.client._ws, generation=2)
+        self.client._on_close(self.client._ws, close_status=401, close_msg="Token expired", generation=2)
+        time.sleep(0.05)
+        self.mock_auth.refresh_token.assert_called_once()
+
+    def test_subscriber_callback_exception_isolation(self) -> None:
+        """An error in one subscriber callback must not prevent other subscribers from receiving data."""
+        self.client.start()
+        self.client._on_open(self.client._ws, generation=1)
+
+        healthy_received: list[Any] = []
+
+        def buggy_subscriber(event: Any) -> None:
+            raise RuntimeError("Boom! Bug in user callback")
+
+        def healthy_subscriber(event: Any) -> None:
+            healthy_received.append(event)
+
+        self.client.subscribe_tick(buggy_subscriber)
+        self.client.subscribe_tick(healthy_subscriber)
+
+        packet = build_ltp_packet(token="3045", seq_num=200)
+        self.client._on_data(self.client._ws, packet, opcode=2, fin=1, generation=1)
+
+        time.sleep(0.1)
+        self.assertEqual(len(healthy_received), 1)
+        self.assertEqual(healthy_received[0].token, "3045")
+
+    def test_bounded_dispatch_queue_overflow(self) -> None:
+        """Flooding the bounded queue must increment drop metrics without raising exceptions."""
+        self.client.start()
+        self.client._on_open(self.client._ws, generation=1)
+
+        # Slow subscriber blocks dispatch thread from immediately draining queue
+        def slow_cb(ev: Any) -> None:
+            time.sleep(0.5)
+
+        self.client.subscribe_tick(slow_cb)
+        packet = build_ltp_packet(token="2885", seq_num=300)
+
+        # Fill internal dispatch queue (capacity 10) and overflow it
+        for i in range(50):
+            self.client._on_data(self.client._ws, packet, opcode=2, fin=1, generation=1)
+
+        self.assertGreater(self.client.metrics.dispatch_queue_drops, 0)
+
+
+    def test_idempotent_stop(self) -> None:
+        """Calling stop multiple times is safe and maintains STOPPED state."""
+        self.client.start()
+        self.client.stop()
+        self.assertEqual(self.client.state, ConnectionState.STOPPED)
+        # Second call
+        self.client.stop()
+        self.assertEqual(self.client.state, ConnectionState.STOPPED)
+
+
+if __name__ == "__main__":
+    unittest.main()

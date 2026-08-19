@@ -1,0 +1,31 @@
+# SECRETS — NEVER COMMIT TO GITHUB
+config.yaml
+config/config.yaml
+*.secret
+*.key
+
+
+# DATABASE — large binary file
+*.duckdb
+*.duckdb.wal
+
+# DATA — large files, machine-specific
+data/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini

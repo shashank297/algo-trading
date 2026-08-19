@@ -1,0 +1,436 @@
+"""Portfolio allocation helpers and authoritative cross-sectional event replay."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import uuid
+from dataclasses import asdict, dataclass
+from typing import Any
+
+import numpy as np
+import pandas as pd
+from loguru import logger
+
+from trading_stack.backtest import _compute_metrics
+from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.datasets import ResearchDataset
+from trading_stack.domain import AssetClass, OrderSide, OrderStatus, OrderType, StrategyRun, StrategyScope, TimeInForce
+
+
+def equal_weight_targets(signals: pd.DataFrame, max_gross_exposure: float = 0.20) -> pd.Series:
+    """Allocate equal gross exposure across non-zero strategy signals."""
+
+    active = signals["target_position"].replace(0, float("nan")).notna()
+    count = int(active.sum())
+    if count == 0:
+        return pd.Series(0.0, index=signals.index)
+    return signals["target_position"].clip(-1, 1) * (max_gross_exposure / count)
+
+
+def volatility_targeted_targets(
+    signals: pd.DataFrame,
+    volatility: pd.Series,
+    target_volatility: float = 0.10,
+    max_gross_exposure: float = 0.20,
+) -> pd.Series:
+    """Scale one strategy's target position by realized volatility and cap exposure."""
+
+    safe_volatility = volatility.replace(0, float("nan")).bfill().fillna(target_volatility)
+    targets = signals["target_position"].clip(-1, 1) * (target_volatility / safe_volatility)
+    return targets.clip(-max_gross_exposure, max_gross_exposure)
+
+
+@dataclass
+class PortfolioBacktestResult:
+    run: StrategyRun
+    positions: pd.DataFrame
+    rebalances: pd.DataFrame
+    attribution: pd.DataFrame
+    round_trips: pd.DataFrame
+    cost_components: pd.DataFrame
+    exclusions: pd.DataFrame
+
+
+class PortfolioEventBacktester:
+    """Replay target portfolio weights as next-session delta orders."""
+
+    def __init__(
+        self,
+        cost_schedule: IndianDeliveryCostSchedule | None = None,
+        *,
+        max_position_weight: float = 0.05,
+        max_gross_exposure: float = 0.20,
+        max_sector_exposure: float = 0.10,
+    ) -> None:
+        self.cost_schedule = cost_schedule or IndianDeliveryCostSchedule()
+        self.max_position_weight = max_position_weight
+        self.max_gross_exposure = max_gross_exposure
+        self.max_sector_exposure = max_sector_exposure
+
+    def run(
+        self,
+        strategy: Any,
+        dataset: ResearchDataset,
+        *,
+        starting_capital: float = 100_000.0,
+        timeframe: str = "1d",
+        parameters: dict[str, Any] | None = None,
+        mode: str = "event-driven",
+    ) -> PortfolioBacktestResult:
+        strategy.validate()
+        if strategy.metadata.scope != StrategyScope.CROSS_SECTIONAL:
+            raise ValueError("Portfolio event replay requires a CROSS_SECTIONAL strategy.")
+        panel = dataset.panel.copy().sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+        panel["timestamp"] = pd.to_datetime(panel["timestamp"], utc=True)
+        logger.bind(
+            event="portfolio_replay_started",
+            strategy=strategy.name,
+            panel_rows=len(panel),
+            symbol_count=int(panel["symbol"].nunique()),
+            timeframe=timeframe,
+        ).info("portfolio_replay_started")
+        signals = strategy.generate_signals(panel)
+        signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
+        effective_parameters = {**dict(getattr(strategy, "parameters", {})), **(parameters or {})}
+        run_id = self._run_id(strategy.name, dataset.data_hash, effective_parameters, mode)
+        day_groups = {
+            pd.Timestamp(timestamp): group.set_index("symbol", drop=False)
+            for timestamp, group in panel.groupby("timestamp", sort=True)
+        }
+        dates = sorted(day_groups)
+        next_date = {dates[index]: dates[index + 1] for index in range(len(dates) - 1)}
+        executions: dict[pd.Timestamp, list[pd.DataFrame]] = {}
+        for signal_date, targets in signals.groupby("timestamp"):
+            execution_date = next_date.get(signal_date)
+            if execution_date is not None:
+                executions.setdefault(execution_date, []).append(targets.copy())
+
+        cash = float(starting_capital)
+        quantities: dict[str, float] = {}
+        average_cost: dict[str, float] = {}
+        entry_timestamps: dict[str, pd.Timestamp] = {}
+        entry_reasons: dict[str, str] = {}
+        entry_cost_pools: dict[str, float] = {}
+        entry_execution_cost_pools: dict[str, float] = {}
+        last_prices: dict[str, float] = {}
+        orders: list[dict[str, Any]] = []
+        fills: list[dict[str, Any]] = []
+        position_rows: list[dict[str, Any]] = []
+        rebalance_rows: list[dict[str, Any]] = []
+        attribution_rows: list[dict[str, Any]] = []
+        round_trip_rows: list[dict[str, Any]] = []
+        cost_rows: list[dict[str, Any]] = []
+        previous_equity = starting_capital
+
+        for session_index, date in enumerate(dates, start=1):
+            day = day_groups[pd.Timestamp(date)]
+            for symbol, row in day.iterrows():
+                last_prices[str(symbol)] = float(row["close"])
+            if date in executions:
+                for targets in executions[date]:
+                    cash, generated = self._rebalance(
+                        run_id=run_id,
+                        date=pd.Timestamp(date),
+                        day=day,
+                        targets=targets,
+                        cash=cash,
+                        quantities=quantities,
+                        average_cost=average_cost,
+                        entry_timestamps=entry_timestamps,
+                        entry_reasons=entry_reasons,
+                        entry_cost_pools=entry_cost_pools,
+                        entry_execution_cost_pools=entry_execution_cost_pools,
+                        last_prices=last_prices,
+                        mode=mode,
+                    )
+                    orders.extend(generated["orders"])
+                    fills.extend(generated["fills"])
+                    cost_rows.extend(generated["costs"])
+                    attribution_rows.extend(generated["attribution"])
+                    round_trip_rows.extend(generated["round_trips"])
+                    rebalance_rows.append(generated["rebalance"])
+            market_value = sum(quantity * last_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
+            equity = cash + market_value
+            gross_exposure = market_value / equity if equity > 0 else 0.0
+            daily_pnl = equity - previous_equity
+            position_rows.append({
+                "run_id": run_id, "timestamp": pd.Timestamp(date), "symbol": "__PORTFOLIO__",
+                "quantity": 0.0, "market_value": market_value, "cash": cash, "equity": equity,
+                "gross_exposure": gross_exposure, "daily_pnl": daily_pnl,
+            })
+            for symbol, quantity in quantities.items():
+                price = last_prices.get(symbol, 0.0)
+                position_rows.append({
+                    "run_id": run_id, "timestamp": pd.Timestamp(date), "symbol": symbol,
+                    "quantity": quantity, "market_value": quantity * price, "cash": np.nan,
+                    "equity": np.nan, "gross_exposure": abs(quantity * price) / equity if equity > 0 else 0.0,
+                    "daily_pnl": np.nan,
+                })
+            previous_equity = equity
+            if session_index % 500 == 0 or session_index == len(dates):
+                logger.bind(
+                    event="portfolio_replay_progress",
+                    processed_sessions=session_index,
+                    total_sessions=len(dates),
+                    order_count=len(orders),
+                    fill_count=len(fills),
+                    equity=equity,
+                ).info("portfolio_replay_progress")
+
+        portfolio_positions = pd.DataFrame(position_rows)
+        curve = portfolio_positions[portfolio_positions["symbol"] == "__PORTFOLIO__"].copy()
+        curve["net_return"] = curve["equity"].pct_change().fillna(0.0)
+        if cost_rows:
+            cost_by_date = pd.DataFrame(cost_rows).groupby("timestamp")["total_cost"].sum()
+            curve["cumulative_cost"] = curve["timestamp"].map(cost_by_date).fillna(0.0).cumsum()
+        else:
+            curve["cumulative_cost"] = 0.0
+        curve["gross_equity"] = curve["equity"] + curve["cumulative_cost"]
+        curve["gross_return"] = curve["gross_equity"].pct_change().fillna(0.0)
+        curve["position"] = curve["gross_exposure"]
+        curve["drawdown"] = curve["equity"] / curve["equity"].cummax() - 1.0
+        orders_frame = pd.DataFrame(orders)
+        fills_frame = pd.DataFrame(fills)
+        metrics = _compute_metrics(
+            equity_curve=curve,
+            net_returns=curve["net_return"],
+            fills=fills_frame,
+            execution_model=type("PortfolioExecution", (), {"slippage_bps": self.cost_schedule.slippage_bps})(),
+            timeframe=timeframe,
+            starting_capital=starting_capital,
+        )
+        run = StrategyRun(
+            run_id=run_id, strategy_name=strategy.name, asset_class=AssetClass.INDIA_EQUITY,
+            symbol=f"PORTFOLIO:{dataset.universe_snapshot_id}", timeframe=timeframe, mode=mode,
+            parameters=effective_parameters, data_hash=dataset.data_hash, metrics=metrics,
+            signals=signals, orders=orders_frame, fills=fills_frame, equity_curve=curve,
+            notes="Current-constituent universe may contain survivorship bias." if dataset.survivorship_bias else None,
+        )
+        logger.bind(
+            event="portfolio_replay_finished",
+            run_id=run_id,
+            session_count=len(dates),
+            order_count=len(orders),
+            fill_count=len(fills),
+            ending_equity=float(curve["equity"].iloc[-1]),
+        ).info("portfolio_replay_finished")
+        return PortfolioBacktestResult(
+            run=run,
+            positions=portfolio_positions,
+            rebalances=pd.DataFrame(rebalance_rows),
+            attribution=pd.DataFrame(attribution_rows),
+            round_trips=pd.DataFrame(round_trip_rows),
+            cost_components=pd.DataFrame(cost_rows),
+            exclusions=dataset.exclusions,
+        )
+
+    def _rebalance(
+        self,
+        *,
+        run_id: str,
+        date: pd.Timestamp,
+        day: pd.DataFrame,
+        targets: pd.DataFrame,
+        cash: float,
+        quantities: dict[str, float],
+        average_cost: dict[str, float],
+        entry_timestamps: dict[str, pd.Timestamp],
+        entry_reasons: dict[str, str],
+        entry_cost_pools: dict[str, float],
+        entry_execution_cost_pools: dict[str, float],
+        last_prices: dict[str, float],
+        mode: str,
+    ) -> tuple[float, dict[str, Any]]:
+        target_frame = targets.copy()
+        target_frame["target_weight"] = target_frame["target_weight"].clip(lower=0, upper=self.max_position_weight)
+        target_frame["sector"] = target_frame["symbol"].astype(str).map(
+            day["sector"].to_dict() if "sector" in day.columns else {},
+        ).fillna("UNKNOWN")
+        for sector, indexes in target_frame[target_frame["sector"] != "UNKNOWN"].groupby("sector").groups.items():
+            sector_weight = float(target_frame.loc[indexes, "target_weight"].sum())
+            if sector_weight > self.max_sector_exposure:
+                target_frame.loc[indexes, "target_weight"] *= self.max_sector_exposure / sector_weight
+        total_weight = target_frame["target_weight"].sum()
+        if total_weight > self.max_gross_exposure:
+            target_frame["target_weight"] *= self.max_gross_exposure / total_weight
+        equity = cash + sum(quantity * last_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
+        orders: list[dict[str, Any]] = []
+        fills: list[dict[str, Any]] = []
+        costs: list[dict[str, Any]] = []
+        attribution: list[dict[str, Any]] = []
+        round_trips: list[dict[str, Any]] = []
+        buy_turnover = 0.0
+        sell_turnover = 0.0
+        target_by_symbol = dict(zip(target_frame["symbol"].astype(str), target_frame["target_weight"].astype(float)))
+        all_symbols = sorted(set(quantities) | set(target_by_symbol))
+        # Sells free cash before buys consume it.
+        all_symbols.sort(key=lambda symbol: target_by_symbol.get(symbol, 0.0) - quantities.get(symbol, 0.0) * last_prices.get(symbol, 0.0) / max(equity, 1e-12))
+        for symbol in all_symbols:
+            if symbol not in day.index:
+                continue
+            row = day.loc[symbol]
+            open_price = float(row["open"])
+            target_quantity = np.floor(equity * target_by_symbol.get(symbol, 0.0) / max(open_price, 1e-12))
+            current_quantity = quantities.get(symbol, 0.0)
+            requested_quantity = target_quantity - current_quantity
+            if abs(requested_quantity) < 1:
+                continue
+            side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
+            requested_abs = abs(requested_quantity)
+            traded_value = float(row["close"] * row["volume"])
+            order_id = str(uuid.uuid4())
+            reason_row = targets[targets["symbol"].astype(str) == symbol]
+            reason = str(reason_row["reason"].iloc[0]) if not reason_row.empty else "rank_removal"
+            status = OrderStatus.FILLED
+            filled_quantity = requested_abs
+            rejection_reason = None
+            if traded_value < self.cost_schedule.minimum_daily_traded_value:
+                status = OrderStatus.REJECTED
+                filled_quantity = 0.0
+                rejection_reason = "LIQUIDITY_REJECTION"
+            else:
+                volume_cap = np.floor(float(row["volume"]) * self.cost_schedule.max_volume_participation)
+                filled_quantity = min(filled_quantity, volume_cap)
+                if side == OrderSide.SELL:
+                    filled_quantity = min(filled_quantity, current_quantity)
+                if filled_quantity <= 0:
+                    status = OrderStatus.REJECTED
+                    rejection_reason = "VOLUME_CAP_REJECTION"
+                elif filled_quantity < requested_abs:
+                    status = OrderStatus.PARTIALLY_FILLED
+            participation = filled_quantity / max(float(row["volume"]), 1.0)
+            execution_price = self.cost_schedule.execution_price(open_price, side, participation)
+            notional = filled_quantity * execution_price
+            breakdown = self.cost_schedule.calculate(notional, side, participation)
+            if side == OrderSide.BUY and filled_quantity > 0:
+                affordable = np.floor(max(cash - breakdown.statutory_and_broker_fees, 0.0) / max(execution_price, 1e-12))
+                if affordable < filled_quantity:
+                    filled_quantity = affordable
+                    participation = filled_quantity / max(float(row["volume"]), 1.0)
+                    execution_price = self.cost_schedule.execution_price(open_price, side, participation)
+                    notional = filled_quantity * execution_price
+                    breakdown = self.cost_schedule.calculate(notional, side, participation)
+                    status = OrderStatus.PARTIALLY_FILLED if filled_quantity > 0 else OrderStatus.REJECTED
+                    rejection_reason = "INSUFFICIENT_CASH" if filled_quantity <= 0 else None
+            orders.append({
+                "order_id": order_id, "run_id": run_id, "symbol": symbol, "side": side.value,
+                "quantity": float(requested_abs), "order_type": OrderType.MARKET.value,
+                "time_in_force": TimeInForce.DAY.value, "status": status.value,
+                "requested_at": date, "filled_at": date if filled_quantity > 0 else None,
+                "limit_price": None, "stop_price": None,
+                "average_fill_price": execution_price if filled_quantity > 0 else None,
+                "slippage_bps": self.cost_schedule.slippage_bps, "fees": breakdown.statutory_and_broker_fees if filled_quantity > 0 else 0.0,
+                "metadata_json": json.dumps({"reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason}),
+            })
+            if filled_quantity <= 0:
+                continue
+            fill_id = str(uuid.uuid4())
+            previous_average = average_cost.get(symbol, execution_price)
+            previous_entry = entry_timestamps.get(symbol)
+            previous_quantity = current_quantity
+            holding_days: float | None = None
+            gross_pnl = 0.0
+            exit_classification = "ENTRY"
+            if side == OrderSide.BUY:
+                if current_quantity <= 0:
+                    entry_timestamps[symbol] = date
+                    entry_reasons[symbol] = reason
+                old_value = current_quantity * previous_average
+                new_quantity = current_quantity + filled_quantity
+                cash -= notional + breakdown.statutory_and_broker_fees
+                quantities[symbol] = new_quantity
+                average_cost[symbol] = (old_value + notional) / max(new_quantity, 1e-12)
+                entry_cost_pools[symbol] = entry_cost_pools.get(symbol, 0.0) + breakdown.total
+                entry_execution_cost_pools[symbol] = (
+                    entry_execution_cost_pools.get(symbol, 0.0) + breakdown.execution_drag
+                )
+                realized_pnl = 0.0
+                buy_turnover += notional
+            else:
+                cash += notional - breakdown.statutory_and_broker_fees
+                quantities[symbol] = max(current_quantity - filled_quantity, 0.0)
+                executed_pnl = (execution_price - previous_average) * filled_quantity
+                allocated_entry_cost = entry_cost_pools.get(symbol, 0.0) * filled_quantity / max(
+                    previous_quantity, 1e-12,
+                )
+                allocated_entry_execution_cost = (
+                    entry_execution_cost_pools.get(symbol, 0.0) * filled_quantity
+                    / max(previous_quantity, 1e-12)
+                )
+                entry_cost_pools[symbol] = max(
+                    entry_cost_pools.get(symbol, 0.0) - allocated_entry_cost, 0.0,
+                )
+                entry_execution_cost_pools[symbol] = max(
+                    entry_execution_cost_pools.get(symbol, 0.0) - allocated_entry_execution_cost,
+                    0.0,
+                )
+                gross_pnl = executed_pnl + allocated_entry_execution_cost + breakdown.execution_drag
+                realized_pnl = gross_pnl - allocated_entry_cost - breakdown.total
+                exit_classification = "RANK_REMOVAL" if target_by_symbol.get(symbol, 0.0) <= 0 else "REBALANCE_REDUCTION"
+                if previous_entry is not None:
+                    holding_days = (date - previous_entry).total_seconds() / 86_400.0
+                    round_trips.append({
+                        "trade_id": fill_id,
+                        "run_id": run_id,
+                        "symbol": symbol,
+                        "entry_timestamp": previous_entry,
+                        "exit_timestamp": date,
+                        "quantity": float(filled_quantity),
+                        "entry_price": previous_average,
+                        "exit_price": execution_price,
+                        "entry_cost": allocated_entry_cost,
+                        "exit_cost": breakdown.total,
+                        "gross_pnl": gross_pnl,
+                        "net_pnl": realized_pnl,
+                        "holding_period_days": holding_days,
+                        "entry_reason": entry_reasons.get(symbol, "ENTRY"),
+                        "exit_reason": reason,
+                        "exit_classification": exit_classification,
+                    })
+                sell_turnover += notional
+                if quantities[symbol] == 0:
+                    quantities.pop(symbol, None)
+                    average_cost.pop(symbol, None)
+                    entry_timestamps.pop(symbol, None)
+                    entry_reasons.pop(symbol, None)
+                    entry_cost_pools.pop(symbol, None)
+                    entry_execution_cost_pools.pop(symbol, None)
+            fills.append({
+                "fill_id": fill_id, "order_id": order_id, "run_id": run_id, "symbol": symbol,
+                "timestamp": date, "quantity": float(filled_quantity), "price": execution_price,
+                "side": side.value, "fill_type": "PAPER" if mode == "paper" else "BACKTEST",
+                "fees": breakdown.statutory_and_broker_fees, "slippage_bps": self.cost_schedule.slippage_bps,
+                "metadata_json": json.dumps({"reason": reason, "participation": participation}),
+            })
+            costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": date, **breakdown.__dict__, "total_cost": breakdown.total})
+            attribution.append({
+                "run_id": run_id, "timestamp": date, "symbol": symbol, "side": side.value,
+                "reason": reason, "realized_pnl": realized_pnl, "cost": breakdown.total,
+                "target_weight": target_by_symbol.get(symbol, 0.0),
+                "quantity": float(filled_quantity), "price": execution_price,
+                "average_cost": previous_average if side == OrderSide.SELL else average_cost[symbol],
+                "gross_pnl": gross_pnl,
+                "entry_timestamp": previous_entry if side == OrderSide.SELL else entry_timestamps.get(symbol),
+                "holding_period_days": holding_days, "exit_classification": exit_classification,
+            })
+        return cash, {
+            "orders": orders, "fills": fills, "costs": costs, "attribution": attribution,
+            "round_trips": round_trips,
+            "rebalance": {
+                "rebalance_id": str(uuid.uuid4()), "run_id": run_id, "signal_timestamp": targets["timestamp"].iloc[0],
+                "execution_timestamp": date, "buy_turnover": buy_turnover, "sell_turnover": sell_turnover,
+                "total_turnover": buy_turnover + sell_turnover, "target_count": int((target_frame["target_weight"] > 0).sum()),
+                "replacement_pct": (buy_turnover + sell_turnover) / max(equity, 1e-12),
+            },
+        }
+
+    def _run_id(self, strategy_name: str, data_hash: str, parameters: dict[str, Any], mode: str) -> str:
+        configuration_hash = hashlib.sha256(json.dumps({
+            "parameters": parameters,
+            "cost_schedule": asdict(self.cost_schedule),
+            "max_position_weight": self.max_position_weight,
+            "max_gross_exposure": self.max_gross_exposure,
+            "max_sector_exposure": self.max_sector_exposure,
+        }, sort_keys=True, default=str).encode()).hexdigest()[:12]
+        return f"{strategy_name}:PORTFOLIO:{mode}:{data_hash[:12]}:{configuration_hash}"

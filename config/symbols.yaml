@@ -1,0 +1,67 @@
+# Every symbol MUST have token + exchange explicitly defined.
+# Do NOT rely on instrument master lookup at runtime.
+# This avoids NSE/BSE ambiguity.
+
+symbols:
+
+  # NSE Indexes (needed for options strategies later)
+  - symbol: "NIFTY"
+    token: "26000"
+    exchange: "NSE"
+    instrument_type: "INDEX"
+    timeframes: ["1d"]
+    data_enabled: false
+
+  - symbol: "BANKNIFTY"
+    token: "26009"
+    exchange: "NSE"
+    instrument_type: "INDEX"
+    timeframes: ["1d"]
+    data_enabled: false
+
+  - symbol: "FINNIFTY"
+    token: "26037"
+    exchange: "NSE"
+    instrument_type: "INDEX"
+    timeframes: ["1d"]
+    data_enabled: false
+
+  - symbol: "MIDCPNIFTY"
+    token: "26074"
+    exchange: "NSE"
+    instrument_type: "INDEX"
+    timeframes: ["1d"]
+    data_enabled: false
+
+  - symbol: "SENSEX"
+    token: "1"
+    exchange: "BSE"
+    instrument_type: "INDEX"
+    timeframes: ["1d"]
+    data_enabled: false
+
+  # NSE Equities
+  - symbol: "RELIANCE-EQ"
+    token: "2885"
+    exchange: "NSE"
+    instrument_type: "EQUITY"
+
+  - symbol: "TCS-EQ"
+    token: "11536"
+    exchange: "NSE"
+    instrument_type: "EQUITY"
+#
+  - symbol: "HDFCBANK-EQ"
+    token: "1333"
+    exchange: "NSE"
+    instrument_type: "EQUITY"
+
+  - symbol: "INFY-EQ"
+    token: "1594"
+    exchange: "NSE"
+    instrument_type: "EQUITY"
+
+  - symbol: "ICICIBANK-EQ"
+    token: "4963"
+    exchange: "NSE"
+    instrument_type: "EQUITY"

@@ -1,0 +1,52 @@
+# SECRETS — NEVER COMMIT TO REPOSITORY
+config/config.yaml
+*.secret
+*.key
+*.pem
+*.token
+.env
+.env.*
+
+# DATABASE & ARTIFACTS — Large binary data
+*.duckdb
+*.duckdb.*
+*.db
+*.sqlite
+*.sqlite3
+
+# DATA & LOGS — Large files, runtime logs, machine-specific
+data/
+logs/
+backups/
+reports/*.html
+reports/*.png
+*.log
+
+# Caches & Test Artifacts
+.pip-audit-cache/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.codebase-memory/
+.coverage
+.coverage.*
+htmlcov/
+
+# Python Environment & Build
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+build/
+
+# IDE & OS Artifacts
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+

@@ -1,0 +1,118 @@
+# Copy this file to config.yaml and fill your real values.
+# NEVER commit config.yaml to GitHub.
+
+smartapi:
+  api_key: ""
+  client_code: ""
+  pin: ""
+  totp_secret: ""
+  base_url: "https://apiconnect.angelone.in"
+  instrument_master_url: "https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json"
+
+database:
+  path: "market_data.duckdb"
+
+logging:
+  path: "logs/"
+  level: "INFO"
+  rotation: "1 day"
+  retention: "30 days"
+
+rate_limits:
+  requests_per_second: 3
+  requests_per_minute: 180
+  chunk_days_1min: 60
+  chunk_days_1day: 2000
+  retry_max_attempts: 5
+  retry_wait_seconds: 2
+  retry_max_wait_seconds: 30
+
+data:
+  start_date: "2012-01-01"
+  timeframes:
+    - interval: "ONE_MINUTE"
+      label: "1m"
+    - interval: "ONE_DAY"
+      label: "1d"
+  instrument_master_refresh_hours: 24
+  # Keep this list maintained for exchange holidays to avoid false quality gaps.
+  # Example NSE Holidays:
+  market_holidays:
+    - "2026-06-16" # Example holiday used in tests
+    - "2026-08-15" # Independence Day
+    - "2026-10-02" # Gandhi Jayanti
+    - "2026-12-25" # Christmas
+
+timezone:
+  market_tz: "Asia/Kolkata"
+  market_open: "09:15"
+  market_close: "15:30"
+
+operations:
+  ingestion_universe_snapshot: "NIFTY200_2026_08_17"
+  benchmark: "NIFTY200"
+  # Only ACTIVE sessions linked to a passing human-approved promotion are advanced.
+  paper_after_ingestion: true
+
+market_calendar:
+  calendar_id: "NSE_CASH"
+  source: "pandas-market-calendars; record exact NSE capital-market circular references here"
+  version: "replace-with-package-and-nse-circular-version"
+  verified_through: "2026-08-17"
+  # CLOSED, SPECIAL_SESSION, and INTERRUPTION entries are supported.
+  overrides: []
+
+# Research and execution safety defaults. Live execution is intentionally not supported.
+research:
+  paper_trading: true
+  live_trading: false
+  provider_priority:
+    - "duckdb_cache"
+    - "angel_one"
+    - "openbb"
+  openbb_base_url: "http://127.0.0.1:6900"
+  openai_model: "gpt-5-mini"
+  agent_max_cost_usd: 1.0
+  agent_max_tokens: 20000
+  agent_timeout_seconds: 30
+  # Set both rates for enforceable USD budgets; leave unset rather than guessing prices.
+  openai_input_cost_per_million: null
+  openai_output_cost_per_million: null
+  costs:
+    fee_bps: 0.0
+    slippage_bps: 0.0
+    spread_bps: 0.0
+    tax_bps: 0.0
+    financing_bps: 0.0
+  indian_delivery_costs:
+    version: "angel-nse-delivery-2026-04"
+    brokerage_rate_bps: 10.0
+    brokerage_min: 5.0
+    brokerage_max: 20.0
+    stt_buy_bps: 10.0
+    stt_sell_bps: 10.0
+    exchange_transaction_bps: 0.30699
+    sebi_bps: 0.01
+    ipft_bps: 0.00001
+    dp_charge_sell: 20.0
+    gst_rate: 0.18
+    stamp_duty_buy_bps: 1.5
+    spread_bps: 2.0
+    slippage_bps: 3.0
+    impact_bps_at_full_participation: 10.0
+    max_volume_participation: 0.05
+    minimum_daily_traded_value: 1000000.0
+  universe:
+    name: "NIFTY 200"
+    snapshot_id: "NIFTY200_CURRENT"
+    source_url: "https://nsearchives.nseindia.com/content/indices/ind_nifty200list.csv"
+    benchmark_symbol: "NIFTY200"
+    survivorship_bias: true
+  mass_research:
+    max_workers: 1
+    max_retries: 2
+  risk:
+    max_position_pct: 0.05
+    max_gross_exposure_pct: 0.20
+    max_daily_loss_pct: 0.01
+    max_drawdown_pct: 0.05

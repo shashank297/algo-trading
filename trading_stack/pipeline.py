@@ -1,0 +1,468 @@
+"""High-level orchestration for research, backtesting, and paper trading."""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime, timezone
+from typing import Any
+
+import pandas as pd
+
+from data_platform.adjustments import PriceAdjustmentEngine
+from data_platform.contracts import PriceAdjustment
+from storage.duckdb_manager import DuckDBManager
+from risk.engine import RiskEngine
+from risk.models import RiskAction, RiskDecision, TradeProposal
+from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, PaperBroker, VectorizedBacktester
+from trading_stack.calendars import MarketCalendar, build_default_calendars
+from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.domain import AssetClass, StrategyScope, infer_asset_class
+from trading_stack.features import FeatureFactory
+from trading_stack.strategies import StrategyRegistry
+from trading_stack.paper import ForwardPaperSessionEngine
+from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
+from trading_stack.promotion import PromotionEngine
+
+
+class DataQualityError(Exception):
+    """Raised when data fails pre-backtest quality checks."""
+    pass
+
+
+class StrategyPipeline:
+    """End-to-end research and paper-trading pipeline."""
+
+    def __init__(
+        self,
+        db: DuckDBManager,
+        feature_factory: FeatureFactory | None = None,
+        risk_engine: RiskEngine | None = None,
+        india_calendar: MarketCalendar | None = None,
+    ) -> None:
+        self.db = db
+        self.feature_factory = feature_factory or FeatureFactory()
+        self.vector_backtester = VectorizedBacktester()
+        self.event_backtester = EventDrivenBacktester()
+        self.paper_broker = PaperBroker()
+        self.risk_engine = risk_engine or RiskEngine()
+        self.calendars = build_default_calendars()
+        self.strict_calendar = india_calendar is not None
+        if india_calendar is not None:
+            self.calendars[AssetClass.INDIA_EQUITY] = india_calendar
+            self.calendars[AssetClass.INDIA_INDEX] = india_calendar
+
+    def load_candles(
+        self,
+        symbol: str,
+        timeframe: str,
+        *,
+        bypass_quality_gate: bool = False,
+        adjustment: PriceAdjustment | str = PriceAdjustment.UNADJUSTED,
+    ) -> pd.DataFrame:
+        """Load stored candles for a symbol/timeframe from DuckDB, with optional corporate action adjustment."""
+
+        if not bypass_quality_gate:
+            try:
+                quality = self.db.conn.execute(
+                    """
+                    SELECT issue_count FROM quality_report 
+                    WHERE symbol = ? AND timeframe = ? AND check_type = 'session_alignment'
+                    ORDER BY checked_at DESC LIMIT 1
+                    """,
+                    [symbol, timeframe],
+                ).fetchone()
+                if quality and quality[0] > 0:
+                    raise DataQualityError(
+                        f"DataQualityError: {symbol} {timeframe} has {quality[0]} out-of-session bars. "
+                        f"Run refresh_session_quality.py or pass bypass_quality_gate=True."
+                    )
+            except Exception as e:
+                if isinstance(e, DataQualityError):
+                    raise
+                # Table might not exist yet, ignore
+                pass
+
+        frame = self.db.conn.execute(
+            """
+            SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume,
+                   adjustment, provider_name, dataset_id
+            FROM historical_candles
+            WHERE symbol = ? AND timeframe = ?
+            ORDER BY timestamp
+            """,
+            [symbol, timeframe],
+        ).df()
+        if frame.empty:
+            raise ValueError(f"No candles found for {symbol} {timeframe}.")
+
+        adj_enum = PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
+        ca_df = self.db.get_corporate_actions(symbol)
+        frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
+
+        return frame
+
+
+    def run(
+        self,
+        *,
+        strategy_name: str,
+        symbol: str,
+        timeframe: str,
+        mode: str = "vectorized",
+        parameters: dict[str, Any] | None = None,
+        starting_capital: float = 100_000.0,
+        cost_model: dict[str, Any] | None = None,
+        adjustment: PriceAdjustment | str = PriceAdjustment.UNADJUSTED,
+    ) -> dict[str, Any]:
+        """Run a strategy and persist the result bundle."""
+
+        parameters = parameters or {}
+        raw_bars = self.load_candles(symbol, timeframe, adjustment=adjustment)
+        asset_class = self._lookup_asset_class(symbol=symbol, exchange=str(raw_bars["exchange"].iloc[0]))
+        calendar = self.calendars[asset_class]
+        if self.strict_calendar:
+            validation = calendar.validate_bars(raw_bars["timestamp"], timeframe)
+            if validation.out_of_session_count:
+                raise ValueError(
+                    f"Stored bars contain {validation.out_of_session_count} timestamps outside calendar {calendar.version}."
+                )
+        feature_frame = self.feature_factory.build(raw_bars, timezone_name=calendar.spec.timezone)
+        strategy = StrategyRegistry.create(strategy_name, **parameters)
+        execution_model = self._execution_model(cost_model)
+
+        if mode == "vectorized":
+            result = VectorizedBacktester(execution_model).run(
+                strategy,
+                feature_frame,
+                starting_capital=starting_capital,
+                market_asset_class=asset_class,
+                symbol=symbol,
+                timeframe=timeframe,
+                parameters=parameters,
+            )
+        elif mode in {"event-driven", "paper"}:
+            # Wire risk engine into both event-driven backtest and paper so results reflect live limits.
+            result = EventDrivenBacktester(execution_model).run(
+                strategy,
+                feature_frame,
+                starting_capital=starting_capital,
+                market_asset_class=asset_class,
+                symbol=symbol,
+                timeframe=timeframe,
+                parameters=parameters,
+                result_mode=mode,
+                max_abs_position=self.risk_engine.policy.max_position_pct,
+            )
+        else:
+            raise ValueError(f"Unsupported mode: {mode}")
+
+        if mode == "paper":
+            self._apply_paper_risk(result, starting_capital)
+        self._persist_result(
+            result, mode=mode, strategy_name=strategy_name, asset_class=asset_class,
+            execution_model=execution_model,
+        )
+        self._persist_features(feature_frame, symbol=symbol, timeframe=timeframe)
+        return {
+            "result": result,
+            "calendar": calendar,
+            "feature_rows": len(feature_frame),
+        }
+
+    def run_paper_session(
+        self,
+        *,
+        strategy_name: str,
+        approved_run_id: str,
+        symbol: str,
+        timeframe: str,
+        universe: list[str] | None = None,
+        universe_snapshot_id: str = "CONFIGURED_UNIVERSE",
+        benchmark_symbol: str = "NIFTY200",
+        parameters: dict[str, Any] | None = None,
+        starting_capital: float = 100_000.0,
+        cost_model: dict[str, Any] | None = None,
+        as_of: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Advance a persisted forward-only paper session by newly observed bars."""
+
+        PromotionEngine(self.db).assert_paper_authorized(approved_run_id, strategy_name)
+        metadata = StrategyRegistry.metadata(strategy_name)
+        if metadata.scope == StrategyScope.CROSS_SECTIONAL:
+            if not universe:
+                raise ValueError("Cross-sectional paper sessions require a synchronized universe.")
+            allowed = set(IndianDeliveryCostSchedule.__dataclass_fields__)
+            schedule = IndianDeliveryCostSchedule(**{
+                key: value for key, value in (cost_model or {}).items() if key in allowed
+            })
+            portfolio_result = ForwardPortfolioPaperSessionEngine(
+                self.db, calendar=self.calendars[AssetClass.INDIA_EQUITY],
+                risk_engine=self.risk_engine, cost_schedule=schedule,
+            ).run(
+                strategy_name=strategy_name, approved_run_id=approved_run_id,
+                symbols=universe, universe_snapshot_id=universe_snapshot_id,
+                benchmark_symbol=benchmark_symbol, timeframe=timeframe,
+                parameters=parameters, starting_capital=starting_capital, as_of=as_of,
+            )
+            return {
+                "forward_portfolio_result": portfolio_result,
+                "paper_summary": portfolio_result.paper_summary,
+            }
+        raw_bars = self.load_candles(symbol, timeframe)
+        asset_class = self._lookup_asset_class(symbol=symbol, exchange=str(raw_bars["exchange"].iloc[0]))
+        if self.strict_calendar:
+            validation = self.calendars[asset_class].validate_bars(raw_bars["timestamp"], timeframe)
+            if validation.out_of_session_count:
+                raise ValueError("Paper session bars are outside the verified market calendar.")
+        engine = ForwardPaperSessionEngine(
+            self.db,
+            calendar=self.calendars[asset_class],
+            risk_engine=self.risk_engine,
+            feature_factory=self.feature_factory,
+            execution_model=self._execution_model(cost_model),
+        )
+        result = engine.run(
+            strategy_name=strategy_name,
+            approved_run_id=approved_run_id,
+            symbol=symbol,
+            timeframe=timeframe,
+            parameters=parameters,
+            starting_capital=starting_capital,
+            as_of=as_of,
+        )
+        return {"forward_result": result, "paper_summary": result.paper_summary}
+
+    def _execution_model(self, cost_model: dict[str, Any] | None) -> ExecutionModel:
+        allowed = set(ExecutionModel.__dataclass_fields__)
+        values: dict[str, Any] = {
+            key: value for key, value in (cost_model or {}).items() if key in allowed
+        }
+        indian_fields = {
+            key for key in (cost_model or {})
+            if key in IndianDeliveryCostSchedule.__dataclass_fields__
+        }
+        if indian_fields:
+            values["indian_delivery_costs"] = {
+                key: value for key, value in (cost_model or {}).items() if key in indian_fields
+            }
+        return ExecutionModel(**values)
+
+    def _apply_paper_risk(self, result: Any, starting_capital: float) -> None:
+        """Audit pre-sized paper orders and fail closed if an entry needs modification."""
+
+        if result.orders.empty:
+            return
+        gross_exposure = 0.0
+        for _, order in result.orders.sort_values("requested_at").iterrows():
+            price = float(order.get("average_fill_price") or 0.0)
+            requested_notional = abs(float(order["quantity"]) * price)
+            if str(order["side"]).upper() == "SELL":
+                decision = RiskDecision(
+                    symbol=str(order["symbol"]),
+                    action=RiskAction.PASS,
+                    requested_notional=max(requested_notional, 1e-9),
+                    approved_notional=max(requested_notional, 1e-9),
+                    reasons=["risk_reducing_exit"],
+                    policy=self.risk_engine.policy,
+                )
+                gross_exposure = max(gross_exposure - requested_notional, 0.0)
+            else:
+                decision = self.risk_engine.evaluate(
+                    TradeProposal(
+                        symbol=str(order["symbol"]),
+                        requested_notional=max(requested_notional, 1e-9),
+                        capital=starting_capital,
+                        current_gross_exposure=gross_exposure,
+                    ),
+                )
+                if decision.action != RiskAction.PASS:
+                    self.db.log_risk_decision(decision.storage_payload(run_id=result.run_id))
+                    raise RuntimeError(
+                        "Paper order was not fully approved before execution; refusing inconsistent reconciliation."
+                    )
+                gross_exposure += decision.approved_notional
+            self.db.log_risk_decision(decision.storage_payload(run_id=result.run_id))
+
+    def _persist_result(
+        self,
+        result: Any,
+        *,
+        mode: str,
+        strategy_name: str,
+        asset_class: AssetClass,
+        execution_model: ExecutionModel,
+    ) -> None:
+        with self.db.transaction():
+            self.db.clear_backtest_artifacts(result.run_id)
+            self.db.log_strategy_run(
+                {
+                    "run_id": result.run_id,
+                    "strategy_name": strategy_name,
+                    "asset_class": asset_class.value,
+                    "symbol": result.symbol,
+                    "timeframe": result.timeframe,
+                    "mode": mode,
+                    "parameters_json": json.dumps(result.parameters, default=str),
+                    "data_hash": result.data_hash,
+                    "status": "COMPLETED",
+                    "started_at": datetime.now(tz=timezone.utc),
+                    "finished_at": datetime.now(tz=timezone.utc),
+                    "notes": None,
+                },
+                result.metrics,
+            )
+            self.db.log_strategy_orders(result.orders.to_dict(orient="records"))
+            self.db.log_strategy_fills(result.fills.to_dict(orient="records"))
+            self.db.log_equity_curve(result.run_id, result.equity_curve)
+            self._persist_single_asset_attribution(result, execution_model)
+
+    def _persist_single_asset_attribution(
+        self,
+        result: Any,
+        execution_model: ExecutionModel,
+        *,
+        persist: bool = True,
+    ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+        """Reconcile single-asset fills into RCA-ready realized trade evidence."""
+
+        if result.fills.empty:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        orders = result.orders.set_index("order_id").to_dict(orient="index") if not result.orders.empty else {}
+        quantity = 0.0
+        average_cost = 0.0
+        entry_timestamp: pd.Timestamp | None = None
+        entry_reason = "ENTRY"
+        entry_cost_pool = 0.0
+        entry_execution_cost_pool = 0.0
+        rows: list[dict[str, Any]] = []
+        cost_rows: list[dict[str, Any]] = []
+        round_trips: list[dict[str, Any]] = []
+        for fill in result.fills.sort_values("timestamp").to_dict(orient="records"):
+            side = str(fill["side"]).upper()
+            fill_quantity = float(fill["quantity"])
+            price = float(fill["price"])
+            timestamp = pd.Timestamp(fill["timestamp"])
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.tz_localize("UTC")
+            order = orders.get(fill["order_id"], {})
+            try:
+                metadata = json.loads(str(order.get("metadata_json") or "{}"))
+            except json.JSONDecodeError:
+                metadata = {}
+            try:
+                fill_metadata = json.loads(str(fill.get("metadata_json") or "{}"))
+            except json.JSONDecodeError:
+                fill_metadata = {}
+            components = fill_metadata.get("cost_components") or metadata.get("cost_components")
+            if components:
+                cost = float(components["total_cost"])
+                execution_drag = sum(float(components.get(name, 0.0)) for name in (
+                    "spread", "slippage", "market_impact",
+                ))
+                cost_rows.append({
+                    "run_id": result.run_id, "fill_id": fill["fill_id"], "timestamp": timestamp,
+                    **components,
+                })
+            else:
+                execution_drag = abs(fill_quantity * price) * (
+                    execution_model.slippage_bps + execution_model.spread_bps
+                ) / 10_000.0
+                cost = float(fill.get("fees", 0.0)) + execution_drag
+            gross_pnl = 0.0
+            holding_days: float | None = None
+            allocated_entry_cost = 0.0
+            prior_average = average_cost
+            prior_entry = entry_timestamp
+            prior_quantity = quantity
+            if side == "BUY":
+                if quantity <= 0:
+                    entry_timestamp = timestamp
+                    entry_reason = str(metadata.get("reason") or "ENTRY")
+                average_cost = (
+                    quantity * average_cost + fill_quantity * price
+                ) / max(quantity + fill_quantity, 1e-12)
+                quantity += fill_quantity
+                entry_cost_pool += cost
+                entry_execution_cost_pool += execution_drag
+            else:
+                closed_quantity = min(fill_quantity, max(quantity, 0.0))
+                executed_pnl = (price - average_cost) * closed_quantity
+                allocated_entry_cost = entry_cost_pool * closed_quantity / max(prior_quantity, 1e-12)
+                allocated_entry_execution_cost = (
+                    entry_execution_cost_pool * closed_quantity / max(prior_quantity, 1e-12)
+                )
+                entry_cost_pool = max(entry_cost_pool - allocated_entry_cost, 0.0)
+                entry_execution_cost_pool = max(
+                    entry_execution_cost_pool - allocated_entry_execution_cost, 0.0,
+                )
+                gross_pnl = executed_pnl + allocated_entry_execution_cost + execution_drag
+                quantity = max(quantity - closed_quantity, 0.0)
+                if prior_entry is not None:
+                    holding_days = (timestamp - prior_entry).total_seconds() / 86_400.0
+                    exit_reason = str(metadata.get("reason") or "SIGNAL_FLIP")
+                    round_trips.append({
+                        "trade_id": str(fill["fill_id"]),
+                        "run_id": result.run_id,
+                        "symbol": result.symbol,
+                        "entry_timestamp": prior_entry,
+                        "exit_timestamp": timestamp,
+                        "quantity": closed_quantity,
+                        "entry_price": prior_average,
+                        "exit_price": price,
+                        "entry_cost": allocated_entry_cost,
+                        "exit_cost": cost,
+                        "gross_pnl": gross_pnl,
+                        "net_pnl": gross_pnl - allocated_entry_cost - cost,
+                        "holding_period_days": holding_days,
+                        "entry_reason": entry_reason,
+                        "exit_reason": exit_reason,
+                        "exit_classification": "SIGNAL_FLIP",
+                    })
+                if quantity == 0:
+                    average_cost = 0.0
+                    entry_timestamp = None
+                    entry_cost_pool = 0.0
+                    entry_execution_cost_pool = 0.0
+            rows.append({
+                "run_id": result.run_id, "timestamp": timestamp,
+                "symbol": result.symbol, "side": side,
+                "reason": str(metadata.get("reason") or metadata.get("mode") or "signal_target_change"),
+                "realized_pnl": gross_pnl - cost if side == "SELL" else -cost,
+                "cost": cost, "target_weight": float(metadata.get("delta_position", 0.0)),
+                "quantity": fill_quantity, "price": price,
+                "average_cost": prior_average if side == "SELL" else average_cost,
+                "gross_pnl": gross_pnl, "entry_timestamp": prior_entry if side == "SELL" else entry_timestamp,
+                "holding_period_days": holding_days,
+                "exit_classification": "SIGNAL_FLIP" if side == "SELL" else "ENTRY",
+            })
+        attribution_frame = pd.DataFrame(rows)
+        round_trip_frame = pd.DataFrame(round_trips)
+        cost_frame = pd.DataFrame(cost_rows)
+        if persist:
+            self.db._replace_frame("trade_attribution", attribution_frame)
+            self.db._replace_frame("trade_round_trips", round_trip_frame)
+            self.db._replace_frame("fill_cost_components", cost_frame)
+        return attribution_frame, round_trip_frame, cost_frame
+
+    def _persist_features(self, frame: pd.DataFrame, *, symbol: str, timeframe: str) -> None:
+        storeable = self.feature_factory.storeable_features(frame)
+        self.db.upsert_feature_frame(storeable, symbol=symbol, timeframe=timeframe, feature_group="default")
+
+    def _lookup_asset_class(self, *, symbol: str, exchange: str) -> AssetClass:
+        """Resolve the market family from the normalized universe table when possible."""
+
+        try:
+            result = self.db.conn.execute(
+                """
+                SELECT asset_class
+                FROM market_universe
+                WHERE symbol = ? AND exchange = ?
+                LIMIT 1
+                """,
+                [symbol, exchange],
+            ).fetchone()
+            if result and result[0]:
+                return AssetClass(str(result[0]))
+        except Exception:
+            pass
+        return infer_asset_class(exchange, "EQUITY")
