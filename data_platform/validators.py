@@ -113,14 +113,14 @@ class RawStructuralValidator:
             if parse_failed:
                 continue
 
-            o = parsed_vals["open"]
-            h = parsed_vals["high"]
-            l = parsed_vals["low"]
-            c = parsed_vals["close"]
-            v = parsed_vals["volume"]
+            o_val = parsed_vals["open"]
+            h_val = parsed_vals["high"]
+            l_val = parsed_vals["low"]
+            c_val = parsed_vals["close"]
+            v_val = parsed_vals["volume"]
 
             # 4. Positivity checks
-            if o <= 0:
+            if o_val <= 0:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -129,7 +129,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if h <= 0:
+            if h_val <= 0:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -138,7 +138,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if l <= 0:
+            if l_val <= 0:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -147,7 +147,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if c <= 0:
+            if c_val <= 0:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -156,7 +156,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if v < 0:
+            if v_val < 0:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -167,7 +167,7 @@ class RawStructuralValidator:
                 malformed_rows.add(row_num)
 
             # 5. OHLC Invariant Bounds
-            if h < o:
+            if h_val < o_val:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -176,7 +176,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if h < c:
+            if h_val < c_val:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -185,7 +185,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if l > o:
+            if l_val > o_val:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -194,7 +194,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if l > c:
+            if l_val > c_val:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,
@@ -203,7 +203,7 @@ class RawStructuralValidator:
                     )
                 )
                 malformed_rows.add(row_num)
-            if h < l:
+            if h_val < l_val:
                 issues.append(
                     RawValidationIssue(
                         source_row_number=row_num,

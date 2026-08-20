@@ -2,31 +2,23 @@
 
 from __future__ import annotations
 
-import math
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 
 from data_platform.contracts import (
     DatasetLifecycleStatus,
-    DatasetSnapshot,
-    Instrument,
     PriceAdjustment,
-    RawIntakeResult,
-    compute_raw_provider_hash,
 )
 from data_platform.service import (
-    admit_and_promote_dataset,
     ingest_raw_provider_dataset,
     recover_incomplete_raw_intakes,
 )
-from data_platform.source_semantics import SourceSemanticsPolicy, SourceValidationStatus
+from data_platform.source_semantics import SourceSemanticsPolicy
 from storage.duckdb_manager import DuckDBManager
 from tools.backfill_market_history import _persist_backfill_batch
-from tools.revalidate_historical_datasets import revalidate_datasets
 from trading_stack.pipeline import StrategyPipeline
 
 

@@ -26,7 +26,7 @@ from main import (
     load_yaml,
     validate_config,
 )
-from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
+from data_platform.contracts import PriceAdjustment
 from data_platform.service import ingest_raw_provider_dataset
 from smartapi import HistoricalDataClient, InstrumentMaster, RateLimiter, SmartAPIAuth
 from storage import DuckDBManager
@@ -198,8 +198,6 @@ def _persist_backfill_batch(
     if not windows:
         return 0, "SUCCESS"
     frame = pd.concat([item[0] for item in windows], ignore_index=True)
-    window_start = min(item[1] for item in windows)
-    window_end = max(item[2] for item in windows)
 
     result = ingest_raw_provider_dataset(
         bars=frame,

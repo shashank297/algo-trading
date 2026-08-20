@@ -29,9 +29,9 @@ from smartapi import (
 )
 from storage import DuckDBManager
 from utils import LoggerSetup, ReportGenerator, get_ist_now
-from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
+from data_platform.contracts import PriceAdjustment
 from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
-from data_platform.service import admit_and_promote_dataset, ingest_raw_provider_dataset
+from data_platform.service import ingest_raw_provider_dataset
 from trading_stack.calendars import MarketCalendar, SessionOverride, build_nse_calendar
 from trading_stack.domain import Bar, infer_market_spec
 from trading_stack.live_aggregator import RealtimeBarAggregator
@@ -975,23 +975,16 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         if repair_frame.empty:
                             continue
-                        repair_snapshot = DatasetSnapshot.from_bars(
-                            instrument=Instrument(
-                                canonical_symbol=symbol,
-                                exchange=str(sym_config["exchange"]),
-                                provider_name="angel_one",
-                                provider_symbol=symbol,
-                                currency="INR",
-                                timezone="Asia/Kolkata",
-                            ),
-                            timeframe=label,
+                        repair_res = ingest_raw_provider_dataset(
                             bars=repair_frame,
-                            adjustment=PriceAdjustment.UNADJUSTED,
+                            symbol=symbol,
+                            exchange=str(sym_config["exchange"]),
+                            timeframe=label,
+                            provider_name="angel_one",
+                            provider_symbol=symbol,
+                            provider_token=str(sym_config["token"]),
+                            declared_adjustment=PriceAdjustment.UNADJUSTED,
                             timezone_name="Asia/Kolkata",
-                            metadata={"source": "SmartAPI historical gap repair"},
-                        )
-                        repair_res = admit_and_promote_dataset(
-                            snapshot=repair_snapshot,
                             db=db,
                             target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
                         )

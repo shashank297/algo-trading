@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
+from data_platform.contracts import PriceAdjustment
 from data_platform.service import ingest_raw_provider_dataset
 from main import apply_env_overrides, load_yaml
 from storage import DuckDBManager
@@ -44,19 +44,6 @@ def main(argv: list[str] | None = None) -> int:
     missing = required.difference(frame.columns)
     if missing:
         raise ValueError(f"Benchmark CSV is missing columns: {sorted(missing)}")
-    snapshot = DatasetSnapshot.from_bars(
-        instrument=Instrument(
-            canonical_symbol=args.provider_symbol, exchange="NSE",
-            provider_name=args.provider_name, provider_symbol=args.provider_symbol,
-            currency="INR", timezone="Asia/Kolkata",
-        ),
-        timeframe=args.timeframe,
-        bars=frame[list(required)],
-        adjustment=PriceAdjustment(args.adjustment),
-        timezone_name="Asia/Kolkata",
-
-        metadata={"source": args.source, "relationship": args.relationship},
-    )
     db = DuckDBManager(str(PROJECT_ROOT / config["database"]["path"]))
     try:
         res = ingest_raw_provider_dataset(
