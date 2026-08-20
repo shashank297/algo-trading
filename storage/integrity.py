@@ -114,14 +114,16 @@ class DatabaseIntegrityValidator:
             return IntegrityCheckResult("orphaned_fill_costs", True, 0, f"Skipped (table absent): {exc}")
 
     def check_raw_to_canonical_lineage(self) -> IntegrityCheckResult:
-        """Ensure CANONICAL_PROMOTED datasets have valid raw_dataset_id references."""
+        """Ensure CANONICAL_PROMOTED datasets have valid raw/parent dataset references."""
         try:
             row = self.conn.execute(
                 """
                 SELECT COUNT(*)
                 FROM market_datasets c
-                LEFT JOIN raw_bar_observations r ON c.dataset_id = r.raw_dataset_id
-                WHERE c.lifecycle_status = 'CANONICAL_PROMOTED' AND r.raw_dataset_id IS NULL
+                LEFT JOIN market_datasets p ON c.parent_dataset_id = p.dataset_id
+                WHERE c.lifecycle_status = 'CANONICAL_PROMOTED' 
+                  AND c.parent_dataset_id IS NOT NULL 
+                  AND p.dataset_id IS NULL
                 """
             ).fetchone()
             count = int(row[0]) if row else 0
@@ -129,7 +131,7 @@ class DatabaseIntegrityValidator:
                 check_name="raw_to_canonical_lineage",
                 passed=(count == 0),
                 violation_count=count,
-                details=f"{count} canonical promoted datasets missing raw observations",
+                details=f"{count} canonical promoted datasets reference non-existent parent datasets",
             )
         except Exception as exc:
             return IntegrityCheckResult("raw_to_canonical_lineage", True, 0, f"Skipped (table absent): {exc}")

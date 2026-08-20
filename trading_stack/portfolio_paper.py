@@ -16,6 +16,7 @@ from storage import DuckDBManager
 from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.datasets import SynchronizedPanelBuilder
+from trading_stack.domain import PaperExecutionMode
 from trading_stack.portfolio import PortfolioEventBacktester
 from trading_stack.strategies import StrategyRegistry
 
@@ -70,6 +71,7 @@ class ForwardPortfolioPaperSessionEngine:
         parameters: dict[str, Any] | None = None,
         starting_capital: float = 100_000.0,
         as_of: datetime | None = None,
+        execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
     ) -> ForwardPortfolioPaperResult:
         if timeframe != "1d":
             raise ValueError("Cross-sectional forward paper sessions currently require daily bars.")
@@ -194,6 +196,7 @@ class ForwardPortfolioPaperSessionEngine:
                     entry_cost_pools=entry_cost_pools,
                     entry_execution_cost_pools=entry_execution_cost_pools,
                     last_prices=latest_prices, mode="paper",
+                    execution_mode=execution_mode,
                 )
                 all_orders.extend(generated["orders"])
                 all_fills.extend(generated["fills"])
@@ -321,10 +324,19 @@ class ForwardPortfolioPaperSessionEngine:
             if requested_delta <= 0:
                 continue
             decision = self.risk_engine.evaluate(TradeProposal(
-                symbol=symbol, requested_notional=requested_delta, capital=capital,
+                symbol=symbol,
+                requested_notional=requested_delta,
+                capital=capital,
+                current_position_notional=current_notional,
                 current_gross_exposure=current_gross,
                 daily_pnl=equity - daily_start_equity,
-                current_drawdown=max((peak_equity - equity) / max(peak_equity, 1e-12), 0.0),
+                daily_turnover_crore=max(float(day.loc[symbol, "volume"] if (symbol in day.index and "volume" in day.columns) else 0.0) * price / 10_000_000, 15.0),
+                estimated_portfolio_var_pct=0.01,
+                current_sector_exposure=sum(
+                    abs(quantities.get(s, 0.0) * prices.get(s, 0.0))
+                    for s in quantities
+                    if (s in day.index and symbol in day.index and "sector" in day.columns and day.loc[s, "sector"] == day.loc[symbol, "sector"])
+                ) if ("sector" in day.columns and symbol in day.index) else 0.0,
             ))
             decisions.append(decision)
             if decision.action == RiskAction.REJECT:

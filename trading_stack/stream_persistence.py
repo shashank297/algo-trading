@@ -17,10 +17,25 @@ import duckdb
 import pandas as pd
 from loguru import logger
 
+from dataclasses import dataclass
+
 from data_platform.contracts import (
     MarketDataEvent,
 )
 from trading_stack.domain import Bar
+
+
+@dataclass(frozen=True)
+class FlushResult:
+    ticks_ok: bool
+    bars_ok: bool
+    packets_ok: bool = True
+
+    def __iter__(self):
+        return iter((self.ticks_ok, self.bars_ok))
+
+    def __getitem__(self, index):
+        return (self.ticks_ok, self.bars_ok, self.packets_ok)[index]
 
 
 class PersistenceHealth(str, Enum):
@@ -257,8 +272,8 @@ class DuckDBStreamWriter:
             )
 
             if should_flush:
-                success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch, packet_batch)
-                if success_ticks:
+                flush_res = self._flush_batches(tick_batch, bar_batch, packet_batch)
+                if flush_res.ticks_ok:
                     for _ in range(len(tick_batch)):
                         self._queue.task_done()
                     tick_batch.clear()
@@ -274,7 +289,7 @@ class DuckDBStreamWriter:
                             self._queue.task_done()
                         del tick_batch[: len(tick_batch) - 5_000]
 
-                if success_bars:
+                if flush_res.bars_ok:
                     for _ in range(len(bar_batch)):
                         self._queue.task_done()
                     bar_batch.clear()
@@ -290,16 +305,28 @@ class DuckDBStreamWriter:
                             self._queue.task_done()
                         del bar_batch[: len(bar_batch) - 5_000]
 
-                for _ in range(len(packet_batch)):
-                    self._queue.task_done()
-                packet_batch.clear()
+                if flush_res.packets_ok:
+                    for _ in range(len(packet_batch)):
+                        self._queue.task_done()
+                    packet_batch.clear()
+                else:
+                    self._health = PersistenceHealth.DEGRADED
+                    self._flush_failures_total += 1
+                    self._retried_records_total += len(packet_batch)
+                    if len(packet_batch) > 10_000:
+                        spill = packet_batch[: len(packet_batch) - 5_000]
+                        self._spool_dead_letter("packet", spill)
+                        self._spooled_records_total += len(spill)
+                        for _ in range(len(spill)):
+                            self._queue.task_done()
+                        del packet_batch[: len(packet_batch) - 5_000]
 
                 last_flush_time = now
 
         # Final drain
         if tick_batch or bar_batch or packet_batch:
-            success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch, packet_batch)
-            if success_ticks:
+            flush_res = self._flush_batches(tick_batch, bar_batch, packet_batch)
+            if flush_res.ticks_ok:
                 for _ in range(len(tick_batch)):
                     self._queue.task_done()
                 tick_batch.clear()
@@ -309,7 +336,7 @@ class DuckDBStreamWriter:
                     self._queue.task_done()
                 tick_batch.clear()
 
-            if success_bars:
+            if flush_res.bars_ok:
                 for _ in range(len(bar_batch)):
                     self._queue.task_done()
                 bar_batch.clear()
@@ -319,19 +346,25 @@ class DuckDBStreamWriter:
                     self._queue.task_done()
                 bar_batch.clear()
 
-            for _ in range(len(packet_batch)):
-                self._queue.task_done()
-            packet_batch.clear()
+            if flush_res.packets_ok:
+                for _ in range(len(packet_batch)):
+                    self._queue.task_done()
+                packet_batch.clear()
+            else:
+                self._spool_dead_letter("packet", packet_batch)
+                for _ in range(len(packet_batch)):
+                    self._queue.task_done()
+                packet_batch.clear()
 
     def _flush_batches(
         self,
         tick_batch: list[dict[str, Any]],
         bar_batch: list[dict[str, Any]],
         packet_batch: list[dict[str, Any]] | None = None,
-    ) -> tuple[bool, bool]:
-        """Batch insert ticks, bars, and raw packets into DuckDB. Returns (ticks_ok, bars_ok)."""
+    ) -> FlushResult:
+        """Batch insert ticks, bars, and raw packets into DuckDB. Returns FlushResult."""
         if self._conn is None:
-            return False, False
+            return FlushResult(ticks_ok=False, bars_ok=False, packets_ok=False)
 
         ticks_ok = True
         if tick_batch:
@@ -359,6 +392,7 @@ class DuckDBStreamWriter:
                 bars_ok = False
                 logger.error("Failed to batch insert market bars into DuckDB: {}", exc)
 
+        packets_ok = True
         if packet_batch:
             try:
                 df_packets = pd.DataFrame(packet_batch)
@@ -368,9 +402,10 @@ class DuckDBStreamWriter:
                 self._conn.execute(f"INSERT OR REPLACE INTO market_raw_packets ({cols}) SELECT {cols} FROM {temp_name}")
                 self._conn.unregister(temp_name)
             except Exception as exc:
+                packets_ok = False
                 logger.error("Failed to batch insert market raw packets into DuckDB: {}", exc)
 
-        return ticks_ok, bars_ok
+        return FlushResult(ticks_ok=ticks_ok, bars_ok=bars_ok, packets_ok=packets_ok)
 
     def stop(self, timeout: float = 10.0) -> bool:
         """Gracefully drain the persistence queue, flush to DuckDB, and close connection."""

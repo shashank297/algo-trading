@@ -99,14 +99,27 @@ class PromotionEngine:
         if run_row and run_row[0] and "survivorship bias" in str(run_row[0]).lower():
             survivorship_safe = False
 
-        dq_verified = True
+        dq_verified = False
         if run_row and run_row[2]:
             sym = str(run_row[2]).replace("PORTFOLIO:", "")
-            dq_issues = self.db.conn.execute(
-                "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
+            ds_status = self.db.conn.execute(
+                """SELECT status, lifecycle_status FROM market_datasets
+                   WHERE canonical_symbol = ? ORDER BY retrieved_at DESC LIMIT 1""",
+                [sym],
             ).fetchone()
-            if dq_issues and dq_issues[0] and int(dq_issues[0]) > 0:
-                dq_verified = False
+            if ds_status and ds_status[0] == "VERIFIED" and ds_status[1] == "CANONICAL_PROMOTED":
+                dq_issues = self.db.conn.execute(
+                    "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
+                ).fetchone()
+                if dq_issues is None or dq_issues[0] is None or int(dq_issues[0]) == 0:
+                    dq_verified = True
+            elif "PORTFOLIO:" in str(run_row[2]):
+                # Portfolio runs aggregate multiple symbols; check no quality issues exist
+                dq_issues = self.db.conn.execute(
+                    "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
+                ).fetchone()
+                if dq_issues is None or dq_issues[0] is None or int(dq_issues[0]) == 0:
+                    dq_verified = True
 
         checks = {
             "sharpe": metrics.get("sharpe", 0.0) >= self.policy.minimum_sharpe,

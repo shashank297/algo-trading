@@ -88,12 +88,24 @@ class RealtimeBarAggregator:
         self._lock = threading.Lock()
         self._bar_subscribers: list[Callable[[Bar], None]] = []
 
-        # Current open bar state per symbol: symbol -> dict
-        self._open_bars: dict[str, dict[str, Any]] = {}
+        # Active windows buffer: (symbol, window_start) -> dict
+        self._active_windows: dict[tuple[str, pd.Timestamp], dict[str, Any]] = {}
+        # Max event time seen per symbol
+        self._max_event_time_seen: dict[str, datetime] = {}
+        # Count of dropped late ticks
+        self._dropped_late_ticks_count: int = 0
         # Prior cumulative volume per symbol: symbol -> last_day_volume
         self._last_day_volumes: dict[str, int] = {}
         # Completed bar history / deduplication
         self._closed_windows: set[tuple[str, pd.Timestamp]] = set()
+
+    @property
+    def _open_bars(self) -> dict[str, dict[str, Any]]:
+        """Convenience map of symbol -> latest active window state."""
+        result: dict[str, dict[str, Any]] = {}
+        for (sym, _), state in sorted(self._active_windows.items(), key=lambda x: x[0][1]):
+            result[sym] = state
+        return result
 
     def subscribe_bar(self, callback: Callable[[Bar], None]) -> None:
         """Register a callback for completed Bar events."""
@@ -124,8 +136,6 @@ class RealtimeBarAggregator:
         window_end = window_start + pd.Timedelta(seconds=self.interval_seconds)
 
         with self._lock:
-            open_bar = self._open_bars.get(sym)
-
             # Calculate volume delta from cumulative volume
             tick_volume: float | None = None
             if isinstance(tick, (QuoteTick, SnapQuoteTick)):
@@ -156,25 +166,21 @@ class RealtimeBarAggregator:
             elif isinstance(tick, LtpTick):
                 tick_volume = None
 
+            # Update event time watermark
+            event_dt = pd.Timestamp(event_time).to_pydatetime()
+            if sym not in self._max_event_time_seen or event_dt > self._max_event_time_seen[sym]:
+                self._max_event_time_seen[sym] = event_dt
 
-            # If tick belongs to a strictly NEWER window, finalize the open older bar if lateness period elapsed
-            if open_bar is not None and window_start > open_bar["window_start"]:
-                if (sym, open_bar["window_start"]) not in self._closed_windows:
-                    bar = self._build_bar(open_bar, is_final=True)
-                    completed_bars.append(bar)
-                    self._closed_windows.add((sym, open_bar["window_start"]))
-                    if len(self._closed_windows) > 10_000:
-                        self._closed_windows = set(list(self._closed_windows)[-5000:])
-                open_bar = None
-                self._open_bars.pop(sym, None)
+            watermark = self._max_event_time_seen[sym] - self.allowed_lateness
+            window_key = (sym, window_start)
 
-            # Check if this tick is too late for a closed window
-            if (sym, window_start) not in self._closed_windows:
-                # If tick belongs to an older window while a newer open_bar exists, do not finalize current bar
-                if open_bar is not None and window_start < open_bar["window_start"]:
-                    pass
-                elif open_bar is None:
-                    self._open_bars[sym] = {
+            # Check if this tick is for an already closed window (late arrival after finalization)
+            if window_key in self._closed_windows:
+                self._dropped_late_ticks_count += 1
+            else:
+                # Buffer tick into active window
+                if window_key not in self._active_windows:
+                    self._active_windows[window_key] = {
                         "symbol": sym,
                         "exchange": exchange,
                         "window_start": window_start,
@@ -190,9 +196,8 @@ class RealtimeBarAggregator:
                         "turnover": (price * tick_volume) if tick_volume is not None else 0.0,
                         "tick_count": 1,
                     }
-
                 else:
-                    # Update event-time open/close
+                    open_bar = self._active_windows[window_key]
                     if event_time < open_bar["earliest_event_time"]:
                         open_bar["open"] = price
                         open_bar["earliest_event_time"] = event_time
@@ -208,12 +213,27 @@ class RealtimeBarAggregator:
                         open_bar["has_volume"] = True
                     open_bar["tick_count"] += 1
 
+            # Finalize any active windows for this symbol where window_end <= watermark
+            windows_to_close = []
+            for (s, ws), state in list(self._active_windows.items()):
+                if s == sym:
+                    w_end_dt = state["window_end"].to_pydatetime()
+                    if watermark >= w_end_dt:
+                        windows_to_close.append((s, ws))
+
+            for w_key in windows_to_close:
+                state = self._active_windows.pop(w_key)
+                bar = self._build_bar(state, is_final=True)
+                completed_bars.append(bar)
+                self._closed_windows.add(w_key)
+                if len(self._closed_windows) > 10_000:
+                    self._closed_windows = set(list(self._closed_windows)[-5000:])
+
         # Dispatch completed bars outside the lock
         if completed_bars:
             self._dispatch_bars(completed_bars)
 
         return completed_bars
-
 
     def close_elapsed_windows(self, current_time: datetime | None = None) -> list[Bar]:
         """Timer-driven window closure for elapsed intervals (even when no new ticks arrive).
@@ -228,18 +248,17 @@ class RealtimeBarAggregator:
         completed_bars: list[Bar] = []
 
         with self._lock:
-            symbols_to_close: list[str] = []
-            for sym, bar_state in self._open_bars.items():
+            windows_to_close: list[tuple[str, pd.Timestamp]] = []
+            for (sym, ws), bar_state in self._active_windows.items():
                 window_end_dt = bar_state["window_end"].to_pydatetime()
                 if now >= window_end_dt + self.allowed_lateness:
-                    if (sym, bar_state["window_start"]) not in self._closed_windows:
-                        bar = self._build_bar(bar_state, is_final=True)
-                        completed_bars.append(bar)
-                        self._closed_windows.add((sym, bar_state["window_start"]))
-                    symbols_to_close.append(sym)
+                    windows_to_close.append((sym, ws))
 
-            for sym in symbols_to_close:
-                self._open_bars.pop(sym, None)
+            for w_key in windows_to_close:
+                bar_state = self._active_windows.pop(w_key)
+                bar = self._build_bar(bar_state, is_final=True)
+                completed_bars.append(bar)
+                self._closed_windows.add(w_key)
 
         if completed_bars:
             self._dispatch_bars(completed_bars)
@@ -249,10 +268,14 @@ class RealtimeBarAggregator:
     def get_current_bar_snapshot(self, symbol: str) -> Bar | None:
         """Get the current in-progress (non-final) bar for a symbol."""
         with self._lock:
-            bar_state = self._open_bars.get(symbol)
-            if bar_state is None:
+            # Return newest active window for symbol
+            symbol_windows = [
+                state for (sym, _), state in self._active_windows.items() if sym == symbol
+            ]
+            if not symbol_windows:
                 return None
-            return self._build_bar(bar_state, is_final=False)
+            latest_state = max(symbol_windows, key=lambda s: s["window_start"])
+            return self._build_bar(latest_state, is_final=False)
 
     def _build_bar(self, state: dict[str, Any], is_final: bool) -> Bar:
         """Construct a validated Bar domain object from internal state."""

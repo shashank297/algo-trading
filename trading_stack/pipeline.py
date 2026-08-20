@@ -30,6 +30,16 @@ class DataQualityError(Exception):
     pass
 
 
+REQUIRED_AUTHORITATIVE_DQ_CHECKS = {
+    "schema",
+    "ohlc_integrity",
+    "duplicates",
+    "session_alignment",
+    "missing_sessions",
+    "timestamp_integrity",
+}
+
+
 class StrategyPipeline:
     """End-to-end research and paper-trading pipeline."""
 
@@ -64,6 +74,26 @@ class StrategyPipeline:
 
         if not bypass_quality_gate:
             try:
+                # 1. Fetch exact latest dataset record from market_datasets
+                ds_record = self.db.conn.execute(
+                    """
+                    SELECT dataset_id, status, lifecycle_status FROM market_datasets
+                    WHERE canonical_symbol = ? AND timeframe = ?
+                    ORDER BY retrieved_at DESC LIMIT 1
+                    """,
+                    [symbol, timeframe],
+                ).fetchone()
+                if ds_record is not None:
+                    dataset_id, status, lifecycle_status = ds_record
+                    if status != "VERIFIED" or lifecycle_status != "CANONICAL_PROMOTED":
+                        raise DataQualityError(
+                            f"DataQualityError: Dataset {dataset_id} for {symbol} {timeframe} has status={status}, "
+                            f"lifecycle={lifecycle_status}; must be VERIFIED and CANONICAL_PROMOTED."
+                        )
+                else:
+                    dataset_id = None
+
+                # 2. Check quality_report records for issues
                 quality_rows = self.db.conn.execute(
                     """
                     SELECT check_type, issue_count FROM quality_report 
@@ -78,20 +108,6 @@ class StrategyPipeline:
                             f"DataQualityError: {symbol} {timeframe} failed {q_type} check with {count} issues. "
                             f"Resolve data quality or pass bypass_quality_gate=True."
                         )
-                # Check canonical verification status in market_datasets
-                ds_status = self.db.conn.execute(
-                    """
-                    SELECT status, lifecycle_status FROM market_datasets
-                    WHERE canonical_symbol = ? AND timeframe = ?
-                    ORDER BY retrieved_at DESC LIMIT 1
-                    """,
-                    [symbol, timeframe],
-                ).fetchone()
-                if ds_status and (ds_status[0] != "VERIFIED" or ds_status[1] != "CANONICAL_PROMOTED"):
-                    raise DataQualityError(
-                        f"DataQualityError: Dataset for {symbol} {timeframe} has status={ds_status[0]}, "
-                        f"lifecycle={ds_status[1]}; only VERIFIED / CANONICAL_PROMOTED datasets may be used."
-                    )
             except Exception as e:
                 if isinstance(e, DataQualityError):
                     raise

@@ -50,6 +50,8 @@ class CrossSectionalRankingStrategy(BaseStrategy):
         # Point-in-Time Universe and Eligibility filtering applied BEFORE ranking
         if "eligible" in ranked.columns:
             ranked = ranked[ranked["eligible"].astype(bool)].copy()
+        if "pit_eligible" in ranked.columns:
+            ranked = ranked[ranked["pit_eligible"].astype(bool)].copy()
         if ranked.empty:
             return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
 

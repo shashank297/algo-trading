@@ -217,23 +217,31 @@ class SynchronizedPanelBuilder:
         # Point-In-Time Universe Filtering
         survivorship_bias = True
         try:
-            pit_rows = self.db.conn.execute(
-                """
-                SELECT symbol, effective_from, effective_until 
-                FROM index_constituents_pit 
-                WHERE universe_name = ?
-                """,
-                [universe_name.upper()],
-            ).fetchall()
+            pit_rows: list[tuple[str, Any, Any]] = []
+            if universe_name:
+                pit_rows = self.db.conn.execute(
+                    """
+                    SELECT symbol, effective_from, effective_until 
+                    FROM index_constituents_pit 
+                    WHERE UPPER(universe_name) = ?
+                    """,
+                    [universe_name.upper()],
+                ).fetchall()
+
             if pit_rows:
                 pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until"])
                 pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
                 pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
                 
                 panel_dates = pd.to_datetime(panel["timestamp"]).dt.tz_convert(self.calendar.zone).dt.date
+                min_panel_date = panel_dates.min()
+                min_pit_date = pit_df["effective_from"].min()
+                if min_pit_date > min_panel_date:
+                    raise RuntimeError(
+                        f"PIT membership evidence for '{universe_name}' begins on {min_pit_date}, which does not cover requested research start date {min_panel_date}. Failing closed to prevent survivorship bias."
+                    )
+
                 panel_syms = panel["symbol"].values
-                
-                # Check active interval per row
                 is_member_mask = np.zeros(len(panel), dtype=bool)
                 for sym, grp in pit_df.groupby("symbol"):
                     sym_indices = np.where(panel_syms == sym)[0]
@@ -252,13 +260,19 @@ class SynchronizedPanelBuilder:
                 panel["pit_eligible"] = is_member_mask
                 panel["eligible"] &= panel["pit_eligible"]
                 survivorship_bias = False
+            elif universe_name and ("NIFTY" in universe_name.upper() or universe_name == "NIFTY50" or universe_name == "NIFTY200"):
+                raise RuntimeError(
+                    f"No PIT membership evidence for '{universe_name}'. Failing closed to eliminate survivorship bias."
+                )
             else:
                 panel["pit_eligible"] = True
+                survivorship_bias = True
         except Exception as exc:
             logger.error("PIT universe filtering failed for universe {}: {}", universe_name, exc)
-            if universe_name:
+            if universe_name and ("NIFTY" in universe_name.upper() or isinstance(exc, RuntimeError)):
                 raise RuntimeError(f"Point-in-time universe lookup failed for '{universe_name}': {exc}. Failing closed to prevent survivorship bias.") from exc
             panel["pit_eligible"] = True
+            survivorship_bias = True
 
         if "benchmark_close" in panel:
             panel["eligible"] &= panel["benchmark_close"].notna()

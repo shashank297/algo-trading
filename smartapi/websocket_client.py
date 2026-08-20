@@ -57,6 +57,7 @@ class SmartAPIWebSocketClient:
         websocket_factory: Any = websocket.WebSocketApp,
         quarantine_conn: Any = None,
         quarantine_db_path: str | None = None,
+        raw_packet_sink: Any | None = None,
     ) -> None:
         """Initialize the WebSocket client."""
         self.auth = auth
@@ -65,6 +66,7 @@ class SmartAPIWebSocketClient:
         self.watchdog_timeout = watchdog_timeout_seconds
         self.ping_interval = ping_interval_seconds
         self.allow_insecure_tls = allow_insecure_tls
+        self.raw_packet_sink = raw_packet_sink
         self._quarantine_conn = quarantine_conn
         self._quarantine_db_path = quarantine_db_path
 
@@ -330,6 +332,12 @@ class SmartAPIWebSocketClient:
             return
 
         raw_bytes = bytes(data)
+
+        if self.raw_packet_sink is not None:
+            try:
+                self.raw_packet_sink.enqueue_raw_packet(raw_bytes, received_at=recv_utc)
+            except Exception as exc:
+                logger.debug("Error forwarding raw packet to sink: {}", exc)
 
         # Resolve symbol helper
         def symbol_lookup(ex: str, tok: str) -> str | None:

@@ -247,7 +247,7 @@ class TestLiveFaultInjection(unittest.TestCase):
         # CRITICAL ASSERTION: The active 10:02 bar MUST NOT be finalized by this late 10:01 tick!
         self.assertEqual(len(closed_bars), 0)
 
-        # 3. Subsequent tick at 10:02:30 updates the 10:02 candle normally
+        # 3. Subsequent tick at 10:02:30 updates the 10:02 candle normally and finalizes elapsed 10:01 window
         ts_1002_b = datetime(2023, 1, 18, 4, 32, 30, tzinfo=timezone.utc)
         tick_1002_b = LtpTick(
             exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
@@ -255,7 +255,10 @@ class TestLiveFaultInjection(unittest.TestCase):
             raw_packet_size=51, ltp=602.0,
         )
         aggregator.process_tick(tick_1002_b)
-        self.assertEqual(len(closed_bars), 0)
+        # The 10:01 window (which had been waiting for lateness) now cleanly closes
+        self.assertEqual(len(closed_bars), 1)
+        self.assertEqual(closed_bars[0].close, 599.5)
+        # And the active 10:02 bar is still open with 2 ticks
         open_bar = aggregator._open_bars.get("SBIN")
         self.assertIsNotNone(open_bar)
         self.assertEqual(open_bar["high"], 602.0)

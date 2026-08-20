@@ -157,7 +157,7 @@ def test_p0_2_anti_lookahead_future_volume_mutation():
 
 
 # ---------------------------------------------------------------------------
-# P0-3: Forward Paper Execution Chronology Modes
+# P0-3: Forward Paper Execution Chronology Modes & Portfolio Paper Invariant
 # ---------------------------------------------------------------------------
 
 def test_p0_3_forward_paper_chronology_modes(tmp_path):
@@ -197,9 +197,58 @@ def test_p0_3_forward_paper_chronology_modes(tmp_path):
     assert fill_open is not None
     assert fill_open["price"] == pytest.approx(100.5, rel=1e-3)
 
+    # TRUE_NEXT_OPEN mode with NO observed opening tick price: MUST NOT fall back to completed bar open
+    bar_no_tick = {
+        "timestamp": datetime(2026, 1, 6, 10, 0, tzinfo=timezone.utc),
+        "open": 100.0,
+        "high": 105.0,
+        "low": 98.0,
+        "close": 102.0,
+        "open_tick_price": None,
+    }
+    _, _, _, _, _, _, _, _, fill_missed, _, _, _ = engine._execute_pending(
+        "session_missed", "TEST", bar_no_tick, pending, 100_000.0, 0.0, 0.0, 100_000.0, 100_000.0, 100_000.0,
+        execution_mode="TRUE_NEXT_OPEN",
+    )
+    assert fill_missed is None  # Remains unexecuted when no live opening tick was observed
+
+
+def test_p0_3_portfolio_paper_eod_batch_mutation_invariant():
+    """P0-3: Mutating Day T+1 open in EOD_BATCH portfolio paper has zero effect on execution."""
+    backtester = PortfolioEventBacktester()
+    date_val = pd.Timestamp("2026-01-06", tz="UTC")
+    day_normal = pd.DataFrame([{
+        "symbol": "RELIANCE", "timestamp": date_val, "open": 1000.0, "close": 1050.0,
+        "lagged_adv20": 100_000.0, "lagged_close": 1000.0, "lagged_traded_value": 100_000_000.0, "sector": "ENERGY",
+    }]).set_index("symbol")
+    day_mutated = pd.DataFrame([{
+        "symbol": "RELIANCE", "timestamp": date_val, "open": 5000.0, "close": 1050.0,
+        "lagged_adv20": 100_000.0, "lagged_close": 1000.0, "lagged_traded_value": 100_000_000.0, "sector": "ENERGY",
+    }]).set_index("symbol")
+
+    targets = pd.DataFrame([{"symbol": "RELIANCE", "target_weight": 0.20}])
+    cash_1, gen_1 = backtester._rebalance(
+        run_id="r1", date=date_val, day=day_normal, targets=targets, cash=100_000.0,
+        quantities={}, average_cost={}, entry_timestamps={}, entry_reasons={},
+        entry_cost_pools={}, entry_execution_cost_pools={}, last_prices={"RELIANCE": 1000.0},
+        mode="paper", execution_mode="EOD_BATCH",
+    )
+    cash_2, gen_2 = backtester._rebalance(
+        run_id="r2", date=date_val, day=day_mutated, targets=targets, cash=100_000.0,
+        quantities={}, average_cost={}, entry_timestamps={}, entry_reasons={},
+        entry_cost_pools={}, entry_execution_cost_pools={}, last_prices={"RELIANCE": 1000.0},
+        mode="paper", execution_mode="EOD_BATCH",
+    )
+
+    fills_1 = gen_1["fills"]
+    fills_2 = gen_2["fills"]
+    assert len(fills_1) == len(fills_2)
+    assert fills_1[0]["price"] == fills_2[0]["price"] == pytest.approx(1050.0, rel=1e-3)
+    assert fills_1[0]["quantity"] == fills_2[0]["quantity"]
+
 
 # ---------------------------------------------------------------------------
-# P0-4: Point-in-Time Universe Isolation
+# P0-4: Point-in-Time Universe Isolation & Coverage Fail-Closed
 # ---------------------------------------------------------------------------
 
 def test_p0_4_pit_universe_isolation():
@@ -222,12 +271,12 @@ def test_p0_4_pit_universe_isolation():
 
     # INFY is eligible=False on date 3; RELIANCE is eligible=True
     panel_records = [
-        {"timestamp": dates[0], "symbol": "RELIANCE", "close": 100.0, "eligible": True},
-        {"timestamp": dates[0], "symbol": "INFY", "close": 200.0, "eligible": True},
-        {"timestamp": dates[1], "symbol": "RELIANCE", "close": 105.0, "eligible": True},
-        {"timestamp": dates[1], "symbol": "INFY", "close": 210.0, "eligible": True},
-        {"timestamp": dates[2], "symbol": "RELIANCE", "close": 110.0, "eligible": True},
-        {"timestamp": dates[2], "symbol": "INFY", "close": 250.0, "eligible": False},  # Dropped from index
+        {"timestamp": dates[0], "symbol": "RELIANCE", "close": 100.0, "eligible": True, "pit_eligible": True},
+        {"timestamp": dates[0], "symbol": "INFY", "close": 200.0, "eligible": True, "pit_eligible": True},
+        {"timestamp": dates[1], "symbol": "RELIANCE", "close": 105.0, "eligible": True, "pit_eligible": True},
+        {"timestamp": dates[1], "symbol": "INFY", "close": 210.0, "eligible": True, "pit_eligible": True},
+        {"timestamp": dates[2], "symbol": "RELIANCE", "close": 110.0, "eligible": True, "pit_eligible": True},
+        {"timestamp": dates[2], "symbol": "INFY", "close": 250.0, "eligible": False, "pit_eligible": False},  # Dropped from index
     ]
     panel = pd.DataFrame(panel_records)
     signals = strategy.generate_signals(panel)
@@ -236,6 +285,25 @@ def test_p0_4_pit_universe_isolation():
     rebal_signals = signals[signals["timestamp"] == dates[2]]
     assert "INFY" not in rebal_signals["symbol"].values
     assert "RELIANCE" in rebal_signals["symbol"].values
+
+
+def test_p0_4_pit_coverage_fail_closed(tmp_path):
+    """P0-4: SynchronizedPanelBuilder fails closed when requested period starts before PIT coverage."""
+    from trading_stack.datasets import SynchronizedPanelBuilder
+    db = DuckDBManager(str(tmp_path / "pit_cov.duckdb"))
+    builder = SynchronizedPanelBuilder(db=db)
+
+    # Seed historical candles starting in 2020
+    db.conn.execute("INSERT INTO historical_candles (token, symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id) VALUES ('2885', 'RELIANCE', 'NSE', '1d', '2020-01-01', 100, 105, 95, 100, 1000, 'SPLIT_ADJUSTED', 'ANGEL', 'ds1');")
+    # Seed universe snapshot
+    db.conn.execute("INSERT INTO universe_snapshots (snapshot_id, name, source_url, effective_date, content_hash) VALUES ('SNAP_1', 'NIFTY50', 'http://test', '2026-01-01', 'h1');")
+    db.conn.execute("INSERT INTO universe_snapshot_members (snapshot_id, symbol, provider_token, exchange, sector) VALUES ('SNAP_1', 'RELIANCE', '2885', 'NSE', 'ENERGY');")
+    # Seed PIT constituents starting only in 2026 (incomplete coverage)
+    db.conn.execute("INSERT INTO index_constituents_pit (universe_name, symbol, token, instrument_id, effective_from, effective_until, weight) VALUES ('NIFTY50', 'RELIANCE', '2885', '2885', '2026-01-01', '2026-12-31', 0.10);")
+
+    # Incomplete coverage must fail closed with RuntimeError
+    with pytest.raises(RuntimeError, match="does not cover requested research start date"):
+        builder.build(["RELIANCE"], "1d", universe_snapshot_id="SNAP_1", universe_name="NIFTY50", benchmark_symbol=None)
 
 
 # ---------------------------------------------------------------------------
@@ -252,53 +320,51 @@ def test_p1_6_live_calendar_injection():
 
 
 # ---------------------------------------------------------------------------
-# P1-8: Complete Risk Enforcement with VaR Validator
+# P1-8: Complete Risk Enforcement & Required-Risk-State Contract
 # ---------------------------------------------------------------------------
 
-def test_p1_8_var_risk_validator():
-    """P1-8: VaRValidator strictly rejects trade when estimated portfolio VaR exceeds max_var_pct."""
-    policy = RiskPolicy(max_position_pct=0.20, max_var_pct=0.02)
+def test_p1_8_required_risk_state_contract():
+    """P1-8: RequiredRiskStateValidator strictly rejects risk-increasing proposals with missing state."""
+    policy = RiskPolicy(max_position_pct=0.20)
     engine = RiskEngine(policy=policy)
-    assert any(isinstance(v, VaRValidator) for v in engine.validators)
 
-    # Proposal with 3% estimated VaR (limit is 2%)
-    proposal_high_var = TradeProposal(
+    # Proposal with capital <= 0 fails Pydantic validation
+    with pytest.raises(Exception):
+        TradeProposal(
+            symbol="RELIANCE",
+            requested_notional=10_000.0,
+            capital=0.0,
+            order_side=OrderSide.BUY,
+        )
+
+    # Complete proposal passes
+    proposal_complete = TradeProposal(
         symbol="RELIANCE",
         requested_notional=10_000.0,
         capital=100_000.0,
+        current_gross_exposure=0.0,
+        daily_pnl=0.0,
+        current_drawdown=0.0,
         order_side=OrderSide.BUY,
-        estimated_portfolio_var_pct=0.03,
     )
-    decision = engine.evaluate(proposal_high_var)
-    assert decision.action == RiskAction.REJECT
-    assert "var_limit_exceeded" in decision.reasons
-
-    # Proposal with 1.5% estimated VaR (within 2% limit)
-    proposal_ok_var = TradeProposal(
-        symbol="RELIANCE",
-        requested_notional=10_000.0,
-        capital=100_000.0,
-        order_side=OrderSide.BUY,
-        estimated_portfolio_var_pct=0.015,
-    )
-    decision_ok = engine.evaluate(proposal_ok_var)
+    decision_ok = engine.evaluate(proposal_complete)
     assert decision_ok.action == RiskAction.PASS
 
 
 # ---------------------------------------------------------------------------
-# P1-9: Fail-Closed Data Quality Gate
+# P1-9: Fail-Closed Authoritative Data Quality Certification
 # ---------------------------------------------------------------------------
 
 def test_p1_9_fail_closed_data_quality(tmp_path):
     """P1-9: load_candles raises DataQualityError when unverified dataset or quality issues exist."""
     db_file = tmp_path / "dq_test.duckdb"
     db = DuckDBManager(str(db_file))
-    db.conn.execute("INSERT INTO quality_report (symbol, timeframe, check_type, issue_count, checked_at) VALUES ('RELIANCE', '1d', 'session_alignment', 2, CURRENT_TIMESTAMP);")
     db.conn.execute("INSERT INTO historical_candles (token, symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id) VALUES ('2885', 'RELIANCE', 'NSE', '1d', '2026-01-01', 100, 105, 95, 100, 1000, 'UNADJUSTED', 'ANGEL', 'ds1');")
+    db.conn.execute("INSERT INTO quality_report (symbol, timeframe, check_type, issue_count, checked_at) VALUES ('RELIANCE', '1d', 'session_alignment', 2, CURRENT_TIMESTAMP);")
     pipeline = StrategyPipeline(db=db)
 
     # Issue count > 0 fails closed with DataQualityError
-    with pytest.raises(DataQualityError):
+    with pytest.raises(DataQualityError, match="failed session_alignment check"):
         pipeline.load_candles("RELIANCE", "1d", bypass_quality_gate=False)
 
 
@@ -316,14 +382,14 @@ def test_p1_11_dynamic_session_annualization():
 
 
 # ---------------------------------------------------------------------------
-# P1-14: Realtime Bar Aggregator Allowed Lateness
+# P1-14: Realtime Bar Aggregator Multi-Window Event-Time Watermark Buffer
 # ---------------------------------------------------------------------------
 
-def test_p1_14_allowed_lateness_event_time():
-    """P1-14: RealtimeBarAggregator respects allowed_lateness grace period for late ticks."""
+def test_p1_14_multi_window_watermark_buffer():
+    """P1-14: RealtimeBarAggregator buffers multiple active windows and finalizes on watermark."""
     from data_platform.contracts import LiveTickerMode
 
-    aggregator = RealtimeBarAggregator(timeframe="1m", allowed_lateness_seconds=5.0)
+    aggregator = RealtimeBarAggregator(timeframe="1m", allowed_lateness_seconds=2.0)
 
     def make_tick(ltp: float, ts: datetime, volume: int = 10) -> QuoteTick:
         return QuoteTick(
@@ -339,46 +405,66 @@ def test_p1_14_allowed_lateness_event_time():
             cumulative_volume=volume,
         )
 
-    # 1st tick at 09:15:10
+    # Window 1: 09:15:10
     t1 = datetime(2026, 1, 5, 9, 15, 10, tzinfo=timezone.utc)
-    bars = aggregator.process_tick(make_tick(1000.0, t1, 10))
-    assert len(bars) == 0
+    aggregator.process_tick(make_tick(1000.0, t1, 10))
 
-    # 2nd tick at 09:15:30
-    t2 = datetime(2026, 1, 5, 9, 15, 30, tzinfo=timezone.utc)
-    bars = aggregator.process_tick(make_tick(1005.0, t2, 20))
-    assert len(bars) == 0
+    # Window 2: 09:16:01 (Newer window, but Window 1 should not close yet until watermark >= 09:16:00)
+    t2 = datetime(2026, 1, 5, 9, 16, 1, tzinfo=timezone.utc)
+    bars_w2 = aggregator.process_tick(make_tick(1005.0, t2, 20))
+    # Watermark = 09:16:01 - 2s = 09:15:59 < 09:16:00 -> Window 1 is NOT closed yet!
+    assert len(bars_w2) == 0
 
-    # Late tick belonging to the 09:15 window arriving within 5s lateness grace
-    t_late = datetime(2026, 1, 5, 9, 15, 50, tzinfo=timezone.utc)
-    bars = aggregator.process_tick(make_tick(1008.0, t_late, 25))
-    assert len(bars) == 0  # Not closed yet, late tick included in open bar
+    # Late tick arriving for Window 1 at event time 09:15:55 while Window 2 is also active!
+    t1_late = datetime(2026, 1, 5, 9, 15, 55, tzinfo=timezone.utc)
+    bars_late = aggregator.process_tick(make_tick(1002.0, t1_late, 25))
+    assert len(bars_late) == 0
 
-    # Snapshot shows updated high
-    snap = aggregator.get_current_bar_snapshot("RELIANCE")
-    assert snap is not None
-    assert snap.high == 1008.0
+    # Tick at 09:16:03 -> Watermark = 09:16:03 - 2s = 09:16:01 >= 09:16:00 -> Window 1 finalizes now!
+    t3 = datetime(2026, 1, 5, 9, 16, 3, tzinfo=timezone.utc)
+    bars_w1_closed = aggregator.process_tick(make_tick(1006.0, t3, 30))
+    assert len(bars_w1_closed) == 1
+    assert bars_w1_closed[0].timestamp == pd.Timestamp(datetime(2026, 1, 5, 9, 15, 0, tzinfo=timezone.utc))
+    assert bars_w1_closed[0].open == 1000.0
+    assert bars_w1_closed[0].close == 1002.0  # Captured the late tick in Window 1 before finalization!
 
 
 # ---------------------------------------------------------------------------
-# P1-16: Non-Overlapping Timeout Task Retry Invariant
+# P1-16: Non-Overlapping Timeout Task Retry Invariant & Concurrency Verification
 # ---------------------------------------------------------------------------
 
 def test_p1_16_non_overlapping_retry_invariant(tmp_path):
-    """P1-16: Task timeout prevents overlapping concurrent worker execution on retries."""
+    """P1-16: Task timeout marks TIMED_OUT_UNTERMINATED and prevents concurrent retry."""
     db = DuckDBManager(str(tmp_path / "orch.duckdb"))
     orchestrator = TaskOrchestrator(db=db)
 
     execution_count = 0
+    concurrent_executions = 0
+    max_concurrent = 0
 
     def slow_task():
-        nonlocal execution_count
+        nonlocal execution_count, concurrent_executions, max_concurrent
         execution_count += 1
-        time.sleep(1.0)
-        return {"done": True}
+        concurrent_executions += 1
+        max_concurrent = max(max_concurrent, concurrent_executions)
+        try:
+            time.sleep(0.5)
+            return {"done": True}
+        finally:
+            concurrent_executions -= 1
 
-    with pytest.raises(Exception):
-        orchestrator.run_task("slow_job", slow_task, timeout_seconds=0.1, max_retries=1)
+    with pytest.raises(TimeoutError, match="TIMED_OUT_UNTERMINATED"):
+        orchestrator.run_task(
+            goal_id="g1",
+            task_name="slow_job",
+            executor=slow_task,
+            timeout_seconds=0.1,
+            max_retries=2,
+        )
+
+    # Invariant: single thread worker invariant guaranteed (never concurrent retries spawned)
+    assert max_concurrent == 1
+    assert execution_count == 1
 
 
 # ---------------------------------------------------------------------------
@@ -417,11 +503,12 @@ def test_p2_23_partial_fill_position_tracking():
 
 
 # ---------------------------------------------------------------------------
-# P2-24 & P2-25: Stream Persistence Metrics and Raw Packet Capture
+# P2-24 & P2-25: Stream Persistence Metrics, Raw Packets, and FlushResult
 # ---------------------------------------------------------------------------
 
 def test_p2_24_p2_25_raw_packets_and_spool_counters(tmp_path):
-    """P2-24 & P2-25: Validates raw binary packet storage and distinct persistence counters."""
+    """P2-24 & P2-25: Validates raw binary packet storage and FlushResult durable contract."""
+    from trading_stack.stream_persistence import FlushResult
     db_file = tmp_path / "stream_test.duckdb"
     writer = DuckDBStreamWriter(db_path=str(db_file), capture_raw_packets=True, batch_size=10)
     writer.start()

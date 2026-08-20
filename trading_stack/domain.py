@@ -29,6 +29,13 @@ class StrategyScope(str, Enum):
     CROSS_SECTIONAL = "CROSS_SECTIONAL"
 
 
+class PaperExecutionMode(str, Enum):
+    """Execution chronology contract for forward paper trading."""
+
+    EOD_BATCH = "EOD_BATCH"
+    TRUE_NEXT_OPEN = "TRUE_NEXT_OPEN"
+
+
 @dataclass(frozen=True)
 class StrategyMetadata:
     """Validated strategy research and promotion metadata."""

@@ -14,8 +14,16 @@ from loguru import logger
 
 from trading_stack.backtest import _compute_metrics
 from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
-from trading_stack.datasets import ResearchDataset
-from trading_stack.domain import AssetClass, OrderSide, OrderStatus, OrderType, StrategyRun, StrategyScope, TimeInForce
+from trading_stack.domain import (
+    AssetClass,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    PaperExecutionMode,
+    StrategyRun,
+    StrategyScope,
+    TimeInForce,
+)
 
 
 def equal_weight_targets(signals: pd.DataFrame, max_gross_exposure: float = 0.20) -> pd.Series:
@@ -255,6 +263,7 @@ class PortfolioEventBacktester:
         entry_execution_cost_pools: dict[str, float],
         last_prices: dict[str, float],
         mode: str,
+        execution_mode: str = "EOD_BATCH",
     ) -> tuple[float, dict[str, Any]]:
         target_frame = targets.copy()
         target_frame["target_weight"] = target_frame["target_weight"].clip(lower=0, upper=self.max_position_weight)
@@ -284,8 +293,20 @@ class PortfolioEventBacktester:
             if symbol not in day.index:
                 continue
             row = day.loc[symbol]
-            open_price = float(row["open"])
-            target_quantity = np.floor(equity * target_by_symbol.get(symbol, 0.0) / max(open_price, 1e-12))
+            open_tick_missing = False
+            if mode == "paper" and (execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH"):
+                base_price = float(row.get("close") or row.get("price") or row.get("open") or 0.0)
+            elif mode == "paper" and (execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN"):
+                open_tick = row.get("open_tick_price")
+                if open_tick is None or float(open_tick) <= 0:
+                    open_tick_missing = True
+                    base_price = float(row.get("open") or row.get("close") or 1.0)
+                else:
+                    base_price = float(open_tick)
+            else:
+                base_price = float(row.get("open") or row.get("close") or 0.0)
+
+            target_quantity = np.floor(equity * target_by_symbol.get(symbol, 0.0) / max(base_price, 1e-12))
             current_quantity = quantities.get(symbol, 0.0)
             requested_quantity = target_quantity - current_quantity
             if abs(requested_quantity) < 1:
@@ -300,12 +321,16 @@ class PortfolioEventBacktester:
 
             order_id = str(uuid.uuid4())
             reason_row = targets[targets["symbol"].astype(str) == symbol]
-            reason = str(reason_row["reason"].iloc[0]) if not reason_row.empty else "rank_removal"
+            reason = str(reason_row["reason"].iloc[0]) if (not reason_row.empty and "reason" in reason_row.columns) else "rank_removal"
             status = OrderStatus.FILLED
             filled_quantity = requested_abs
             rejection_reason = None
 
-            if pd.isna(lagged_adv) or pd.isna(lagged_traded_value):
+            if open_tick_missing:
+                status = OrderStatus.REJECTED
+                filled_quantity = 0.0
+                rejection_reason = "MISSED_LIVE_OPEN_PRICE"
+            elif pd.isna(lagged_adv) or pd.isna(lagged_traded_value):
                 status = OrderStatus.REJECTED
                 filled_quantity = 0.0
                 rejection_reason = "INSUFFICIENT_HISTORY_FOR_CAPACITY"
@@ -324,7 +349,7 @@ class PortfolioEventBacktester:
                 elif filled_quantity < requested_abs:
                     status = OrderStatus.PARTIALLY_FILLED
             participation = filled_quantity / max(lagged_adv, 1.0) if not pd.isna(lagged_adv) else 0.0
-            execution_price = effective_schedule.execution_price(open_price, side, participation) if filled_quantity > 0 else open_price
+            execution_price = effective_schedule.execution_price(base_price, side, participation) if filled_quantity > 0 else base_price
             notional = filled_quantity * execution_price
             breakdown = effective_schedule.calculate(notional, side, participation) if filled_quantity > 0 else None
             if side == OrderSide.BUY and filled_quantity > 0:
@@ -333,7 +358,7 @@ class PortfolioEventBacktester:
                 if affordable < filled_quantity:
                     filled_quantity = affordable
                     participation = filled_quantity / max(lagged_adv, 1.0)
-                    execution_price = effective_schedule.execution_price(open_price, side, participation)
+                    execution_price = effective_schedule.execution_price(base_price, side, participation)
                     notional = filled_quantity * execution_price
                     breakdown = effective_schedule.calculate(notional, side, participation)
                     status = OrderStatus.PARTIALLY_FILLED if filled_quantity > 0 else OrderStatus.REJECTED
@@ -443,7 +468,8 @@ class PortfolioEventBacktester:
             "orders": orders, "fills": fills, "costs": costs, "attribution": attribution,
             "round_trips": round_trips,
             "rebalance": {
-                "rebalance_id": str(uuid.uuid4()), "run_id": run_id, "signal_timestamp": targets["timestamp"].iloc[0],
+                "rebalance_id": str(uuid.uuid4()), "run_id": run_id,
+                "signal_timestamp": targets["timestamp"].iloc[0] if (not targets.empty and "timestamp" in targets.columns) else date,
                 "execution_timestamp": date, "buy_turnover": buy_turnover, "sell_turnover": sell_turnover,
                 "total_turnover": buy_turnover + sell_turnover, "target_count": int((target_frame["target_weight"] > 0).sum()),
                 "replacement_pct": (buy_turnover + sell_turnover) / max(equity, 1e-12),

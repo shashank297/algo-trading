@@ -18,6 +18,7 @@ from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import (
     IndianDeliveryCostSchedule,
     UnexecutableOrderError,
+    get_cost_schedule,
 )
 
 
@@ -57,6 +58,7 @@ class VectorizedBacktester:
         symbol: str | None = None,
         timeframe: str = "1d",
         parameters: dict[str, Any] | None = None,
+        calendar: MarketCalendar | None = None,
     ) -> BacktestResult:
         return _run_backtest(
             strategy=strategy,
@@ -68,6 +70,7 @@ class VectorizedBacktester:
             timeframe=timeframe,
             mode="vectorized",
             parameters=parameters or {},
+            calendar=calendar,
         )
 
 
@@ -89,6 +92,7 @@ class EventDrivenBacktester:
         parameters: dict[str, Any] | None = None,
         result_mode: str = "event-driven",
         max_abs_position: float | None = None,
+        calendar: MarketCalendar | None = None,
     ) -> BacktestResult:
         return _run_backtest(
             strategy=strategy,
@@ -101,6 +105,7 @@ class EventDrivenBacktester:
             mode=result_mode,
             parameters=parameters or {},
             max_abs_position=max_abs_position,
+            calendar=calendar,
         )
 
 
@@ -258,6 +263,7 @@ def _run_backtest(
     mode: str,
     parameters: dict[str, Any],
     max_abs_position: float | None = None,
+    calendar: MarketCalendar | None = None,
 ) -> BacktestResult:
     if bars.empty:
         raise ValueError("Cannot backtest an empty bar frame.")
@@ -314,6 +320,7 @@ def _run_backtest(
             execution_model=execution_model,
             timeframe=timeframe,
             starting_capital=starting_capital,
+            calendar=calendar,
         )
         return BacktestResult(
             run_id=run_id,
@@ -362,6 +369,7 @@ def _run_backtest(
         execution_model=execution_model,
         timeframe=timeframe,
         starting_capital=starting_capital,
+        calendar=calendar,
     )
     return BacktestResult(
         run_id=run_id,
@@ -409,6 +417,8 @@ def _run_event_replay(
 
     def execute(target: float, source_price: float, source_close: float, source_volume: float, fill_time: datetime, requested_at: datetime) -> None:
         nonlocal cash, quantity, cumulative_cost
+        fill_date = fill_time.date() if isinstance(fill_time, datetime) else pd.Timestamp(fill_time).date()
+        effective_schedule = get_cost_schedule(fill_date) if indian_schedule is not None else None
         fill_price_hint = max(float(source_price), 1e-9)
         desired_quantity = target * starting_capital / fill_price_hint
         requested_quantity = desired_quantity - quantity
@@ -419,8 +429,8 @@ def _run_event_replay(
         initial_participation = requested_abs / max(source_volume, 1.0)
         order_id = str(uuid.uuid4())
         try:
-            if indian_schedule is not None:
-                fill_price = indian_schedule.execution_price(fill_price_hint, side, initial_participation)
+            if effective_schedule is not None:
+                fill_price = effective_schedule.execution_price(fill_price_hint, side, initial_participation)
             else:
                 fill_price = _fill_price(fill_price_hint, side, execution_model.slippage_bps + execution_model.spread_bps)
         except UnexecutableOrderError as exc:
@@ -429,7 +439,7 @@ def _run_event_replay(
                 "side": side.value, "quantity": float(requested_abs), "order_type": OrderType.MARKET.value,
                 "time_in_force": TimeInForce.DAY.value, "status": OrderStatus.REJECTED.value,
                 "requested_at": requested_at, "filled_at": None, "limit_price": None, "stop_price": None,
-                "average_fill_price": None, "slippage_bps": indian_schedule.slippage_bps if indian_schedule else 0.0, "fees": 0.0,
+                "average_fill_price": None, "slippage_bps": effective_schedule.slippage_bps if effective_schedule else 0.0, "fees": 0.0,
                 "metadata_json": json.dumps({"mode": mode, "rejection_reason": exc.reason_code, "estimated_drag_bps": exc.estimated_drag_bps}),
             })
             return
@@ -438,20 +448,20 @@ def _run_event_replay(
         requested_quantity = desired_quantity - quantity
         requested_abs = abs(requested_quantity)
         filled_quantity = requested_abs
-        if indian_schedule is not None:
-            if source_close * source_volume < indian_schedule.minimum_daily_traded_value:
+        if effective_schedule is not None:
+            if source_close * source_volume < effective_schedule.minimum_daily_traded_value:
                 orders.append({
                     "order_id": order_id, "run_id": run_id, "symbol": frame.iloc[0].get("symbol", ""),
                     "side": side.value, "quantity": float(requested_abs), "order_type": OrderType.MARKET.value,
                     "time_in_force": TimeInForce.DAY.value, "status": OrderStatus.REJECTED.value,
                     "requested_at": requested_at, "filled_at": None, "limit_price": None, "stop_price": None,
-                    "average_fill_price": None, "slippage_bps": indian_schedule.slippage_bps, "fees": 0.0,
+                    "average_fill_price": None, "slippage_bps": effective_schedule.slippage_bps, "fees": 0.0,
                     "metadata_json": json.dumps({"mode": mode, "rejection_reason": "LIQUIDITY_REJECTION"}),
                 })
                 return
             filled_quantity = min(
                 filled_quantity,
-                float(np.floor(source_volume * indian_schedule.max_volume_participation)),
+                float(np.floor(source_volume * effective_schedule.max_volume_participation)),
             )
             if market_asset_class == AssetClass.INDIA_EQUITY:
                 filled_quantity = float(np.floor(filled_quantity))
@@ -460,20 +470,20 @@ def _run_event_replay(
             if market_asset_class == AssetClass.INDIA_EQUITY:
                 filled_quantity = float(np.floor(filled_quantity))
         participation = filled_quantity / max(source_volume, 1.0)
-        if indian_schedule is not None:
+        if effective_schedule is not None:
             try:
-                fill_price = indian_schedule.execution_price(fill_price_hint, side, participation)
+                fill_price = effective_schedule.execution_price(fill_price_hint, side, participation)
             except UnexecutableOrderError as exc:
                 orders.append({
                     "order_id": order_id, "run_id": run_id, "symbol": frame.iloc[0].get("symbol", ""),
                     "side": side.value, "quantity": float(requested_abs), "order_type": OrderType.MARKET.value,
                     "time_in_force": TimeInForce.DAY.value, "status": OrderStatus.REJECTED.value,
                     "requested_at": requested_at, "filled_at": None, "limit_price": None, "stop_price": None,
-                    "average_fill_price": None, "slippage_bps": indian_schedule.slippage_bps, "fees": 0.0,
+                    "average_fill_price": None, "slippage_bps": effective_schedule.slippage_bps, "fees": 0.0,
                     "metadata_json": json.dumps({"mode": mode, "rejection_reason": exc.reason_code, "estimated_drag_bps": exc.estimated_drag_bps}),
                 })
                 return
-            breakdown = indian_schedule.calculate(filled_quantity * fill_price, side, participation)
+            breakdown = effective_schedule.calculate(filled_quantity * fill_price, side, participation)
             fee = breakdown.statutory_and_broker_fees
             cost_components = {**asdict(breakdown), "total_cost": breakdown.total}
         else:
@@ -486,20 +496,20 @@ def _run_event_replay(
                 affordable = float(np.floor(affordable))
             filled_quantity = min(filled_quantity, affordable)
         if filled_quantity <= 0:
-            if indian_schedule is not None:
+            if effective_schedule is not None:
                 orders.append({
                     "order_id": order_id, "run_id": run_id, "symbol": frame.iloc[0].get("symbol", ""),
                     "side": side.value, "quantity": float(requested_abs), "order_type": OrderType.MARKET.value,
                     "time_in_force": TimeInForce.DAY.value, "status": OrderStatus.REJECTED.value,
                     "requested_at": requested_at, "filled_at": None, "limit_price": None, "stop_price": None,
-                    "average_fill_price": None, "slippage_bps": indian_schedule.slippage_bps, "fees": 0.0,
+                    "average_fill_price": None, "slippage_bps": effective_schedule.slippage_bps, "fees": 0.0,
                     "metadata_json": json.dumps({"mode": mode, "rejection_reason": "VOLUME_OR_CASH_REJECTION"}),
                 })
             return
-        if indian_schedule is not None:
+        if effective_schedule is not None:
             participation = filled_quantity / max(source_volume, 1.0)
-            fill_price = indian_schedule.execution_price(fill_price_hint, side, participation)
-            breakdown = indian_schedule.calculate(filled_quantity * fill_price, side, participation)
+            fill_price = effective_schedule.execution_price(fill_price_hint, side, participation)
+            breakdown = effective_schedule.calculate(filled_quantity * fill_price, side, participation)
             fee = breakdown.statutory_and_broker_fees
             cost_components = {**asdict(breakdown), "total_cost": breakdown.total}
         else:
@@ -513,16 +523,16 @@ def _run_event_replay(
             "time_in_force": TimeInForce.DAY.value, "status": status.value,
             "requested_at": requested_at, "filled_at": fill_time, "limit_price": None,
             "stop_price": None, "average_fill_price": fill_price,
-            "slippage_bps": indian_schedule.slippage_bps if indian_schedule is not None else execution_model.slippage_bps, "fees": fee,
-            "metadata_json": json.dumps({"mode": mode, "target_position": target, "cost_components": cost_components}),
+            "slippage_bps": effective_schedule.slippage_bps if effective_schedule is not None else execution_model.slippage_bps, "fees": fee,
+            "metadata_json": json.dumps({"mode": mode, "target_position": target, "cost_schedule_version": getattr(effective_schedule, "version", "LEGACY"), "cost_components": cost_components}),
         })
         fills.append({
             "fill_id": str(uuid.uuid4()), "order_id": order_id, "run_id": run_id,
             "symbol": frame.iloc[0].get("symbol", ""), "timestamp": fill_time,
             "quantity": float(filled_quantity), "price": float(fill_price), "side": side.value,
             "fill_type": "PAPER" if mode == "paper" else "BACKTEST", "fees": float(fee),
-            "slippage_bps": indian_schedule.slippage_bps if indian_schedule is not None else execution_model.slippage_bps,
-            "metadata_json": json.dumps({"mode": mode, "cost_components": cost_components}),
+            "slippage_bps": effective_schedule.slippage_bps if effective_schedule is not None else execution_model.slippage_bps,
+            "metadata_json": json.dumps({"mode": mode, "cost_schedule_version": getattr(effective_schedule, "version", "LEGACY"), "cost_components": cost_components}),
         })
         signed_fill = filled_quantity if side == OrderSide.BUY else -filled_quantity
         cash -= signed_fill * fill_price + fee
@@ -663,10 +673,11 @@ def _compute_metrics(
     execution_model: ExecutionModel,
     timeframe: str,
     starting_capital: float,
+    calendar: MarketCalendar | None = None,
 ) -> BacktestMetrics:
     total_return = float(equity_curve["equity"].iloc[-1] / starting_capital - 1.0)
-    cagr = _annualized_return(equity_curve["equity"], timeframe, starting_capital)
-    sharpe = _sharpe_ratio(net_returns, timeframe)
+    cagr = _annualized_return(equity_curve["equity"], timeframe, starting_capital, calendar=calendar)
+    sharpe = _sharpe_ratio(net_returns, timeframe, calendar=calendar)
     max_drawdown = float(equity_curve["drawdown"].min())
     trade_pnls = _completed_trade_pnls(fills)
     trade_count = len(trade_pnls)
@@ -694,9 +705,9 @@ def _compute_metrics(
     return BacktestMetrics(
         total_return=total_return,
         cagr=cagr,
-        volatility=float(net_returns.std(ddof=0) * np.sqrt(_annualization_factor(timeframe))),
+        volatility=float(net_returns.std(ddof=0) * np.sqrt(_annualization_factor(timeframe, calendar=calendar))),
         sharpe=sharpe,
-        sortino=_sortino_ratio(net_returns, timeframe),
+        sortino=_sortino_ratio(net_returns, timeframe, calendar=calendar),
         calmar=float(cagr / abs(max_drawdown)) if max_drawdown < 0 else 0.0,
         max_drawdown=max_drawdown,
         max_drawdown_duration=_max_drawdown_duration(equity_curve["drawdown"]),
@@ -718,11 +729,11 @@ def _compute_metrics(
     )
 
 
-def _annualized_return(equity: pd.Series, timeframe: str, starting_capital: float) -> float:
+def _annualized_return(equity: pd.Series, timeframe: str, starting_capital: float, calendar: MarketCalendar | None = None) -> float:
     periods = len(equity)
     if periods <= 1:
         return 0.0
-    factor = _annualization_factor(timeframe)
+    factor = _annualization_factor(timeframe, calendar=calendar)
     years = periods / factor if factor > 0 else 0.0
     if years <= 0:
         return 0.0
@@ -732,18 +743,18 @@ def _annualized_return(equity: pd.Series, timeframe: str, starting_capital: floa
     return float((ending_value / starting_capital) ** (1 / years) - 1.0)
 
 
-def _sharpe_ratio(returns: pd.Series, timeframe: str) -> float:
+def _sharpe_ratio(returns: pd.Series, timeframe: str, calendar: MarketCalendar | None = None) -> float:
     if returns.std(ddof=0) == 0:
         return 0.0
-    factor = _annualization_factor(timeframe)
+    factor = _annualization_factor(timeframe, calendar=calendar)
     return float((returns.mean() / returns.std(ddof=0)) * np.sqrt(factor))
 
 
-def _sortino_ratio(returns: pd.Series, timeframe: str) -> float:
+def _sortino_ratio(returns: pd.Series, timeframe: str, calendar: MarketCalendar | None = None) -> float:
     downside = returns[returns < 0]
     if downside.empty or downside.std(ddof=0) == 0:
         return 0.0
-    return float((returns.mean() / downside.std(ddof=0)) * np.sqrt(_annualization_factor(timeframe)))
+    return float((returns.mean() / downside.std(ddof=0)) * np.sqrt(_annualization_factor(timeframe, calendar=calendar)))
 
 
 def _profit_factor(returns: pd.Series) -> float:

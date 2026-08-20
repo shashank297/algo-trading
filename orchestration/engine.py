@@ -57,19 +57,17 @@ class TaskOrchestrator:
         for attempt in range(max_retries + 1):
             if active_worker is not None and active_worker.is_alive():
                 # Enforce fail-closed non-overlapping retry invariant
-                active_worker.join(timeout=0.1)
-                if active_worker.is_alive():
-                    err_msg = (
-                        f"Task '{task_name}' timed out and prior worker thread is still executing. "
-                        f"Aborting subsequent retry to prevent concurrent side-effects."
-                    )
-                    self.db.update_research_task(
-                        task_id,
-                        state=TaskState.FAILED.value,
-                        error_message=err_msg,
-                        finished_at=datetime.now(timezone.utc),
-                    )
-                    raise RuntimeError(err_msg)
+                err_msg = (
+                    f"Task '{task_name}' timed out and prior worker thread is still executing. "
+                    f"Aborting subsequent retry to prevent concurrent side-effects."
+                )
+                self.db.update_research_task(
+                    task_id,
+                    state=TaskState.FAILED.value,
+                    error_message=err_msg,
+                    finished_at=datetime.now(timezone.utc),
+                )
+                raise RuntimeError(err_msg)
 
             self.db.update_research_task(
                 task_id,
@@ -77,60 +75,74 @@ class TaskOrchestrator:
                 retry_count=attempt,
                 started_at=datetime.now(timezone.utc),
             )
-            try:
-                output, active_worker = self._execute_with_timeout_and_thread(executor, timeout_seconds)
-                self.db.update_research_task(
-                    task_id,
-                    state=TaskState.SUCCEEDED.value,
-                    output_json=json.dumps(output, default=str, sort_keys=True),
-                    finished_at=datetime.now(timezone.utc),
-                )
-                return task_id, output
-            except Exception as exc:
-                if attempt < max_retries:
-                    self.db.update_research_task(task_id, state=TaskState.RETRYING.value, error_message=str(exc))
-                    continue
-                self.db.update_research_task(
-                    task_id,
-                    state=TaskState.FAILED.value,
-                    error_message=str(exc),
-                    finished_at=datetime.now(timezone.utc),
-                )
-                raise
+            if timeout_seconds is None:
+                try:
+                    output = executor()
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.SUCCEEDED.value,
+                        output_json=json.dumps(output, default=str, sort_keys=True),
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    return task_id, output
+                except Exception as exc:
+                    if attempt < max_retries:
+                        self.db.update_research_task(task_id, state=TaskState.RETRYING.value, error_message=str(exc))
+                        continue
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.FAILED.value,
+                        error_message=str(exc),
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    raise
+            else:
+                outcomes: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+
+                def run_fn() -> None:
+                    try:
+                        outcomes.put((True, executor()))
+                    except BaseException as exc:
+                        outcomes.put((False, exc))
+
+                active_worker = threading.Thread(target=run_fn, name="bounded-research-task", daemon=True)
+                active_worker.start()
+                try:
+                    succeeded, value = outcomes.get(timeout=timeout_seconds)
+                except queue.Empty as exc:
+                    # Worker thread is still alive and unterminated. Do not retry overlapping thread!
+                    err_msg = (
+                        f"Task '{task_name}' timed out after {timeout_seconds}s and worker thread remains active (TIMED_OUT_UNTERMINATED). "
+                        f"Aborting retry to guarantee single-thread non-overlapping invariant."
+                    )
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.FAILED.value,
+                        error_message=err_msg,
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    raise TimeoutError(err_msg) from exc
+
+                if succeeded:
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.SUCCEEDED.value,
+                        output_json=json.dumps(value, default=str, sort_keys=True),
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    return task_id, value
+                else:
+                    if attempt < max_retries:
+                        self.db.update_research_task(task_id, state=TaskState.RETRYING.value, error_message=str(value))
+                        continue
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.FAILED.value,
+                        error_message=str(value),
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    raise value
         raise RuntimeError("Task retry loop ended unexpectedly.")
-
-    @staticmethod
-    def _execute_with_timeout_and_thread(
-        executor: Callable[[], dict[str, Any]],
-        timeout_seconds: int | None,
-    ) -> tuple[dict[str, Any], threading.Thread | None]:
-        if timeout_seconds is None:
-            return executor(), None
-        outcomes: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
-
-        def run() -> None:
-            try:
-                outcomes.put((True, executor()))
-            except BaseException as exc:
-                outcomes.put((False, exc))
-
-        worker = threading.Thread(target=run, name="bounded-research-task", daemon=True)
-        worker.start()
-        try:
-            succeeded, value = outcomes.get(timeout=timeout_seconds)
-        except queue.Empty as exc:
-            raise TimeoutError(f"Task exceeded {timeout_seconds} seconds.") from exc
-        if succeeded:
-            return value, worker
-        raise value
-
-    @staticmethod
-    def _execute_with_timeout(
-        executor: Callable[[], dict[str, Any]],
-        timeout_seconds: int | None,
-    ) -> dict[str, Any]:
-        output, _ = TaskOrchestrator._execute_with_timeout_and_thread(executor, timeout_seconds)
-        return output
 
     def approve_task(self, task_id: str) -> None:
         """Move an approval-gated task into the runnable state."""

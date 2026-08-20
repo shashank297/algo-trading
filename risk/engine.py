@@ -9,6 +9,7 @@ from risk.validators import (
     MaxPositionsValidator,
     PortfolioExposureValidator,
     PositionSizeValidator,
+    RequiredRiskStateValidator,
     RiskValidator,
     SectorExposureValidator,
     TurnoverLiquidityValidator,
@@ -22,6 +23,7 @@ class RiskEngine:
     def __init__(self, policy: RiskPolicy | None = None) -> None:
         self.policy = policy or RiskPolicy()
         self.validators: list[RiskValidator] = [
+            RequiredRiskStateValidator(),
             DailyLossValidator(),
             DrawdownValidator(),
             SectorExposureValidator(),

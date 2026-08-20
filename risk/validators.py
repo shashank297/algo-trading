@@ -15,6 +15,30 @@ class RiskValidator(abc.ABC):
         pass
 
 
+class RequiredRiskStateValidator(RiskValidator):
+    """Fail-closed check that mandatory risk state is provided for risk-increasing orders."""
+
+    def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
+        if proposal.is_pure_risk_reduction:
+            return proposal.requested_notional, []
+
+        missing_fields: list[str] = []
+        if proposal.capital is None or proposal.capital <= 0:
+            missing_fields.append("capital")
+        if proposal.current_gross_exposure is None:
+            missing_fields.append("current_gross_exposure")
+        if proposal.daily_pnl is None:
+            missing_fields.append("daily_pnl")
+        if proposal.current_drawdown is None:
+            missing_fields.append("current_drawdown")
+
+        if missing_fields:
+            reasons = [f"MISSING_RISK_STATE:{field}" for field in missing_fields]
+            return 0.0, reasons
+
+        return proposal.requested_notional, []
+
+
 class PositionSizeValidator(RiskValidator):
     def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
         if proposal.is_pure_risk_reduction:

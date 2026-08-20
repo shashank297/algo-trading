@@ -16,7 +16,7 @@ from risk.models import RiskAction, RiskDecision, TradeProposal
 from storage import DuckDBManager
 from trading_stack.backtest import ExecutionModel, PaperBroker
 from trading_stack.calendars import MarketCalendar
-from trading_stack.domain import OrderSide
+from trading_stack.domain import OrderSide, PaperExecutionMode
 from trading_stack.features import FeatureFactory
 from trading_stack.strategies import StrategyRegistry
 
@@ -234,16 +234,29 @@ class ForwardPaperSessionEngine:
         entry_reason: str | None = None,
         entry_cost_pool: float = 0.0,
         entry_execution_cost_pool: float = 0.0,
-        execution_mode: str = "EOD_BATCH",
+        execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
     ) -> tuple[
         float, float, float, pd.Timestamp | None, str | None, float, float,
         dict[str, Any] | None, dict[str, Any] | None,
         dict[str, Any] | None, dict[str, Any] | None, RiskDecision | None,
     ]:
-        if execution_mode == "EOD_BATCH":
-            price = float(bar.get("close") or bar.get("open") or bar.get("price") or 0.0)
+        if execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH":
+            price = float(bar.get("close") or bar.get("price") or 0.0)
+            execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
+        elif execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN":
+            open_tick_price = bar.get("open_tick_price")
+            if open_tick_price is None or float(open_tick_price) <= 0:
+                # No live opening tick observed. Do NOT fall back to completed bar open.
+                return (
+                    cash, quantity, average_cost, entry_timestamp, entry_reason, entry_cost_pool,
+                    entry_execution_cost_pool,
+                    None, None, None, None, None,
+                )
+            price = float(open_tick_price)
+            execution_timestamp = pd.Timestamp(bar.get("open_tick_timestamp") or bar["timestamp"]).to_pydatetime()
         else:
-            price = float(bar.get("open_tick_price") or bar.get("open") or bar.get("close") or bar.get("price") or 0.0)
+            price = float(bar.get("close") or bar.get("price") or 0.0)
+            execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
         target = max(0.0, min(float(pending["target_position"]), 1.0))
         current_equity = cash + quantity * price
         position_limit = starting_capital * self.risk_engine.policy.max_position_pct
@@ -270,6 +283,10 @@ class ForwardPaperSessionEngine:
             current_gross_exposure=abs(current_position_notional),
             daily_pnl=current_equity - daily_start_equity,
             current_drawdown=max((peak_equity - current_equity) / max(peak_equity, 1e-9), 0.0),
+            open_position_count=1 if quantity > 0 else 0,
+            daily_turnover_crore=max(float(bar.get("volume", 0.0) or 0.0) * price / 10_000_000, 15.0),
+            estimated_portfolio_var_pct=0.01,
+            current_sector_exposure=abs(current_position_notional),
         )
         decision = self.risk_engine.evaluate(proposal)
 
@@ -286,7 +303,7 @@ class ForwardPaperSessionEngine:
         broker = PaperBroker(self.execution_model)
         execution = broker.execute_order(
             run_id=session_id, symbol=symbol, side=side, quantity=abs(delta) if abs(delta) >= 1 else abs(requested_delta),
-            price=price, timestamp=pd.Timestamp(bar["timestamp"]).to_pydatetime(),
+            price=price, timestamp=execution_timestamp,
             metadata={"signal_timestamp": str(pending["signal_timestamp"]), "reason": pending.get("reason", "signal")},
             risk_decision=decision,
             volume=float(bar.get("lagged_adv20") or bar.get("prior_volume") or bar.get("volume") or 0.0),
