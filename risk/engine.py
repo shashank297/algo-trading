@@ -12,6 +12,7 @@ from risk.validators import (
     RiskValidator,
     SectorExposureValidator,
     TurnoverLiquidityValidator,
+    VaRValidator,
 )
 
 
@@ -28,6 +29,7 @@ class RiskEngine:
             PositionSizeValidator(),
             MaxPositionsValidator(),
             TurnoverLiquidityValidator(),
+            VaRValidator(),
         ]
 
 

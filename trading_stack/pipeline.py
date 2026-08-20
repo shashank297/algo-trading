@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 from typing import Any
 
+from loguru import logger
 import pandas as pd
 
 from data_platform.adjustments import PriceAdjustmentEngine
@@ -63,24 +64,41 @@ class StrategyPipeline:
 
         if not bypass_quality_gate:
             try:
-                quality = self.db.conn.execute(
+                quality_rows = self.db.conn.execute(
                     """
-                    SELECT issue_count FROM quality_report 
-                    WHERE symbol = ? AND timeframe = ? AND check_type = 'session_alignment'
-                    ORDER BY checked_at DESC LIMIT 1
+                    SELECT check_type, issue_count FROM quality_report 
+                    WHERE symbol = ? AND timeframe = ?
+                    ORDER BY checked_at DESC
+                    """,
+                    [symbol, timeframe],
+                ).fetchall()
+                for q_type, count in quality_rows:
+                    if count and count > 0:
+                        raise DataQualityError(
+                            f"DataQualityError: {symbol} {timeframe} failed {q_type} check with {count} issues. "
+                            f"Resolve data quality or pass bypass_quality_gate=True."
+                        )
+                # Check canonical verification status in market_datasets
+                ds_status = self.db.conn.execute(
+                    """
+                    SELECT status, lifecycle_status FROM market_datasets
+                    WHERE canonical_symbol = ? AND timeframe = ?
+                    ORDER BY retrieved_at DESC LIMIT 1
                     """,
                     [symbol, timeframe],
                 ).fetchone()
-                if quality and quality[0] > 0:
+                if ds_status and (ds_status[0] != "VERIFIED" or ds_status[1] != "CANONICAL_PROMOTED"):
                     raise DataQualityError(
-                        f"DataQualityError: {symbol} {timeframe} has {quality[0]} out-of-session bars. "
-                        f"Run refresh_session_quality.py or pass bypass_quality_gate=True."
+                        f"DataQualityError: Dataset for {symbol} {timeframe} has status={ds_status[0]}, "
+                        f"lifecycle={ds_status[1]}; only VERIFIED / CANONICAL_PROMOTED datasets may be used."
                     )
             except Exception as e:
                 if isinstance(e, DataQualityError):
                     raise
-                # Table might not exist yet, ignore
-                pass
+                logger.error("Data quality verification query failed for {}: {}", symbol, e)
+                raise DataQualityError(
+                    f"Data quality certification failed for {symbol} {timeframe}: {e}. Failing closed."
+                ) from e
 
         frame = self.db.conn.execute(
             """

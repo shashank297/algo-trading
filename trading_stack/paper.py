@@ -66,6 +66,7 @@ class ForwardPaperSessionEngine:
         parameters: dict[str, Any] | None = None,
         starting_capital: float = 100_000.0,
         as_of: datetime | None = None,
+        execution_mode: str = "EOD_BATCH",
     ) -> ForwardPaperResult:
         parameters = parameters or {}
         as_of = as_of or datetime.now(timezone.utc)
@@ -164,6 +165,7 @@ class ForwardPaperSessionEngine:
                     session_id, symbol, bar, pending, cash, quantity, average_cost, starting_capital,
                     daily_start_equity, peak_equity, entry_timestamp, entry_reason,
                     entry_cost_pool, entry_execution_cost_pool,
+                    execution_mode=execution_mode,
                 )
                 if order:
                     all_orders.append(order)
@@ -205,7 +207,7 @@ class ForwardPaperSessionEngine:
             cost_rows = self._paper_cost_rows(session_id, all_fills)
             if cost_rows:
                 self.db._replace_rows("fill_cost_components", cost_rows)
-            self._persist_run_state(session_id, strategy_name, symbol, timeframe, parameters, pd.Timestamp(new_bars["timestamp"].max()), equity, quantity)
+            self._persist_run_state(session_id, strategy_name, symbol, timeframe, parameters, pd.Timestamp(new_bars["timestamp"].max()), equity, quantity, starting_capital=starting_capital)
             summary = self._reconcile(
                 session_id, as_of, all_orders, all_fills, equity - starting_capital,
                 "forward-only paper reconciliation",
@@ -232,13 +234,16 @@ class ForwardPaperSessionEngine:
         entry_reason: str | None = None,
         entry_cost_pool: float = 0.0,
         entry_execution_cost_pool: float = 0.0,
+        execution_mode: str = "EOD_BATCH",
     ) -> tuple[
         float, float, float, pd.Timestamp | None, str | None, float, float,
         dict[str, Any] | None, dict[str, Any] | None,
         dict[str, Any] | None, dict[str, Any] | None, RiskDecision | None,
     ]:
-
-        price = float(bar["open"])
+        if execution_mode == "EOD_BATCH":
+            price = float(bar.get("close") or bar.get("open") or bar.get("price") or 0.0)
+        else:
+            price = float(bar.get("open_tick_price") or bar.get("open") or bar.get("close") or bar.get("price") or 0.0)
         target = max(0.0, min(float(pending["target_position"]), 1.0))
         current_equity = cash + quantity * price
         position_limit = starting_capital * self.risk_engine.policy.max_position_pct
@@ -282,7 +287,7 @@ class ForwardPaperSessionEngine:
         execution = broker.execute_order(
             run_id=session_id, symbol=symbol, side=side, quantity=abs(delta) if abs(delta) >= 1 else abs(requested_delta),
             price=price, timestamp=pd.Timestamp(bar["timestamp"]).to_pydatetime(),
-            metadata={"signal_timestamp": str(pending["signal_timestamp"]), "reason": pending["reason"]},
+            metadata={"signal_timestamp": str(pending["signal_timestamp"]), "reason": pending.get("reason", "signal")},
             risk_decision=decision,
             volume=float(bar.get("lagged_adv20") or bar.get("prior_volume") or bar.get("volume") or 0.0),
             close_price=float(bar.get("prior_close") or bar.get("open") or price),
@@ -316,7 +321,7 @@ class ForwardPaperSessionEngine:
         if side == OrderSide.BUY:
             if quantity <= 0:
                 entry_timestamp = pd.Timestamp(fill["timestamp"])
-                entry_reason = str(pending["reason"])
+                entry_reason = str(pending.get("reason", "signal"))
             old_cost = quantity * average_cost
             quantity += fill_quantity
             cash -= fill_quantity * fill_price + fees
@@ -348,7 +353,7 @@ class ForwardPaperSessionEngine:
                     "net_pnl": gross_pnl - allocated_entry_cost - total_cost,
                     "holding_period_days": holding_days,
                     "entry_reason": prior_entry_reason or "ENTRY",
-                    "exit_reason": str(pending["reason"]),
+                    "exit_reason": str(pending.get("reason", "signal")),
                     "exit_classification": "SIGNAL_TARGET_CHANGE",
                 }
             if quantity == 0:
@@ -359,7 +364,7 @@ class ForwardPaperSessionEngine:
                 entry_execution_cost_pool = 0.0
         evidence = {
             "run_id": session_id, "timestamp": fill["timestamp"], "symbol": symbol,
-            "side": side.value, "reason": str(pending["reason"]),
+            "side": side.value, "reason": str(pending.get("reason", "signal")),
             "realized_pnl": gross_pnl - total_cost, "cost": total_cost, "target_weight": target,
             "quantity": fill_quantity, "price": fill_price,
             "average_cost": prior_average_cost if side == OrderSide.SELL else average_cost,
@@ -444,6 +449,7 @@ class ForwardPaperSessionEngine:
         timestamp: pd.Timestamp,
         equity: float,
         quantity: float,
+        starting_capital: float = 100_000.0,
     ) -> None:
         now = datetime.now(timezone.utc)
         self.db._replace_rows("strategy_runs", [{
@@ -453,6 +459,7 @@ class ForwardPaperSessionEngine:
             "data_hash": hashlib.sha256(str(timestamp).encode()).hexdigest(),
             "status": "ACTIVE", "started_at": now, "finished_at": None,
             "notes": "Forward-only paper session; historical bars were not replayed as orders.",
+            "starting_capital": starting_capital,
         }])
         self.db._replace_rows("strategy_metrics", [
             {"run_id": session_id, "metric_name": "current_equity", "metric_value": equity},

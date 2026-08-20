@@ -35,7 +35,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "market_data.duckdb"
+import yaml
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+CONFIG_PATH = PROJECT_ROOT / "config" / "config.yaml"
+
+
+def _resolve_db_path() -> Path:
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                cfg = yaml.safe_load(f)
+                if cfg and "database" in cfg and "path" in cfg["database"]:
+                    p = Path(cfg["database"]["path"])
+                    return p if p.is_absolute() else PROJECT_ROOT / p
+        except Exception:
+            pass
+    return PROJECT_ROOT / "market_data.duckdb"
+
+
+DB_PATH = _resolve_db_path()
 
 
 def get_db():

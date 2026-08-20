@@ -255,7 +255,9 @@ class SynchronizedPanelBuilder:
             else:
                 panel["pit_eligible"] = True
         except Exception as exc:
-            logger.warning("PIT universe filtering encountered error: {}. Defaulting to snapshot.", exc)
+            logger.error("PIT universe filtering failed for universe {}: {}", universe_name, exc)
+            if universe_name:
+                raise RuntimeError(f"Point-in-time universe lookup failed for '{universe_name}': {exc}. Failing closed to prevent survivorship bias.") from exc
             panel["pit_eligible"] = True
 
         if "benchmark_close" in panel:
@@ -381,5 +383,10 @@ class SynchronizedPanelBuilder:
                         mapping[str(candidate)] = str(sector)
             return mapping
         except Exception as exc:
-            logger.warning("Failed to load sector mapping for snapshot {}: {}", snapshot_id, exc)
+            logger.error("Failed to load sector mapping for snapshot {}: {}", snapshot_id, exc)
+            if snapshot_id:
+                raise RuntimeError(
+                    f"Failed to load sector mapping for universe snapshot '{snapshot_id}': {exc}. "
+                    f"Failing closed to prevent unconstrained sector exposure."
+                ) from exc
             return {}

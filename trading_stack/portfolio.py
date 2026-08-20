@@ -13,7 +13,7 @@ import pandas as pd
 from loguru import logger
 
 from trading_stack.backtest import _compute_metrics
-from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.datasets import ResearchDataset
 from trading_stack.domain import AssetClass, OrderSide, OrderStatus, OrderType, StrategyRun, StrategyScope, TimeInForce
 
@@ -94,15 +94,15 @@ class PortfolioEventBacktester:
         signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
         effective_parameters = {**dict(getattr(strategy, "parameters", {})), **(parameters or {})}
         run_id = self._run_id(strategy.name, dataset.data_hash, effective_parameters, mode)
-        panel_causal = panel.copy()
+        panel_causal = panel.copy().sort_values(["symbol", "timestamp"]).reset_index(drop=True)
         panel_causal["lagged_adv20"] = (
-            panel_causal.groupby("symbol")["volume"]
-            .shift(1)
-            .rolling(20, min_periods=1)
-            .mean()
-            .fillna(panel_causal["volume"])
+            panel_causal.groupby("symbol", group_keys=False)["volume"]
+            .apply(lambda s: s.shift(1).rolling(20, min_periods=1).mean())
         )
-        panel_causal["lagged_close"] = panel_causal.groupby("symbol")["close"].shift(1).fillna(panel_causal["open"])
+        panel_causal["lagged_close"] = (
+            panel_causal.groupby("symbol", group_keys=False)["close"]
+            .shift(1)
+        )
         panel_causal["lagged_traded_value"] = panel_causal["lagged_close"] * panel_causal["lagged_adv20"]
 
         day_groups = {
@@ -292,12 +292,11 @@ class PortfolioEventBacktester:
                 continue
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
             requested_abs = abs(requested_quantity)
-            lagged_adv = float(row.get("lagged_adv20", row["volume"]))
-            if pd.isna(lagged_adv) or lagged_adv <= 0:
-                lagged_adv = float(row["volume"])
-            lagged_traded_value = float(row.get("lagged_traded_value", open_price * lagged_adv))
-            if pd.isna(lagged_traded_value) or lagged_traded_value <= 0:
-                lagged_traded_value = open_price * lagged_adv
+            effective_schedule = get_cost_schedule(date)
+            lagged_adv_raw = row.get("lagged_adv20")
+            lagged_adv = float(lagged_adv_raw) if pd.notna(lagged_adv_raw) and float(lagged_adv_raw) > 0 else np.nan
+            lagged_val_raw = row.get("lagged_traded_value")
+            lagged_traded_value = float(lagged_val_raw) if pd.notna(lagged_val_raw) and float(lagged_val_raw) > 0 else np.nan
 
             order_id = str(uuid.uuid4())
             reason_row = targets[targets["symbol"].astype(str) == symbol]
@@ -305,12 +304,17 @@ class PortfolioEventBacktester:
             status = OrderStatus.FILLED
             filled_quantity = requested_abs
             rejection_reason = None
-            if lagged_traded_value < self.cost_schedule.minimum_daily_traded_value:
+
+            if pd.isna(lagged_adv) or pd.isna(lagged_traded_value):
+                status = OrderStatus.REJECTED
+                filled_quantity = 0.0
+                rejection_reason = "INSUFFICIENT_HISTORY_FOR_CAPACITY"
+            elif lagged_traded_value < effective_schedule.minimum_daily_traded_value:
                 status = OrderStatus.REJECTED
                 filled_quantity = 0.0
                 rejection_reason = "LIQUIDITY_REJECTION"
             else:
-                volume_cap = np.floor(lagged_adv * self.cost_schedule.max_volume_participation)
+                volume_cap = np.floor(lagged_adv * effective_schedule.max_volume_participation)
                 filled_quantity = min(filled_quantity, volume_cap)
                 if side == OrderSide.SELL:
                     filled_quantity = min(filled_quantity, current_quantity)
@@ -319,18 +323,19 @@ class PortfolioEventBacktester:
                     rejection_reason = "VOLUME_CAP_REJECTION"
                 elif filled_quantity < requested_abs:
                     status = OrderStatus.PARTIALLY_FILLED
-            participation = filled_quantity / max(lagged_adv, 1.0)
-            execution_price = self.cost_schedule.execution_price(open_price, side, participation)
+            participation = filled_quantity / max(lagged_adv, 1.0) if not pd.isna(lagged_adv) else 0.0
+            execution_price = effective_schedule.execution_price(open_price, side, participation) if filled_quantity > 0 else open_price
             notional = filled_quantity * execution_price
-            breakdown = self.cost_schedule.calculate(notional, side, participation)
+            breakdown = effective_schedule.calculate(notional, side, participation) if filled_quantity > 0 else None
             if side == OrderSide.BUY and filled_quantity > 0:
-                affordable = np.floor(max(cash - breakdown.statutory_and_broker_fees, 0.0) / max(execution_price, 1e-12))
+                fee = breakdown.statutory_and_broker_fees if breakdown else 0.0
+                affordable = np.floor(max(cash - fee, 0.0) / max(execution_price, 1e-12))
                 if affordable < filled_quantity:
                     filled_quantity = affordable
                     participation = filled_quantity / max(lagged_adv, 1.0)
-                    execution_price = self.cost_schedule.execution_price(open_price, side, participation)
+                    execution_price = effective_schedule.execution_price(open_price, side, participation)
                     notional = filled_quantity * execution_price
-                    breakdown = self.cost_schedule.calculate(notional, side, participation)
+                    breakdown = effective_schedule.calculate(notional, side, participation)
                     status = OrderStatus.PARTIALLY_FILLED if filled_quantity > 0 else OrderStatus.REJECTED
                     rejection_reason = "INSUFFICIENT_CASH" if filled_quantity <= 0 else None
             orders.append({

@@ -107,3 +107,14 @@ class TurnoverLiquidityValidator(RiskValidator):
         return proposal.requested_notional, []
 
 
+class VaRValidator(RiskValidator):
+    def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
+        if proposal.is_pure_risk_reduction:
+            return proposal.requested_notional, []
+        if proposal.estimated_portfolio_var_pct is not None and proposal.estimated_portfolio_var_pct > policy.max_var_pct:
+            if proposal.risk_reducing_notional > 0:
+                return proposal.risk_reducing_notional, ["var_limit_exceeded", "RISK_INCREASING_PORTION_REJECTED"]
+            return 0.0, ["var_limit_exceeded"]
+        return proposal.requested_notional, []
+
+

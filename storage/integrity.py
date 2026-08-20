@@ -14,6 +14,12 @@ class IntegrityCheckResult:
     details: str
 
 
+class IntegrityError(RuntimeError):
+    """Raised when one or more database integrity checks fail."""
+
+    pass
+
+
 class DatabaseIntegrityValidator:
     """Runs exhaustive foreign-key and invariant integrity checks across storage tables."""
 
@@ -54,6 +60,15 @@ class DatabaseIntegrityValidator:
                         details=f"Check failed with exception: {exc}",
                     )
                 )
+        return results
+
+    def validate_or_raise(self) -> list[IntegrityCheckResult]:
+        """Execute all forensic relational consistency checks and raise IntegrityError if any fails."""
+        results = self.run_all_checks()
+        failed = [r for r in results if not r.passed]
+        if failed:
+            summary = "; ".join(f"{f.check_name}: {f.details}" for f in failed)
+            raise IntegrityError(f"Database integrity validation failed: {summary}")
         return results
 
     def check_orphaned_strategy_fills(self) -> IntegrityCheckResult:

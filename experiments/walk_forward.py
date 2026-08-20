@@ -68,7 +68,7 @@ class WalkForwardEvaluator:
                     """
                     SELECT f.selected_parameters_json 
                     FROM walk_forward_folds f
-                    JOIN experiment_jobs j ON f.run_id = j.job_key
+                    JOIN experiment_jobs j ON f.run_id = j.run_id
                     WHERE j.strategy_name = ?
                       AND j.strategy_version = ?
                       AND j.parameters_hash = ?

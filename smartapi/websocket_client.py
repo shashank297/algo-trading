@@ -352,6 +352,10 @@ class SmartAPIWebSocketClient:
                 is_gap, is_dup, gap_size = self.metrics.sequence_tracker.inspect_sequence(event.exchange, event.token, seq_num)
                 if is_gap:
                     self.metrics.sequence_gaps_total += gap_size
+                    logger.warning(
+                        "Stream sequence gap detected: exchange={} token={} gap_size={}; stream telemetry updated.",
+                        event.exchange, event.token, gap_size,
+                    )
                 if is_dup:
                     self.metrics.duplicate_packets_total += 1
 

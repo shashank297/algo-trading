@@ -85,6 +85,16 @@ class ForwardPortfolioPaperSessionEngine:
         panel = self._completed_panel(dataset.panel, as_of)
         if panel.empty:
             raise ValueError("No completed synchronized sessions are available for portfolio paper trading.")
+        panel = panel.copy().sort_values(["symbol", "timestamp"]).reset_index(drop=True)
+        panel["lagged_adv20"] = (
+            panel.groupby("symbol", group_keys=False)["volume"]
+            .apply(lambda s: s.shift(1).rolling(20, min_periods=1).mean())
+        )
+        panel["lagged_close"] = (
+            panel.groupby("symbol", group_keys=False)["close"]
+            .shift(1)
+        )
+        panel["lagged_traded_value"] = panel["lagged_close"] * panel["lagged_adv20"]
         signals = strategy.generate_signals(panel).copy()
         signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
         session_id = self._session_id(
@@ -112,7 +122,7 @@ class ForwardPortfolioPaperSessionEngine:
                 self._save_pending(session_id, pending, now)
                 self._persist_run_state(
                     session_id, strategy_name, universe_snapshot_id, timeframe, parameters,
-                    latest_timestamp, starting_capital, 0,
+                    latest_timestamp, starting_capital, 0, starting_capital=starting_capital,
                 )
                 summary = self._reconcile(
                     session_id, as_of, [], [], 0.0,
@@ -217,7 +227,7 @@ class ForwardPortfolioPaperSessionEngine:
             with self.db.transaction():
                 self._persist_run_state(
                     session_id, strategy_name, universe_snapshot_id, timeframe, parameters,
-                    watermark, equity, len(quantities),
+                    watermark, equity, len(quantities), starting_capital=starting_capital,
                 )
                 summary = self._reconcile(session_id, as_of, [], [], equity - starting_capital, "no new eligible session")
             return ForwardPortfolioPaperResult(
@@ -249,7 +259,7 @@ class ForwardPortfolioPaperSessionEngine:
                 self.db.log_risk_decision(decision.storage_payload(run_id=session_id))
             self._persist_run_state(
                 session_id, strategy_name, universe_snapshot_id, timeframe, parameters,
-                final_timestamp, equity, len(quantities),
+                final_timestamp, equity, len(quantities), starting_capital=starting_capital,
             )
             summary = self._reconcile(
                 session_id, as_of, all_orders, all_fills, equity - starting_capital,
@@ -410,6 +420,7 @@ class ForwardPortfolioPaperSessionEngine:
         timestamp: pd.Timestamp,
         equity: float,
         holdings_count: int,
+        starting_capital: float = 100_000.0,
     ) -> None:
         now = datetime.now(timezone.utc)
         self.db._replace_rows("strategy_runs", [{
@@ -419,6 +430,7 @@ class ForwardPortfolioPaperSessionEngine:
             "data_hash": hashlib.sha256(str(timestamp).encode()).hexdigest(), "status": "ACTIVE",
             "started_at": now, "finished_at": None,
             "notes": "Forward-only synchronized paper portfolio; historical orders were not replayed.",
+            "starting_capital": starting_capital,
         }])
         self.db._replace_rows("strategy_metrics", [
             {"run_id": session_id, "metric_name": "current_equity", "metric_value": equity},

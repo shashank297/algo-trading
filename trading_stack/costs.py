@@ -155,6 +155,20 @@ class IndianDeliveryCostSchedule:
 
 DEFAULT_COST_SCHEDULES: tuple[IndianDeliveryCostSchedule, ...] = (
     IndianDeliveryCostSchedule(
+        version="angel-nse-delivery-2010-01",
+        effective_from=date(2010, 1, 1),
+        stt_buy_bps=12.5,
+        stt_sell_bps=12.5,
+        exchange_transaction_bps=0.325,
+    ),
+    IndianDeliveryCostSchedule(
+        version="angel-nse-delivery-2016-06",
+        effective_from=date(2016, 6, 1),
+        stt_buy_bps=10.0,
+        stt_sell_bps=10.0,
+        exchange_transaction_bps=0.325,
+    ),
+    IndianDeliveryCostSchedule(
         version="angel-nse-delivery-2024-10",
         effective_from=date(2024, 10, 1),
         stt_buy_bps=10.0,

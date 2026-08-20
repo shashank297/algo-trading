@@ -107,6 +107,7 @@ CREATE TABLE IF NOT EXISTS strategy_runs (
     started_at TIMESTAMP NOT NULL, -- Run start timestamp
     finished_at TIMESTAMP, -- Run end timestamp
     notes VARCHAR, -- Human-readable notes
+    starting_capital DOUBLE DEFAULT 100000.0, -- Initial cash allocation for the run
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Insert timestamp
     PRIMARY KEY (run_id)
 );
@@ -944,3 +945,5 @@ CREATE TABLE IF NOT EXISTS historical_market_data_quarantine_issues (
     detected_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (quarantine_id, source_row_number, reason_code)
 );
+
+ALTER TABLE strategy_runs ADD COLUMN IF NOT EXISTS starting_capital DOUBLE DEFAULT 100000.0;

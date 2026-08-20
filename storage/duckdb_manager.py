@@ -720,6 +720,8 @@ class DuckDBManager:
         """Persist a completed strategy run and its summary metrics."""
 
         run_df = pd.DataFrame([run_payload])
+        if "starting_capital" not in run_df.columns:
+            run_df["starting_capital"] = 100_000.0
         metrics_dict = metrics.__dict__ if hasattr(metrics, "__dict__") else dict(metrics)
         metric_rows = [
             {
@@ -749,7 +751,8 @@ class DuckDBManager:
                         status,
                         started_at,
                         finished_at,
-                        notes
+                        notes,
+                        starting_capital
                     )
                     SELECT
                         run_id,
@@ -763,7 +766,8 @@ class DuckDBManager:
                         status,
                         started_at,
                         finished_at,
-                        notes
+                        notes,
+                        starting_capital
                     FROM {run_table}
                     """
                 )

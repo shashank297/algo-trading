@@ -49,6 +49,7 @@ class TradeProposal(BaseModel):
     stop_loss_pct: float | None = None
     open_position_count: int = 0
     daily_turnover_crore: float | None = None
+    estimated_portfolio_var_pct: float | None = None
 
     @field_validator("requested_notional", "capital", "current_position_notional", "current_gross_exposure", "current_sector_exposure", "daily_pnl", "current_drawdown")
     @classmethod

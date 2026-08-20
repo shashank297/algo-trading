@@ -94,6 +94,20 @@ class PromotionEngine:
             ).fetchone()
             if correlation_row is not None and correlation_row[0] is not None:
                 maximum_correlation = float(correlation_row[0])
+        run_row = self.db.conn.execute("SELECT notes, data_hash, symbol FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
+        survivorship_safe = True
+        if run_row and run_row[0] and "survivorship bias" in str(run_row[0]).lower():
+            survivorship_safe = False
+
+        dq_verified = True
+        if run_row and run_row[2]:
+            sym = str(run_row[2]).replace("PORTFOLIO:", "")
+            dq_issues = self.db.conn.execute(
+                "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
+            ).fetchone()
+            if dq_issues and dq_issues[0] and int(dq_issues[0]) > 0:
+                dq_verified = False
+
         checks = {
             "sharpe": metrics.get("sharpe", 0.0) >= self.policy.minimum_sharpe,
             "sortino": metrics.get("sortino", 0.0) >= self.policy.minimum_sortino,
@@ -107,6 +121,8 @@ class PromotionEngine:
             "cost_stress": cost_stress_passes,
             "parameter_stability": parameter_stability >= self.policy.minimum_parameter_stability,
             "profit_breadth": breadth_passes,
+            "zero_survivorship_bias": survivorship_safe,
+            "data_quality_verified": dq_verified,
             "correlation_evidence": not promoted_run_ids or maximum_correlation is not None,
             "independent": not promoted_run_ids or (
                 maximum_correlation is not None

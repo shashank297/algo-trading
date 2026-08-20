@@ -39,6 +39,13 @@ class ExperimentManager:
         metadata = StrategyRegistry.metadata(spec.strategy_name)
         if metadata.scope == StrategyScope.SINGLE_ASSET and len(spec.universe) != 1:
             raise ValueError("Single-asset experiments require exactly one symbol; use the mass runner for a universe.")
+        if metadata.scope == StrategyScope.CROSS_SECTIONAL and spec.universe_snapshot_id:
+            snap_row = self.db.conn.execute(
+                "SELECT snapshot_id FROM universe_snapshots WHERE snapshot_id = ?",
+                [spec.universe_snapshot_id],
+            ).fetchone()
+            if not snap_row:
+                raise ValueError(f"Universe snapshot '{spec.universe_snapshot_id}' not found in database. Failing closed.")
         started_at = datetime.now(timezone.utc)
         self.db.log_experiment(
             {
@@ -153,6 +160,8 @@ class ExperimentManager:
             """
             SELECT dataset_id FROM market_datasets
             WHERE canonical_symbol = ? AND timeframe = ?
+              AND lifecycle_status = 'CANONICAL_PROMOTED'
+              AND status = 'VERIFIED'
             ORDER BY retrieved_at DESC LIMIT 1
             """,
             [symbol, timeframe],

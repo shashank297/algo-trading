@@ -649,7 +649,8 @@ def _build_lifecycle(
                 "metadata_json": json.dumps({"mode": mode}),
             }
         )
-        previous_position = desired_position
+        filled_delta = (quantity / max(requested_quantity, 1e-9)) * delta
+        previous_position += filled_delta
 
     return pd.DataFrame(orders), pd.DataFrame(fills)
 

@@ -118,7 +118,34 @@ class DuckDBStreamWriter:
                 created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (symbol, exchange, timeframe, timestamp)
             );
+            CREATE TABLE IF NOT EXISTS market_raw_packets (
+                packet_id VARCHAR NOT NULL PRIMARY KEY,
+                token VARCHAR,
+                exchange VARCHAR,
+                packet_data BLOB NOT NULL,
+                packet_length INTEGER NOT NULL,
+                received_at TIMESTAMPTZ NOT NULL
+            );
         """)
+
+    def enqueue_raw_packet(self, packet_bytes: bytes, token: str = "", exchange: str = "", received_at: datetime | None = None) -> bool:
+        """Enqueue a raw binary packet for persistence when capture_raw_packets is enabled."""
+        if not self.capture_raw_packets:
+            return True
+        try:
+            now_utc = received_at or datetime.now(timezone.utc)
+            self._queue.put_nowait(("packet", {
+                "packet_id": hashlib.sha256(packet_bytes + str(time.time_ns()).encode()).hexdigest()[:24],
+                "token": token,
+                "exchange": exchange,
+                "packet_data": packet_bytes,
+                "packet_length": len(packet_bytes),
+                "received_at": now_utc,
+            }))
+            return True
+        except queue.Full:
+            self._dropped_records += 1
+            return False
 
     def enqueue_tick(self, event: MarketDataEvent) -> bool:
         """Enqueue a market tick for asynchronous persistence.
@@ -176,6 +203,7 @@ class DuckDBStreamWriter:
         """Accumulate records and flush on batch size or timer interval."""
         tick_batch: list[dict[str, Any]] = []
         bar_batch: list[dict[str, Any]] = []
+        packet_batch: list[dict[str, Any]] = []
         last_flush_time = time.monotonic()
 
         while self._running or not self._queue.empty():
@@ -215,6 +243,8 @@ class DuckDBStreamWriter:
                             "is_final": getattr(bar, "is_final", True),
                         }
                     )
+                elif record_type == "packet":
+                    packet_batch.append(payload)
             except queue.Empty:
                 pass
 
@@ -222,11 +252,12 @@ class DuckDBStreamWriter:
             should_flush = (
                 len(tick_batch) >= self.batch_size
                 or len(bar_batch) >= self.batch_size
-                or (now - last_flush_time >= self.flush_interval and (tick_batch or bar_batch))
+                or len(packet_batch) >= self.batch_size
+                or (now - last_flush_time >= self.flush_interval and (tick_batch or bar_batch or packet_batch))
             )
 
             if should_flush:
-                success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch)
+                success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch, packet_batch)
                 if success_ticks:
                     for _ in range(len(tick_batch)):
                         self._queue.task_done()
@@ -239,7 +270,6 @@ class DuckDBStreamWriter:
                         spill = tick_batch[: len(tick_batch) - 5_000]
                         self._spool_dead_letter("tick", spill)
                         self._spooled_records_total += len(spill)
-                        self._dropped_records += len(spill)
                         for _ in range(len(spill)):
                             self._queue.task_done()
                         del tick_batch[: len(tick_batch) - 5_000]
@@ -256,16 +286,19 @@ class DuckDBStreamWriter:
                         spill = bar_batch[: len(bar_batch) - 5_000]
                         self._spool_dead_letter("bar", spill)
                         self._spooled_records_total += len(spill)
-                        self._dropped_records += len(spill)
                         for _ in range(len(spill)):
                             self._queue.task_done()
                         del bar_batch[: len(bar_batch) - 5_000]
 
+                for _ in range(len(packet_batch)):
+                    self._queue.task_done()
+                packet_batch.clear()
+
                 last_flush_time = now
 
         # Final drain
-        if tick_batch or bar_batch:
-            success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch)
+        if tick_batch or bar_batch or packet_batch:
+            success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch, packet_batch)
             if success_ticks:
                 for _ in range(len(tick_batch)):
                     self._queue.task_done()
@@ -286,8 +319,17 @@ class DuckDBStreamWriter:
                     self._queue.task_done()
                 bar_batch.clear()
 
-    def _flush_batches(self, tick_batch: list[dict[str, Any]], bar_batch: list[dict[str, Any]]) -> tuple[bool, bool]:
-        """Batch insert ticks and bars into DuckDB. Returns (ticks_ok, bars_ok)."""
+            for _ in range(len(packet_batch)):
+                self._queue.task_done()
+            packet_batch.clear()
+
+    def _flush_batches(
+        self,
+        tick_batch: list[dict[str, Any]],
+        bar_batch: list[dict[str, Any]],
+        packet_batch: list[dict[str, Any]] | None = None,
+    ) -> tuple[bool, bool]:
+        """Batch insert ticks, bars, and raw packets into DuckDB. Returns (ticks_ok, bars_ok)."""
         if self._conn is None:
             return False, False
 
@@ -316,6 +358,17 @@ class DuckDBStreamWriter:
             except Exception as exc:
                 bars_ok = False
                 logger.error("Failed to batch insert market bars into DuckDB: {}", exc)
+
+        if packet_batch:
+            try:
+                df_packets = pd.DataFrame(packet_batch)
+                temp_name = f"temp_packets_{time.time_ns()}"
+                self._conn.register(temp_name, df_packets)
+                cols = ", ".join(df_packets.columns)
+                self._conn.execute(f"INSERT OR REPLACE INTO market_raw_packets ({cols}) SELECT {cols} FROM {temp_name}")
+                self._conn.unregister(temp_name)
+            except Exception as exc:
+                logger.error("Failed to batch insert market raw packets into DuckDB: {}", exc)
 
         return ticks_ok, bars_ok
 

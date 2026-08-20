@@ -496,7 +496,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     )
     admission_validator = LiveMarketDataAdmissionValidator(
         policy=admission_policy,
-        calendar=calendar,
+        market_calendar=calendar,
     )
 
     db_path = str(PROJECT_ROOT / bootstrap_config["database"]["path"])

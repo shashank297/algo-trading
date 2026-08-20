@@ -37,35 +37,36 @@ class CrossSectionalRankingStrategy(BaseStrategy):
             raise ValueError(f"Cross-sectional panel is missing columns: {sorted(missing)}")
         panel = frame.copy().sort_values(["symbol", "timestamp"]).reset_index(drop=True)
         panel["timestamp"] = pd.to_datetime(panel["timestamp"], utc=True)
+
         panel["score"] = self.score_panel(panel).replace([np.inf, -np.inf], np.nan)
         panel["observation_count"] = panel.groupby("symbol").cumcount() + 1
-        panel = panel[panel["observation_count"] >= self.metadata.required_lookback]
+        req_lookback = getattr(self, "long_lookback", None) + 1 if hasattr(self, "long_lookback") and self.long_lookback else self.metadata.required_lookback
+        panel = panel[panel["observation_count"] >= req_lookback]
         rebalance_dates = panel.groupby(panel["timestamp"].dt.strftime("%Y-%m"))["timestamp"].max()
         ranked = panel[panel["timestamp"].isin(rebalance_dates)].dropna(subset=["score"]).copy()
         if ranked.empty:
             return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
 
-        # Point-in-Time Universe filtering via dataset eligible column
-        if "eligible" in panel.columns:
-            panel = panel[panel["eligible"]].copy()
+        # Point-in-Time Universe and Eligibility filtering applied BEFORE ranking
+        if "eligible" in ranked.columns:
+            ranked = ranked[ranked["eligible"].astype(bool)].copy()
+        if ranked.empty:
+            return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
 
-        # Legacy fallback if pit_db_conn is explicitly provided in strategy parameters
         universe_name = self.parameters.get("universe_name") or self.parameters.get("pit_universe_name")
         pit_conn = self.parameters.get("pit_db_conn") or self.parameters.get("db_conn")
         if universe_name and pit_conn is not None:
             from data_platform.universe import PointInTimeUniverseManager
 
-            valid_mask = pd.Series(False, index=ranked.index)
-            for rebal_ts in rebalance_dates:
-                ts_mask = ranked["timestamp"] == rebal_ts
-                active_symbols = set(PointInTimeUniverseManager.get_constituent_symbols(pit_conn, str(universe_name), rebal_ts))
-                if active_symbols:
-                    valid_mask |= (ts_mask & ranked["symbol"].isin(active_symbols))
-
-            ranked = ranked[valid_mask].copy()
-
-            if ranked.empty:
+            valid_rows = []
+            for ts, grp in ranked.groupby("timestamp"):
+                active_symbols = set(PointInTimeUniverseManager.get_constituent_symbols(pit_conn, str(universe_name), ts))
+                valid_grp = grp[grp["symbol"].isin(active_symbols)]
+                if not valid_grp.empty:
+                    valid_rows.append(valid_grp)
+            if not valid_rows:
                 return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
+            ranked = pd.concat(valid_rows, ignore_index=True)
 
         ranked["rank"] = ranked.groupby("timestamp")["score"].rank(method="first", ascending=False)
 
@@ -92,7 +93,8 @@ class CrossSectionalMomentumStrategy(CrossSectionalRankingStrategy):
     )
 
     def __init__(self, long_lookback: int = 252, skip_recent: int = 21, **kwargs: Any) -> None:
-        super().__init__(self.strategy_metadata.name, long_lookback=long_lookback, skip_recent=skip_recent, **kwargs)
+        name = kwargs.pop("name", self.strategy_metadata.name)
+        super().__init__(name, long_lookback=long_lookback, skip_recent=skip_recent, **kwargs)
         self.long_lookback, self.skip_recent = long_lookback, skip_recent
 
     def score_panel(self, panel: pd.DataFrame) -> pd.Series:

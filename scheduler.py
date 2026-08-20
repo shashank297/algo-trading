@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 import uuid
 from datetime import datetime, timezone
@@ -169,8 +170,48 @@ def run_job() -> None:
         operation_logger.exception("Scheduled operation failed unexpectedly: {}", exc)
 
 
+class ProcessLock:
+    """Cross-platform single-process advisory lock."""
+
+    def __init__(self, lock_path: Path) -> None:
+        self.lock_path = lock_path
+        self._file = None
+
+    def acquire(self) -> bool:
+        try:
+            self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+            self._file = open(self.lock_path, "a+")
+            if os.name == "nt":
+                import msvcrt
+                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except (IOError, OSError):
+            return False
+
+    def release(self) -> None:
+        if self._file is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                self._file.close()
+            except Exception:
+                pass
+
+
 def start_scheduler() -> None:
     """Start daily ingestion/paper advancement and weekly safe archival."""
+
+    lock = ProcessLock(PROJECT_ROOT / "logs" / "scheduler.lock")
+    if not lock.acquire():
+        logger.error("Another scheduler process is already running. Exiting to prevent concurrent writers.")
+        raise RuntimeError("Another scheduler process is already running.")
 
     config = load_runtime_config()
     logging_path = Path(str(config["logging"]["path"]))
