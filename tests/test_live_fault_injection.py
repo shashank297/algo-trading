@@ -1,16 +1,19 @@
 """Institutional fault injection and resilience test suite for live streaming & admission gateway.
 
 Simulates edge-case network anomalies, corrupt packets, clock skews, flash crashes,
-and feed irregularities to guarantee fail-closed robustness.
+feed irregularities, late cross-window candle arrivals, and database failures to guarantee fail-closed robustness.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 import unittest
 
 import duckdb
+
+
 
 from data_platform.contracts import (
     DepthLevel,
@@ -25,7 +28,11 @@ from data_platform.live_admission import (
     LiveMarketDataAdmissionValidator,
     TickAdmissionAction,
 )
-from smartapi.stream_decoder import SmartStreamDecoder
+from smartapi.auth import SmartAPIAuth
+from smartapi.websocket_client import ConnectionState, SmartAPIWebSocketClient
+from trading_stack.domain import Bar
+
+from trading_stack.live_aggregator import RealtimeBarAggregator
 from trading_stack.trading_calendar import TradingCalendar
 
 
@@ -50,7 +57,6 @@ class TestLiveFaultInjection(unittest.TestCase):
 
     def test_fault_scenario_1_reconnect_replay_burst(self) -> None:
         """Scenario 1: Disconnection causes broker to replay 50 duplicate packets. Validator must drop all 50 duplicates."""
-        # Wednesday 11:00 IST = 05:30 UTC
         base_time = datetime(2023, 1, 18, 5, 30, 0, tzinfo=timezone.utc)
         tick = LtpTick(
             exchange="NSE",
@@ -69,7 +75,7 @@ class TestLiveFaultInjection(unittest.TestCase):
         self.assertTrue(first_res.is_accepted)
 
         # Ingest 50 replayed duplicates
-        for i in range(50):
+        for _ in range(50):
             dup_res = self.validator.validate(tick, received_at_utc=base_time)
             self.assertEqual(dup_res.action, TickAdmissionAction.DROP_DUPLICATE)
 
@@ -163,7 +169,6 @@ class TestLiveFaultInjection(unittest.TestCase):
         )
         self.assertTrue(self.validator.validate(tick1, received_at_utc=recv_1).is_accepted)
 
-        # Glitched reset to 10,000 volume in same session
         recv_2 = datetime(2023, 1, 18, 5, 30, 1, tzinfo=timezone.utc)
         tick2 = QuoteTick(
             exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.QUOTE,
@@ -184,7 +189,6 @@ class TestLiveFaultInjection(unittest.TestCase):
         )
         self.assertTrue(self.validator.validate(tick1, received_at_utc=recv_1).is_accepted)
 
-        # Delayed tick with timestamp 2 seconds earlier (> 500ms tolerance)
         recv_2 = datetime(2023, 1, 18, 5, 30, 3, tzinfo=timezone.utc)
         earlier_ts = datetime(2023, 1, 18, 5, 30, 0, tzinfo=timezone.utc)
         tick2 = LtpTick(
@@ -206,7 +210,6 @@ class TestLiveFaultInjection(unittest.TestCase):
         )
         self.assertTrue(self.validator.validate(tick1, received_at_utc=recv_1).is_accepted)
 
-        # 60% jump to 960.0
         recv_2 = datetime(2023, 1, 18, 5, 30, 1, tzinfo=timezone.utc)
         tick2 = LtpTick(
             exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
@@ -217,27 +220,147 @@ class TestLiveFaultInjection(unittest.TestCase):
         self.assertEqual(res2.action, TickAdmissionAction.QUARANTINE)
         self.assertIn(AdmissionReasonCode.EXTREME_PRICE_VELOCITY, res2.reasons)
 
-    def test_fault_scenario_9_corrupt_binary_packets(self) -> None:
-        """Scenario 9: Truncated or corrupted binary wire packets fail decoder safely without worker crash."""
-        corrupt_packet = b"\x01\x01\x00\x00\x00"  # Truncated 5 bytes
-        with self.assertRaises(ValueError):
-            SmartStreamDecoder.decode(corrupt_packet)
+    def test_fault_scenario_9_late_tick_does_not_prematurely_finalize_newer_bar(self) -> None:
+        """Scenario 9: Late tick for window 10:01 arriving at 10:02:00.100 does NOT prematurely finalize 10:02 bar."""
+        aggregator = RealtimeBarAggregator(timeframe="1m")
+        closed_bars: list[Bar] = []
+        aggregator.subscribe_bar(lambda b: closed_bars.append(b))
 
-    def test_fault_scenario_10_admission_persistence_resilience(self) -> None:
-        """Scenario 10: Repeated quarantine persist calls execute safely with full isolation."""
-        recv_time = datetime(2023, 1, 18, 5, 30, 0, tzinfo=timezone.utc)
-        for i in range(10):
-            tick = LtpTick(
-                exchange="NSE", token=f"TOK_{i}", symbol=f"SYM_{i}", mode=LiveTickerMode.LTP,
-                exchange_timestamp=recv_time, received_at_utc=recv_time, received_monotonic_ns=i,
-                raw_packet_size=51, sequence_number=i, ltp=-50.0,
-            )
-            res = self.validator.validate(tick, received_at_utc=recv_time)
-            self.validator.persist_quarantine(self.con, res, raw_payload={"index": i})
+        # 1. First tick in 10:02 candle (window: 10:02:00 -> 10:03:00)
+        ts_1002 = datetime(2023, 1, 18, 4, 32, 0, 100000, tzinfo=timezone.utc)  # 10:02:00.100 IST = 04:32:00.100 UTC
+        tick_1002_a = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=ts_1002, received_at_utc=ts_1002, received_monotonic_ns=1,
+            raw_packet_size=51, ltp=600.0,
+        )
+        aggregator.process_tick(tick_1002_a)
+        self.assertEqual(len(closed_bars), 0)  # 10:02 open, not closed yet
 
-        count = self.con.execute("SELECT COUNT(*) FROM live_market_data_quarantine").fetchone()[0]
-        self.assertEqual(count, 10)
+        # 2. Late tick arrives for 10:01 candle (window: 10:01:00 -> 10:02:00)
+        ts_1001_late = datetime(2023, 1, 18, 4, 31, 59, 800000, tzinfo=timezone.utc)  # 10:01:59.800 IST (300ms late)
+        tick_1001_late = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=ts_1001_late, received_at_utc=ts_1002, received_monotonic_ns=2,
+            raw_packet_size=51, ltp=599.5,
+        )
+        aggregator.process_tick(tick_1001_late)
+        # CRITICAL ASSERTION: The active 10:02 bar MUST NOT be finalized by this late 10:01 tick!
+        self.assertEqual(len(closed_bars), 0)
+
+        # 3. Subsequent tick at 10:02:30 updates the 10:02 candle normally
+        ts_1002_b = datetime(2023, 1, 18, 4, 32, 30, tzinfo=timezone.utc)
+        tick_1002_b = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=ts_1002_b, received_at_utc=ts_1002_b, received_monotonic_ns=3,
+            raw_packet_size=51, ltp=602.0,
+        )
+        aggregator.process_tick(tick_1002_b)
+        self.assertEqual(len(closed_bars), 0)
+        open_bar = aggregator._open_bars.get("SBIN")
+        self.assertIsNotNone(open_bar)
+        self.assertEqual(open_bar["high"], 602.0)
+        self.assertEqual(open_bar["tick_count"], 2)
+
+    def test_fault_scenario_10_websocket_worker_survives_corrupt_packet(self) -> None:
+        """Scenario 10: WebSocket worker receives corrupted binary payload, fails decoder safely, and processes next valid packet."""
+        auth = SmartAPIAuth({
+            "smartapi": {
+                "api_key": "k",
+                "client_code": "c",
+                "pin": "1",
+                "totp_secret": "JBSWY3DPEHPK3PXP",
+                "base_url": "https://apiconnect.angelone.in",
+            }
+        })
+
+        test_policy = LiveAdmissionPolicy(check_session_hours=False, max_stale_latency_seconds=3600.0)
+        test_validator = LiveMarketDataAdmissionValidator(policy=test_policy)
+        client = SmartAPIWebSocketClient(auth=auth, admission_validator=test_validator)
+        client._state = ConnectionState.CONNECTED
+
+        received_events: list[Any] = []
+        client.subscribe_tick(lambda e: received_events.append(e))
+
+        # 1. Send corrupt 5-byte packet to _on_data
+        corrupt_packet = b"\x01\x01\x00\x00\x00"
+        client._on_data(None, corrupt_packet, 2, 1, client.generation_id)  # type: ignore[arg-type]
+        self.assertEqual(len(received_events), 0)
+        self.assertEqual(client.metrics.invalid_packets_total, 1)
+
+        # 2. Worker survives! Send valid tick packet afterward
+        # 51-byte valid LTP packet for token 3045 (SBIN)
+        import struct
+        now_ts = datetime.now(timezone.utc)
+        ts_ms = int(now_ts.timestamp() * 1000)
+        valid_packet = bytearray(51)
+
+        valid_packet[0] = 1  # Mode 1 LTP
+        valid_packet[1] = 1  # Exchange NSE_CM
+        valid_packet[2:27] = b"3045".ljust(25, b"\x00")
+        struct.pack_into("<q", valid_packet, 27, 101)  # sequence
+        struct.pack_into("<q", valid_packet, 35, ts_ms)  # timestamp
+        struct.pack_into("<q", valid_packet, 43, 60050)  # price 600.50
+
+        client._on_data(None, bytes(valid_packet), 2, 1, client.generation_id)  # type: ignore[arg-type]
+        self.assertEqual(client.metrics.packets_decoded_total, 1)
+        self.assertEqual(client._dispatch_queue.qsize(), 1)
+
+    def test_live_entrypoint_cannot_start_without_admission_gateway(self) -> None:
+        """Client constructed without explicit validator must automatically instantiate fail-closed LiveMarketDataAdmissionValidator."""
+        auth = SmartAPIAuth({
+            "smartapi": {
+                "api_key": "k",
+                "client_code": "c",
+                "pin": "1",
+                "totp_secret": "JBSWY3DPEHPK3PXP",
+                "base_url": "https://apiconnect.angelone.in",
+            }
+        })
+        client = SmartAPIWebSocketClient(auth=auth)  # admission_validator=None
+        self.assertIsNotNone(client.admission_validator)
+        self.assertIsInstance(client.admission_validator, LiveMarketDataAdmissionValidator)
+
+    def test_async_quarantine_queue_resilience_under_db_failure(self) -> None:
+        """Asynchronous quarantine worker catches DuckDB errors without crashing client or dropping live dispatch queue."""
+        class BrokenDBConn:
+            def execute(self, *args: Any, **kwargs: Any) -> None:
+                raise RuntimeError("Disk IO Error / DuckDB Locked")
+
+        auth = SmartAPIAuth({
+            "smartapi": {
+                "api_key": "k",
+                "client_code": "c",
+                "pin": "1",
+                "totp_secret": "JBSWY3DPEHPK3PXP",
+                "base_url": "https://apiconnect.angelone.in",
+            }
+        })
+        client = SmartAPIWebSocketClient(auth=auth, admission_validator=self.validator, quarantine_conn=BrokenDBConn())
+        client._state = ConnectionState.CONNECTED
+
+        # Start quarantine drain thread
+        import threading
+        t = threading.Thread(target=client._quarantine_worker, daemon=True)
+        t.start()
+
+        # Enqueue crossed-book quarantine tick
+        crossed_tick = SnapQuoteTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.SNAP_QUOTE,
+            exchange_timestamp=datetime(2023, 1, 18, 5, 30, 0, tzinfo=timezone.utc),
+            received_at_utc=datetime(2023, 1, 18, 5, 30, 0, tzinfo=timezone.utc),
+            received_monotonic_ns=1, raw_packet_size=379, ltp=600.0,
+            best_5_buy=(DepthLevel(price=605.0, quantity=100, orders=2),),
+            best_5_sell=(DepthLevel(price=601.0, quantity=100, orders=1),),
+        )
+        res = self.validator.validate(crossed_tick)
+        client._quarantine_queue.put((res, {"test": "payload"}))
+        client._quarantine_queue.join()  # Successfully processed and drained despite DB failure!
+
+        # Client state remains healthy
+        self.assertEqual(client.state, ConnectionState.CONNECTED)
+        client._state = ConnectionState.STOPPED
 
 
 if __name__ == "__main__":
     unittest.main()
+

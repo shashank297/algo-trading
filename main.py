@@ -33,10 +33,13 @@ from trading_stack.domain import Bar, infer_market_spec
 from trading_stack.live_aggregator import RealtimeBarAggregator
 from trading_stack.stream_persistence import DuckDBStreamWriter
 from trading_stack.calendars import MarketCalendar, SessionOverride, build_nse_calendar
+from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
+from trading_stack.trading_calendar import TradingCalendar
 
 from validators.duckdb_quality import DuckDBValidator
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+
 
 SMARTAPI_ENV_VARS = {
     "api_key": "SMARTAPI_API_KEY",
@@ -482,10 +485,26 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     instrument_master.download_instrument_master()
 
     stream_mode = LiveTickerMode(args.stream_mode)
+    calendar = TradingCalendar()
+    admission_policy = LiveAdmissionPolicy(
+        max_future_skew_seconds=1.0,
+        max_stale_latency_seconds=2.0,
+        max_price_velocity_pct=0.10,
+        enforce_monotonic_cumulative_volume=True,
+        check_session_hours=True,
+        fail_closed=True,
+    )
+    admission_validator = LiveMarketDataAdmissionValidator(
+        policy=admission_policy,
+        calendar=calendar,
+    )
+
     client = SmartAPIWebSocketClient(
         auth=auth,
         instrument_master=instrument_master,
+        admission_validator=admission_validator,
     )
+
 
     db_path = str(PROJECT_ROOT / bootstrap_config["database"]["path"])
     db_writer = DuckDBStreamWriter(db_path=db_path, batch_size=200, flush_interval_seconds=1.0)

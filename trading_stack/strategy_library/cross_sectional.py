@@ -44,7 +44,27 @@ class CrossSectionalRankingStrategy(BaseStrategy):
         ranked = panel[panel["timestamp"].isin(rebalance_dates)].dropna(subset=["score"]).copy()
         if ranked.empty:
             return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
+
+        # Point-in-Time Universe filtering (eliminates survivorship bias)
+        universe_name = self.parameters.get("universe_name") or self.parameters.get("pit_universe_name")
+        pit_conn = self.parameters.get("pit_db_conn") or self.parameters.get("db_conn")
+        if universe_name and pit_conn is not None:
+            from data_platform.universe import PointInTimeUniverseManager
+
+            valid_mask = pd.Series(False, index=ranked.index)
+            for rebal_ts in rebalance_dates:
+                ts_mask = ranked["timestamp"] == rebal_ts
+                active_symbols = set(PointInTimeUniverseManager.get_constituent_symbols(pit_conn, str(universe_name), rebal_ts))
+                if active_symbols:
+                    valid_mask |= (ts_mask & ranked["symbol"].isin(active_symbols))
+                else:
+                    valid_mask |= ts_mask
+            ranked = ranked[valid_mask].copy()
+            if ranked.empty:
+                return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
+
         ranked["rank"] = ranked.groupby("timestamp")["score"].rank(method="first", ascending=False)
+
         ranked["eligible_count"] = ranked.groupby("timestamp")["symbol"].transform("count")
         ranked["selection_count"] = np.maximum(1, np.ceil(ranked["eligible_count"] * self.top_fraction)).astype(int).clip(upper=self.max_holdings)
         selected = ranked["rank"] <= ranked["selection_count"]

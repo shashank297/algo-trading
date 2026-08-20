@@ -124,8 +124,8 @@ class RealtimeBarAggregator:
             elif isinstance(tick, LtpTick):
                 tick_volume = None
 
-            # If current open bar belongs to an older window, finalize it
-            if open_bar is not None and open_bar["window_start"] != window_start:
+            # If tick belongs to a strictly NEWER window, finalize the open older bar
+            if open_bar is not None and window_start > open_bar["window_start"]:
                 if (sym, open_bar["window_start"]) not in self._closed_windows:
                     bar = self._build_bar(open_bar, is_final=True)
                     completed_bars.append(bar)
@@ -135,8 +135,10 @@ class RealtimeBarAggregator:
 
             # Check if this tick is too late for a closed window
             if (sym, window_start) not in self._closed_windows:
-                # Create or update active window using event-time ordering
-                if open_bar is None:
+                # If tick belongs to an older window while a newer open_bar exists, do not finalize current bar
+                if open_bar is not None and window_start < open_bar["window_start"]:
+                    pass
+                elif open_bar is None:
                     self._open_bars[sym] = {
                         "symbol": sym,
                         "exchange": exchange,
@@ -153,6 +155,7 @@ class RealtimeBarAggregator:
                         "turnover": (price * tick_volume) if tick_volume is not None else 0.0,
                         "tick_count": 1,
                     }
+
                 else:
                     # Update event-time open/close
                     if event_time < open_bar["earliest_event_time"]:

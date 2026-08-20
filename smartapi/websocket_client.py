@@ -19,7 +19,7 @@ from data_platform.contracts import (
     LiveTickerMode,
     MarketDataEvent,
 )
-from data_platform.live_admission import LiveMarketDataAdmissionValidator
+from data_platform.live_admission import LiveMarketDataAdmissionValidator, TickAdmissionAction
 from smartapi.auth import SmartAPIAuth
 from smartapi.instrument import InstrumentMaster
 from smartapi.stream_decoder import SmartStreamDecoder
@@ -55,29 +55,16 @@ class SmartAPIWebSocketClient:
         monotonic_clock: Callable[[], float] = time.monotonic,
         backoff_rng: Callable[[float, float], float] = random.uniform,
         websocket_factory: Any = websocket.WebSocketApp,
+        quarantine_conn: Any = None,
     ) -> None:
-
-        """Initialize the WebSocket client.
-
-        Args:
-            auth: SmartAPIAuth authentication client.
-            instrument_master: Optional instrument metadata resolver.
-            max_dispatch_queue_size: Bounded capacity of internal dispatch queue.
-            watchdog_timeout_seconds: Inactivity timeout before triggering reconnect.
-            ping_interval_seconds: Transport ping/pong interval.
-            allow_insecure_tls: If True, disables TLS certificate verification (development only).
-            clock: Time function dependency (for deterministic testing).
-            monotonic_clock: Monotonic time function dependency.
-            backoff_rng: Random uniform function for jittered backoff.
-            websocket_factory: Factory for WebSocketApp creation.
-        """
+        """Initialize the WebSocket client."""
         self.auth = auth
         self.instrument_master = instrument_master
-        self.admission_validator = admission_validator
+        self.admission_validator = admission_validator or LiveMarketDataAdmissionValidator()
         self.watchdog_timeout = watchdog_timeout_seconds
         self.ping_interval = ping_interval_seconds
         self.allow_insecure_tls = allow_insecure_tls
-
+        self._quarantine_conn = quarantine_conn
 
         self._clock = clock
         self._monotonic = monotonic_clock
@@ -95,10 +82,13 @@ class SmartAPIWebSocketClient:
         self._ws_thread: threading.Thread | None = None
         self._watchdog_thread: threading.Thread | None = None
         self._dispatch_thread: threading.Thread | None = None
+        self._quarantine_thread: threading.Thread | None = None
 
         self._dispatch_queue: queue.Queue[MarketDataEvent] = queue.Queue(maxsize=max_dispatch_queue_size)
+        self._quarantine_queue: queue.Queue[tuple[Any, Any]] = queue.Queue(maxsize=10_000)
         self._callbacks: list[Callable[[MarketDataEvent], None]] = []
         self._callback_lock = threading.Lock()
+
 
         self._last_rx_monotonic = 0.0
         self._connected_monotonic = 0.0
@@ -143,12 +133,22 @@ class SmartAPIWebSocketClient:
             self._dispatch_thread = threading.Thread(target=self._dispatch_worker, name="TickDispatcher", daemon=True)
             self._dispatch_thread.start()
 
+        # Start quarantine drain thread
+        if self._quarantine_thread is None or not self._quarantine_thread.is_alive():
+            self._quarantine_thread = threading.Thread(target=self._quarantine_worker, name="QuarantineDrainer", daemon=True)
+            self._quarantine_thread.start()
+
         # Start watchdog thread
         if self._watchdog_thread is None or not self._watchdog_thread.is_alive():
             self._watchdog_thread = threading.Thread(target=self._watchdog_loop, name="StreamWatchdog", daemon=True)
             self._watchdog_thread.start()
 
         self._connect_socket(gen)
+
+    def set_quarantine_connection(self, conn: Any) -> None:
+        """Set or update DuckDB connection for asynchronous quarantine writes."""
+        self._quarantine_conn = conn
+
 
     def stop(self) -> None:
         """Gracefully and idempotently shut down the streaming client."""
@@ -338,29 +338,52 @@ class SmartAPIWebSocketClient:
                 if is_dup:
                     self.metrics.duplicate_packets_total += 1
 
-            # Admission validation gate
-            if self.admission_validator is not None:
-                admission = self.admission_validator.validate(event, received_at_utc=recv_utc)
-                if not admission.is_accepted:
-                    logger.debug(
-                        "Admission filtered live tick: token={} action={} reasons={}",
-                        getattr(event, "token", ""),
-                        admission.action.value,
-                        [r.value for r in admission.reasons],
-                    )
-                    return
+            # Admission validation gate (mandatory fail-closed)
+            admission = self.admission_validator.validate(event, received_at_utc=recv_utc)
+            if not admission.is_accepted:
+                logger.debug(
+                    "Admission filtered live tick: token={} action={} reasons={}",
+                    getattr(event, "token", ""),
+                    admission.action.value,
+                    [r.value for r in admission.reasons],
+                )
+                if admission.action in (TickAdmissionAction.QUARANTINE, TickAdmissionAction.REJECT_MALFORMED):
+                    try:
+                        self._quarantine_queue.put_nowait((admission, {"raw_length": len(raw_bytes), "token": getattr(event, "token", "")}))
+                    except queue.Full:
+                        pass
+                return
 
             # Enqueue to bounded dispatch queue
             try:
                 self._dispatch_queue.put_nowait(event)
                 self.metrics.dispatch_queue_depth = self._dispatch_queue.qsize()
-
             except queue.Full:
                 self.metrics.dispatch_queue_drops += 1
 
         except Exception as exc:
             self.metrics.invalid_packets_total += 1
             logger.debug("Failed to decode binary packet ({} bytes): {}", len(raw_bytes), exc)
+
+    def _quarantine_worker(self) -> None:
+        """Asynchronously drain quarantine queue and persist records to DuckDB."""
+        while True:
+            with self._state_lock:
+                if self._state == ConnectionState.STOPPED:
+                    break
+            try:
+                item = self._quarantine_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
+
+            admission, payload = item
+            if self._quarantine_conn is not None:
+                try:
+                    self.admission_validator.persist_quarantine(self._quarantine_conn, admission, payload)
+                except Exception as exc:
+                    logger.debug("Asynchronous quarantine persistence warning: {}", exc)
+            self._quarantine_queue.task_done()
+
 
     def _on_ping(self, ws: websocket.WebSocketApp, msg: bytes | str, generation: int) -> None:
         """Handle transport ping frame."""

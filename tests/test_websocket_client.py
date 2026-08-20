@@ -8,6 +8,7 @@ import unittest
 from unittest.mock import MagicMock
 
 
+from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
 from smartapi.auth import SmartAPIAuth
 from smartapi.websocket_client import ConnectionState, SmartAPIWebSocketClient
 from tests.fixtures.smartstream_packets import build_ltp_packet
@@ -43,8 +44,14 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
         self.fake_time = 1000.0
         self.fake_monotonic = 500.0
 
+        test_policy = LiveAdmissionPolicy(
+            check_session_hours=False,
+            max_stale_latency_seconds=3600.0 * 24 * 365 * 100,
+            max_future_skew_seconds=3600.0 * 24 * 365 * 100,
+        )
         self.client = SmartAPIWebSocketClient(
             auth=self.mock_auth,
+            admission_validator=LiveMarketDataAdmissionValidator(policy=test_policy),
             max_dispatch_queue_size=10,
             watchdog_timeout_seconds=30.0,
             clock=lambda: self.fake_time,
@@ -52,6 +59,7 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
             backoff_rng=lambda a, b: 0.01,  # Fast deterministic delay for tests
             websocket_factory=FakeWebSocketApp,
         )
+
 
     def tearDown(self) -> None:
         self.client.stop()
@@ -148,11 +156,14 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
         self.client.subscribe_tick(slow_cb)
         packet = build_ltp_packet(token="2885", seq_num=300)
 
-        # Fill internal dispatch queue (capacity 10) and overflow it
+        # Fill internal dispatch queue (capacity 10) and overflow it with unique packets
         for i in range(50):
-            self.client._on_data(self.client._ws, packet, opcode=2, fin=1, generation=1)
+            pkt = build_ltp_packet(token="2885", seq_num=300 + i, ltp_raw=250050 + i)
+
+            self.client._on_data(self.client._ws, pkt, opcode=2, fin=1, generation=1)
 
         self.assertGreater(self.client.metrics.dispatch_queue_drops, 0)
+
 
 
     def test_idempotent_stop(self) -> None:
