@@ -53,6 +53,11 @@ class SubscriptionRegistry:
         """Current count of DEPTH mode subscriptions."""
         return sum(1 for k in self._desired if k.mode == LiveTickerMode.DEPTH)
 
+    @property
+    def desired_subscriptions(self) -> set[SubscriptionKey]:
+        """Return a copy of the desired subscription set."""
+        return self.get_desired_state()
+
     def get_desired_state(self) -> set[SubscriptionKey]:
         """Return a copy of the desired subscription set."""
         return set(self._desired)

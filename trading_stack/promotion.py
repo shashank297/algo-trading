@@ -59,11 +59,43 @@ class PromotionEngine:
         if decision != "PASS" or not human_approved:
             raise PermissionError(f"Run {run_id} does not have a passing human approval.")
 
-    def review(self, run_id: str, *, human_approved: bool = False, paper_activation: bool = False) -> dict[str, object]:
+    def review(
+        self,
+        run_id: str,
+        *,
+        human_approved: bool = False,
+        paper_activation: bool = False,
+        certification_bundle_id: str | None = None,
+    ) -> dict[str, object]:
         run = self.db.conn.execute("SELECT strategy_name, mode FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
         if run is None:
             raise ValueError(f"Unknown run: {run_id}")
         strategy_name = str(run[0])
+
+        # Resolve or certify immutable run certification bundle
+        from trading_stack.certification import RunCertificationService
+        if not certification_bundle_id:
+            bundle_row = self.db.conn.execute(
+                "SELECT bundle_id FROM run_certifications WHERE run_id = ? ORDER BY certified_at DESC LIMIT 1",
+                [run_id],
+            ).fetchone()
+            if bundle_row:
+                certification_bundle_id = str(bundle_row[0])
+            else:
+                certification_bundle_id = RunCertificationService(self.db).certify(run_id)
+
+        cert_rows = self.db.conn.execute(
+            "SELECT category, status FROM run_certifications WHERE bundle_id = ? AND run_id = ?",
+            [certification_bundle_id, run_id],
+        ).fetchall()
+        cert_map = {str(row[0]): str(row[1]) for row in cert_rows}
+
+        lineage_certified = (cert_map.get("DATA_LINEAGE") == "PASS")
+        dq_certified = (cert_map.get("DATA_QUALITY") == "PASS")
+        causality_certified = (cert_map.get("CAUSALITY") == "PASS")
+        pit_certified = (cert_map.get("PIT_SURVIVORSHIP") == "PASS")
+        oos_certified = (cert_map.get("OOS_WALK_FORWARD") == "PASS")
+
         metrics = dict(self.db.conn.execute("SELECT metric_name, AVG(metric_value) FROM walk_forward_metrics WHERE run_id = ? GROUP BY metric_name", [run_id]).fetchall())
         evidence_row = self.db.conn.execute("SELECT COUNT(*) FROM strategy_equity_curve WHERE run_id = ? AND evidence_level = 'OUT_OF_SAMPLE'", [run_id]).fetchone()
         if evidence_row is None:
@@ -94,47 +126,6 @@ class PromotionEngine:
             ).fetchone()
             if correlation_row is not None and correlation_row[0] is not None:
                 maximum_correlation = float(correlation_row[0])
-        run_row = self.db.conn.execute("SELECT notes, data_hash, symbol, mode FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
-        survivorship_safe = False
-        if run_row and run_row[2]:
-            sym = str(run_row[2])
-            if "PORTFOLIO:" in sym:
-                # Require positive PIT constituent evidence in database
-                pit_count = self.db.conn.execute("SELECT COUNT(*) FROM index_constituents_pit").fetchone()
-                if pit_count and int(pit_count[0]) > 0:
-                    survivorship_safe = True
-            else:
-                # Single-asset run: verified if canonical dataset is VERIFIED
-                ds = self.db.conn.execute(
-                    "SELECT status FROM market_datasets WHERE canonical_symbol = ? ORDER BY retrieved_at DESC LIMIT 1",
-                    [sym],
-                ).fetchone()
-                if ds and ds[0] == "VERIFIED":
-                    survivorship_safe = True
-
-        dq_verified = False
-        if run_row and run_row[2]:
-            sym = str(run_row[2]).replace("PORTFOLIO:", "")
-            ds_status = self.db.conn.execute(
-                """SELECT status, lifecycle_status, dataset_id FROM market_datasets
-                   WHERE canonical_symbol = ? ORDER BY retrieved_at DESC LIMIT 1""",
-                [sym],
-            ).fetchone()
-            if ds_status and ds_status[0] == "VERIFIED" and ds_status[1] == "CANONICAL_PROMOTED":
-                dataset_id = ds_status[2]
-                dq_stats = self.db.conn.execute(
-                    """SELECT COUNT(*), SUM(issue_count) FROM quality_report 
-                       WHERE dataset_id = ? OR (dataset_id IS NULL AND symbol = ?)""",
-                    [dataset_id, sym],
-                ).fetchone()
-                if dq_stats and dq_stats[0] and int(dq_stats[0]) > 0 and dq_stats[1] is not None and int(dq_stats[1]) == 0:
-                    dq_verified = True
-            elif "PORTFOLIO:" in str(run_row[2]):
-                dq_stats = self.db.conn.execute(
-                    "SELECT COUNT(*), SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
-                ).fetchone()
-                if dq_stats and dq_stats[0] and int(dq_stats[0]) > 0 and dq_stats[1] is not None and int(dq_stats[1]) == 0:
-                    dq_verified = True
 
         checks = {
             "sharpe": metrics.get("sharpe", 0.0) >= self.policy.minimum_sharpe,
@@ -149,8 +140,10 @@ class PromotionEngine:
             "cost_stress": cost_stress_passes,
             "parameter_stability": parameter_stability >= self.policy.minimum_parameter_stability,
             "profit_breadth": breadth_passes,
-            "zero_survivorship_bias": survivorship_safe,
-            "data_quality_verified": dq_verified,
+            "zero_survivorship_bias": pit_certified,
+            "data_quality_verified": dq_certified,
+            "causality_certified": causality_certified,
+            "data_lineage_verified": lineage_certified,
             "correlation_evidence": not promoted_run_ids or maximum_correlation is not None,
             "independent": not promoted_run_ids or (
                 maximum_correlation is not None
@@ -167,6 +160,7 @@ class PromotionEngine:
             stage = PromotionStage.PAPER_ACTIVE
         payload = {
             "review_id": str(uuid.uuid4()), "strategy_name": strategy_name, "run_id": run_id,
+            "certification_bundle_id": certification_bundle_id,
             "stage": stage.value, "decision": "PASS" if not reasons else "REJECT",
             "score": sum(checks.values()) / len(checks), "reasons_json": json.dumps(reasons),
             "human_approved": human_approved, "reviewed_at": datetime.now(timezone.utc),

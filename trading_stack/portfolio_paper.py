@@ -17,7 +17,14 @@ from storage import DuckDBManager
 from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.datasets import SynchronizedPanelBuilder
-from trading_stack.domain import PaperExecutionMode
+from trading_stack.domain import (
+    AssetClass,
+    ExecutionMode,
+    OpeningTickObservation,
+    PaperExecutionMode,
+    StrategyMetadata,
+    StrategyScope,
+)
 from trading_stack.portfolio import PortfolioEventBacktester
 from trading_stack.strategies import StrategyRegistry
 
@@ -75,6 +82,7 @@ class ForwardPortfolioPaperSessionEngine:
         execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
         opening_ticks: dict[str, float] | None = None,
         open_tick_timestamps: dict[str, datetime] | None = None,
+        opening_observations: dict[str, OpeningTickObservation] | None = None,
     ) -> ForwardPortfolioPaperResult:
         if timeframe != "1d":
             raise ValueError("Cross-sectional forward paper sessions currently require daily bars.")
@@ -183,11 +191,33 @@ class ForwardPortfolioPaperSessionEngine:
 
         for session_timestamp in dates:
             day = panel[panel["timestamp"] == session_timestamp].copy().set_index("symbol", drop=False)
-            if opening_ticks:
-                day["open_tick_price"] = day["symbol"].map(opening_ticks)
-            if open_tick_timestamps:
-                day["open_tick_timestamp"] = day["symbol"].map(open_tick_timestamps)
             session_date = session_timestamp.tz_convert(self.calendar.zone).date()
+
+            if opening_observations:
+                matching_obs = {
+                    sym: obs for sym, obs in opening_observations.items()
+                    if pd.Timestamp(obs.timestamp).tz_convert(self.calendar.zone).date() == session_date
+                }
+                if matching_obs:
+                    day["open_tick_observation"] = day["symbol"].map(matching_obs)
+            elif opening_ticks:
+                matching_ticks = {}
+                matching_ts = {}
+                for sym, price in opening_ticks.items():
+                    ts = open_tick_timestamps.get(sym) if open_tick_timestamps else None
+                    if ts is not None:
+                        ts_val = pd.Timestamp(ts)
+                        ts_val = ts_val.tz_localize("UTC") if ts_val.tzinfo is None else ts_val
+                        if ts_val.tz_convert(self.calendar.zone).date() == session_date:
+                            matching_ticks[sym] = price
+                            matching_ts[sym] = ts
+                    elif len(dates) == 1 and session_timestamp == dates[-1]:
+                        matching_ticks[sym] = price
+                if matching_ticks:
+                    day["open_tick_price"] = day["symbol"].map(matching_ticks)
+                if matching_ts:
+                    day["open_tick_timestamp"] = day["symbol"].map(matching_ts)
+
             if session_date != daily_start_date:
                 daily_start_equity = cash + sum(
                     quantity * (

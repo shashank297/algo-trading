@@ -959,7 +959,12 @@ def main(argv: list[str] | None = None) -> int:
                         if calendar_config.get("verified_through") else None
                     ),
                 )
-                report = validator.run_all_checks(db, symbol)
+                ds_row = db.conn.execute(
+                    "SELECT dataset_id FROM market_datasets WHERE canonical_symbol = ? AND timeframe = ? ORDER BY retrieved_at DESC LIMIT 1",
+                    [symbol, label],
+                ).fetchone()
+                ds_id = ds_row[0] if ds_row else None
+                report = validator.run_all_checks(db, symbol, dataset_id=ds_id, persist_atomic_certification=True)
                 if label == "1d":
                     missing_dates = [
                         date.fromisoformat(value)
@@ -995,15 +1000,17 @@ def main(argv: list[str] | None = None) -> int:
                             repaired += len(repair_res.bars)
                     if repaired:
                         project_logger.info("✅ {} {}: repaired {} missing daily bars.", symbol, label, repaired)
-                        report = validator.run_all_checks(db, symbol)
-                quality_reports.append(report)
-                total_issues = sum(int(check_result["count"]) for check_result in report["checks"].values())
+                        report = validator.run_all_checks(db, symbol, dataset_id=ds_id, persist_atomic_certification=True)
+                if not ds_id:
+                    quality_reports.append(report)
+                total_issues = sum(int(check_result.get("count", 0)) for check_result in report["checks"].values())
                 quality_summary = f"{symbol} {label}: {total_issues} issues"
                 update_result_quality(results, symbol, label, quality_summary)
                 if not report["passed"]:
                     project_logger.warning("⚠️ Quality issues in {} {}: {} total", symbol, label, total_issues)
 
-        db.log_quality_report(quality_reports)
+        if quality_reports:
+            db.log_quality_report(quality_reports)
 
         reporter = ReportGenerator(log_path=bootstrap_config["logging"]["path"])
         reporter.generate_summary(

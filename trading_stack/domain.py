@@ -36,6 +36,22 @@ class PaperExecutionMode(str, Enum):
     TRUE_NEXT_OPEN = "TRUE_NEXT_OPEN"
 
 
+ExecutionMode = PaperExecutionMode
+
+
+@dataclass(frozen=True)
+class OpeningTickObservation:
+    """Immutable opening tick event observation for TRUE_NEXT_OPEN execution."""
+
+    symbol: str
+    exchange: str
+    token: str
+    price: float
+    timestamp: datetime
+    sequence_number: int | None = None
+    quality_state: str = "TRUSTED"
+
+
 @dataclass(frozen=True)
 class StrategyMetadata:
     """Validated strategy research and promotion metadata."""
@@ -112,6 +128,8 @@ class Bar:
     timeframe: str
     exchange: str
     asset_class: AssetClass
+    is_authoritative: bool = True
+    quality_status: str = "TRUSTED"
 
 
 @dataclass(frozen=True)

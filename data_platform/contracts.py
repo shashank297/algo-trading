@@ -346,6 +346,7 @@ class BaseMarketEvent:
     raw_packet_size: int
     feed_latency_ms: float | None = None
     dispatch_latency_ms: float | None = None
+    quality_state: str = "TRUSTED"
 
 
 @dataclass(frozen=True, slots=True)

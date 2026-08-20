@@ -98,6 +98,30 @@ class RealtimeBarAggregator:
         self._last_day_volumes: dict[str, int] = {}
         # Completed bar history / deduplication
         self._closed_windows: set[tuple[str, pd.Timestamp]] = set()
+        # Thread-safe untrusted window intervals for gap-affected data: symbol -> list of (start_time, end_time)
+        self._untrusted_windows: dict[str, list[tuple[datetime, datetime | None]]] = {}
+
+    def mark_untrusted(self, symbol: str, start_time: datetime, end_time: datetime | None = None) -> None:
+        """Flag an interval for a symbol as degraded/untrusted due to stream sequence gaps."""
+        with self._lock:
+            if symbol not in self._untrusted_windows:
+                self._untrusted_windows[symbol] = []
+            self._untrusted_windows[symbol].append((start_time, end_time))
+
+    def load_unresolved_gaps(self, db: Any) -> None:
+        """Reload unrepaired stream gaps from DuckDB into untrusted window registry."""
+        with self._lock:
+            try:
+                rows = db.conn.execute(
+                    "SELECT symbol, start_time, end_time FROM stream_gap_events WHERE status = 'UNREPAIRED'"
+                ).fetchall()
+                for sym, st, et in rows:
+                    if sym not in self._untrusted_windows:
+                        self._untrusted_windows[sym] = []
+                    self._untrusted_windows[sym].append((st, et))
+                logger.info("Loaded {} unrepaired stream gaps into aggregator.", len(rows))
+            except Exception as exc:
+                logger.debug("Could not load unresolved stream gaps: {}", exc)
 
     @property
     def _open_bars(self) -> dict[str, dict[str, Any]]:
@@ -248,15 +272,15 @@ class RealtimeBarAggregator:
         completed_bars: list[Bar] = []
 
         with self._lock:
-            windows_to_close: list[tuple[str, pd.Timestamp]] = []
-            for (sym, ws), bar_state in self._active_windows.items():
-                window_end_dt = bar_state["window_end"].to_pydatetime()
-                if now >= window_end_dt + self.allowed_lateness:
-                    windows_to_close.append((sym, ws))
+            windows_to_close = []
+            for w_key, state in list(self._active_windows.items()):
+                w_end_dt = state["window_end"].to_pydatetime()
+                if (now - self.allowed_lateness) >= w_end_dt:
+                    windows_to_close.append(w_key)
 
             for w_key in windows_to_close:
-                bar_state = self._active_windows.pop(w_key)
-                bar = self._build_bar(bar_state, is_final=True)
+                state = self._active_windows.pop(w_key)
+                bar = self._build_bar(state, is_final=True)
                 completed_bars.append(bar)
                 self._closed_windows.add(w_key)
 
@@ -284,6 +308,17 @@ class RealtimeBarAggregator:
         spec = infer_market_spec(symbol, exchange, self.default_asset_class)
         vol = state["volume"] if state["has_volume"] else 0.0
 
+        w_start = state["window_start"].to_pydatetime()
+        w_end = state["window_end"].to_pydatetime()
+        is_authoritative = True
+        quality_status = "TRUSTED"
+
+        for gap_start, gap_end in self._untrusted_windows.get(symbol, []):
+            if gap_start < w_end and (gap_end is None or gap_end > w_start):
+                is_authoritative = False
+                quality_status = "UNTRUSTED"
+                break
+
         return Bar(
             timestamp=state["window_start"],
             open=state["open"],
@@ -295,6 +330,8 @@ class RealtimeBarAggregator:
             timeframe=self.timeframe,
             exchange=exchange,
             asset_class=spec.asset_class,
+            is_authoritative=is_authoritative,
+            quality_status=quality_status,
         )
 
 

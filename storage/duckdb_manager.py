@@ -57,12 +57,8 @@ class DuckDBManager:
     def initialize_schema(self) -> None:
         """Create all required DuckDB tables and run schema migrations."""
 
-        schema_path = Path(__file__).resolve().parent.parent / "database_schema.sql"
         try:
             with self._write_lock:
-                self.conn.execute(schema_path.read_text(encoding="utf-8"))
-                self._migrate_equity_curve_primary_key()
-                self._migrate_corporate_actions_schema()
                 from storage.migrations.runner import MigrationRunner
                 MigrationRunner(self.conn).run_migrations()
                 try:
@@ -504,6 +500,7 @@ class DuckDBManager:
         rows: list[dict[str, Any]] = []
         for report in reports:
             dataset_id = report.get("dataset_id")
+            certification_id = report.get("certification_id")
             for check_type, details in report["checks"].items():
                 rows.append(
                     {
@@ -511,8 +508,9 @@ class DuckDBManager:
                         "symbol": report["symbol"],
                         "timeframe": report["timeframe"],
                         "dataset_id": dataset_id,
+                        "certification_id": certification_id,
                         "check_type": check_type,
-                        "issue_count": int(details["count"]),
+                        "issue_count": int(details.get("count", 0)),
                         "details": json.dumps(details, default=str),
                         "checked_at": report["checked_at"],
                     },
@@ -533,6 +531,7 @@ class DuckDBManager:
                     symbol,
                     timeframe,
                     dataset_id,
+                    certification_id,
                     check_type,
                     issue_count,
                     details,
@@ -543,6 +542,7 @@ class DuckDBManager:
                     symbol,
                     timeframe,
                     dataset_id,
+                    certification_id,
                     check_type,
                     issue_count,
                     details,
@@ -555,6 +555,51 @@ class DuckDBManager:
             raise
         finally:
             self._safe_unregister(table_name)
+
+    def log_atomic_quality_certification(
+        self,
+        *,
+        certification_id: str,
+        dataset_id: str,
+        validator_version: str,
+        check_count: int,
+        issue_count: int,
+        checks_json: str,
+        status: str,
+        started_at: datetime,
+        completed_at: datetime,
+        check_rows: list[dict[str, Any]],
+    ) -> None:
+        """Atomically persist a DQ certification batch and all child check rows in one transaction."""
+        with self._write_lock:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO data_quality_certifications (
+                        certification_id, dataset_id, validator_version,
+                        check_count, issue_count, checks_json, status,
+                        started_at, completed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        certification_id, dataset_id, validator_version,
+                        check_count, issue_count, checks_json, status,
+                        started_at, completed_at,
+                    ],
+                )
+                for r in check_rows:
+                    cur.execute(
+                        """
+                        INSERT INTO quality_report (
+                            symbol, timeframe, dataset_id, certification_id,
+                            check_type, issue_count, details, checked_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            r["symbol"], r["timeframe"], dataset_id, certification_id,
+                            r["check_type"], int(r["issue_count"]), r["details"], r["checked_at"],
+                        ],
+                    )
 
     def get_all_symbols(self) -> list[str]:
         """Return all distinct symbols stored in historical data."""
@@ -1372,8 +1417,12 @@ class DuckDBManager:
         if frame.empty:
             return
         temporary_name = f"temp_{table_name}_{uuid.uuid4().hex}"
-        columns = list(frame.columns)
-        column_sql = ", ".join(columns)
+        table_cols_rows = self.conn.execute(f"PRAGMA table_info('{table_name}')").fetchall()
+        valid_cols = {r[1] for r in table_cols_rows}
+        matched_cols = [col for col in frame.columns if col in valid_cols]
+        if not matched_cols:
+            return
+        column_sql = ", ".join(matched_cols)
         try:
             with self._write_lock:
                 self.conn.register(temporary_name, frame)

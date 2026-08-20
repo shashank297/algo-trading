@@ -231,22 +231,39 @@ class SynchronizedPanelBuilder:
                     [universe_name.upper()],
                 ).fetchall()
 
+            is_named_index = False
+            if universe_name and universe_name != "CONFIGURED_UNIVERSE":
+                named_count = self.db.conn.execute(
+                    "SELECT COUNT(*) FROM index_constituents_pit WHERE UPPER(universe_name) = ?",
+                    [universe_name.upper()],
+                ).fetchone()[0]
+                snapshot_count = self.db.conn.execute(
+                    "SELECT COUNT(*) FROM universe_snapshots WHERE snapshot_id = ? OR UPPER(name) = ?",
+                    [universe_snapshot_id, universe_name.upper()],
+                ).fetchone()[0]
+                if named_count > 0 or snapshot_count > 0 or universe_name.upper().startswith("NIFTY"):
+                    is_named_index = True
+
             if pit_rows:
                 pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until"])
                 pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
                 pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
                 
                 panel_dates = pd.to_datetime(panel["timestamp"]).dt.tz_convert(self.calendar.zone).dt.date
-                min_panel_date = panel_dates.min()
-                max_panel_date = panel_dates.max()
-                min_pit_date = pit_df["effective_from"].min()
-                if min_pit_date > min_panel_date:
-                    raise RuntimeError(
-                        f"PIT membership evidence for '{universe_name}' begins on {min_pit_date}, which does not cover requested research start date {min_panel_date}. Failing closed to prevent survivorship bias."
-                    )
-                # Ensure no end-date truncation when constituents have explicit end dates
-                has_open_ended = pit_df["effective_until"].isna().any()
-                if not has_open_ended:
+                
+                # Validate interval integrity
+                invalid_intervals = pit_df[pit_df["effective_until"].notna() & (pit_df["effective_from"] >= pit_df["effective_until"])]
+                if not invalid_intervals.empty:
+                    raise RuntimeError(f"Corrupt point-in-time intervals for '{universe_name}': effective_from >= effective_until.")
+
+                if not panel.empty:
+                    min_panel_date = panel_dates.min()
+                    max_panel_date = panel_dates.max()
+                    min_pit_date = pit_df["effective_from"].min()
+                    if min_pit_date and min_pit_date > min_panel_date:
+                        raise RuntimeError(
+                            f"PIT membership evidence for '{universe_name}' begins on {min_pit_date}, which does not cover requested research start date {min_panel_date}. Failing closed to prevent survivorship bias."
+                        )
                     max_pit_date = pit_df["effective_until"].dropna().max()
                     if max_pit_date and max_pit_date < max_panel_date:
                         raise RuntimeError(
@@ -272,19 +289,11 @@ class SynchronizedPanelBuilder:
                 panel["pit_eligible"] = is_member_mask
                 panel["eligible"] &= panel["pit_eligible"]
                 survivorship_bias = False
-            elif universe_name and universe_name != "CONFIGURED_UNIVERSE":
-                is_registered = self.db.conn.execute(
-                    "SELECT COUNT(*) FROM universe_snapshots WHERE UPPER(snapshot_id) = ? OR UPPER(name) = ?",
-                    [universe_name.upper(), universe_name.upper()],
-                ).fetchone()[0] > 0
-                if is_registered or "NIFTY" in universe_name.upper():
-                    raise RuntimeError(
-                        f"Missing point-in-time constituent history for universe '{universe_name}'. "
-                        f"Point-in-time constituent history is mandatory to eliminate survivorship bias."
-                    )
-                else:
-                    panel["pit_eligible"] = True
-                    survivorship_bias = True
+            elif is_named_index:
+                raise RuntimeError(
+                    f"Missing point-in-time constituent history for universe '{universe_name}'. "
+                    f"Point-in-time constituent history is mandatory to eliminate survivorship bias."
+                )
             else:
                 panel["pit_eligible"] = True
                 survivorship_bias = True

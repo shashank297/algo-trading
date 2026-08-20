@@ -369,11 +369,12 @@ def test_p1_9_fail_closed_data_quality(tmp_path):
     db = DuckDBManager(str(db_file))
     db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds1', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'h1', 'VERIFIED', 'CANONICAL_PROMOTED');")
     db.conn.execute("INSERT INTO historical_candles (token, symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id) VALUES ('2885', 'RELIANCE', 'NSE', '1d', '2026-01-01', 100, 105, 95, 100, 1000, 'UNADJUSTED', 'ANGEL', 'ds1');")
-    db.conn.execute("INSERT INTO quality_report (symbol, timeframe, check_type, issue_count, checked_at) VALUES ('RELIANCE', '1d', 'session_alignment', 2, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert1', 'ds1', 'validator-v1', 6, 2, '{}', 'FAILED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO quality_report (symbol, timeframe, dataset_id, certification_id, check_type, issue_count, checked_at) VALUES ('RELIANCE', '1d', 'ds1', 'cert1', 'session_alignment', 2, CURRENT_TIMESTAMP);")
     pipeline = StrategyPipeline(db=db)
 
-    # Issue count > 0 fails closed with DataQualityError
-    with pytest.raises(DataQualityError, match="failed session_alignment check"):
+    # Issue count > 0 or FAILED certification fails closed with DataQualityError
+    with pytest.raises(DataQualityError):
         pipeline.load_candles("RELIANCE", "1d", bypass_quality_gate=False)
 
 
@@ -673,13 +674,15 @@ def test_p1_9_missing_dq_certification_fails_closed(tmp_path):
     db = DuckDBManager(str(db_file))
     pipeline = StrategyPipeline(db=db, require_authoritative_certification=True)
 
-    # 1. No market_datasets record -> DataQualityError
-    with pytest.raises(DataQualityError, match="No canonical dataset record found"):
+    # 1. Row present with NULL dataset_id -> DataQualityError
+    db.conn.execute("INSERT INTO historical_candles (token, symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id) VALUES ('1594', 'INFY', 'NSE', '1d', '2026-01-01', 100, 105, 95, 100, 1000, 'UNADJUSTED', 'ANGEL', NULL);")
+    with pytest.raises(DataQualityError):
         pipeline.load_candles("INFY", "1d")
 
-    # 2. Add market_datasets as VERIFIED + CANONICAL_PROMOTED, but no quality_report -> DataQualityError
+    # 2. Add market_datasets as VERIFIED + CANONICAL_PROMOTED, but no quality certification -> DataQualityError
+    db.conn.execute("UPDATE historical_candles SET dataset_id = 'ds_infy' WHERE symbol = 'INFY';")
     db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_infy', 'INFY', 'INFY', 'NSE', '1d', 'ANGEL', 'h_infy', 'VERIFIED', 'CANONICAL_PROMOTED');")
-    with pytest.raises(DataQualityError, match="No quality report records found"):
+    with pytest.raises(DataQualityError):
         pipeline.load_candles("INFY", "1d")
 
 
@@ -743,3 +746,115 @@ def test_e11_snapshot_member_identity_validation(tmp_path):
     )
     with pytest.raises(ValueError, match="contains symbols .* not present in snapshot"):
         exp_mgr.run(spec)
+
+
+def test_e10_run_certification_service_and_promotion_engine(tmp_path):
+    """E-10: RunCertificationService generates immutable 5-category bundle and PromotionEngine consumes it."""
+    import json
+    from trading_stack.certification import RunCertificationService
+    from trading_stack.promotion import PromotionEngine
+    db = DuckDBManager(str(tmp_path / "cert_test.duckdb"))
+    
+    run_id = "RUN_CERT_TEST"
+    # Seed strategy_runs
+    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at) VALUES ('RUN_CERT_TEST', 'trend_following', 'INDIA_EQUITY', 'RELIANCE', '1d', 'event-driven', '{}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP);")
+    # Seed walk forward metrics
+    db.conn.execute("INSERT INTO walk_forward_metrics (run_id, fold_id, train_end, test_start, test_end, metric_name, metric_value) VALUES ('RUN_CERT_TEST', 'fold1', '2025-12-31', '2026-01-01', '2026-01-05', 'sharpe', 1.8);")
+    db.conn.execute("INSERT INTO walk_forward_metrics (run_id, fold_id, train_end, test_start, test_end, metric_name, metric_value) VALUES ('RUN_CERT_TEST', 'fold1', '2025-12-31', '2026-01-01', '2026-01-05', 'sortino', 2.2);")
+    # Seed walk forward round trips
+    db.conn.execute("INSERT INTO walk_forward_round_trips (trade_id, run_id, fold_id, symbol, entry_timestamp, exit_timestamp, quantity, entry_price, exit_price, entry_cost, exit_cost, gross_pnl, net_pnl, holding_period_days, entry_reason, exit_reason, exit_classification) VALUES ('t1', 'RUN_CERT_TEST', 'fold1', 'RELIANCE', '2026-01-01', '2026-01-05', 10, 100, 110, 1, 1, 100, 98, 4, 'ENTRY', 'SIGNAL', 'WIN');")
+    # Seed raw dataset and certification
+    db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_rel', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'raw1', 'VERIFIED', 'CANONICAL_PROMOTED');")
+    db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_rel', 'ds_rel', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+    # Seed historical candles
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds_rel', CURRENT_TIMESTAMP);")
+    # Seed strategy equity curve
+    db.conn.execute("INSERT INTO strategy_equity_curve VALUES ('RUN_CERT_TEST', '2026-01-01 15:30:00+05:30', 100000, 0, 0, 0, 0, 'OUT_OF_SAMPLE', 'fold1');")
+
+    service = RunCertificationService(db)
+    bundle_id = service.certify(run_id)
+    assert bundle_id is not None
+    certs = db.conn.execute("SELECT category, status FROM run_certifications WHERE bundle_id = ?", [bundle_id]).fetchall()
+    assert len(certs) == 5
+    for cat, stat in certs:
+        assert stat == "PASS"
+
+    # Review via PromotionEngine
+    engine = PromotionEngine(db)
+    review = engine.review(run_id)
+    assert review["certification_bundle_id"] == bundle_id
+    reasons = json.loads(str(review["reasons_json"]))
+    assert "data_quality_verified" not in reasons
+    assert "data_lineage_verified" not in reasons
+    assert "causality_certified" not in reasons
+    assert "zero_survivorship_bias" not in reasons
+
+
+def test_p1_9_duckdb_validator_comprehensive_checks(tmp_path):
+    """P1-9: DuckDBValidator executes all 6 required semantic checks and persists atomic certification."""
+    from validators.duckdb_quality import DuckDBValidator
+    db = DuckDBManager(str(tmp_path / "validator_test.duckdb"))
+    # Seed valid data
+    db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_valid', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'h1', 'VERIFIED', 'CANONICAL_PROMOTED');")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds_valid', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-02 15:30:00+05:30', 102, 108, 100, 105, 120000, 'UNADJUSTED', 'ANGEL', 'ds_valid', CURRENT_TIMESTAMP);")
+
+    validator = DuckDBValidator(timeframe="1d")
+    report = validator.run_all_checks(db, "RELIANCE", dataset_id="ds_valid", persist_atomic_certification=True)
+    assert report["passed"] is True
+    assert "certification_id" in report
+
+    # Verify atomic certification row was written
+    cert_row = db.conn.execute("SELECT status, check_count FROM data_quality_certifications WHERE certification_id = ?", [report["certification_id"]]).fetchone()
+    assert cert_row[0] == "CERTIFIED"
+    assert cert_row[1] == 6
+
+
+def test_e8_websocket_degraded_callbacks_and_untrusted_window(tmp_path):
+    """E-8: WebSocket sequence gap recovery callbacks and RealtimeBarAggregator untrusted window tagging."""
+    from unittest.mock import MagicMock
+    from smartapi.auth import SmartAPIAuth
+    from smartapi.websocket_client import SmartAPIWebSocketClient, ConnectionState
+    from data_platform.contracts import LiveTickerMode
+
+    db = DuckDBManager(str(tmp_path / "stream_rec.duckdb"))
+    auth = MagicMock(spec=SmartAPIAuth)
+    auth.websocket_authorization = "Bearer mock"
+    auth.api_key = "k"
+    auth.client_code = "c"
+    auth.feed_token = "f"
+
+    degraded_called = []
+    reanchored_called = []
+    gap_repaired_called = []
+
+    client = SmartAPIWebSocketClient(
+        auth=auth,
+        on_stream_degraded=lambda exch, tok, sym, gap, epoch: degraded_called.append((tok, gap, epoch)),
+        on_stream_reanchored=lambda exch, tok, sym, epoch: reanchored_called.append((tok, epoch)),
+        on_gap_repaired=lambda exch, tok, sym, gap_id: gap_repaired_called.append((tok, gap_id)),
+    )
+
+    agg = RealtimeBarAggregator(timeframe="1m")
+    gap_start = datetime(2026, 1, 1, 9, 15, tzinfo=timezone.utc)
+    gap_end = datetime(2026, 1, 1, 9, 20, tzinfo=timezone.utc)
+    agg.mark_untrusted("RELIANCE", gap_start, gap_end)
+
+    # Ingest tick within untrusted interval
+    tick = QuoteTick(
+        exchange="NSE",
+        token="2885",
+        symbol="RELIANCE",
+        mode=LiveTickerMode.QUOTE,
+        exchange_timestamp=datetime(2026, 1, 1, 9, 16, tzinfo=timezone.utc),
+        received_at_utc=datetime(2026, 1, 1, 9, 16, tzinfo=timezone.utc),
+        received_monotonic_ns=0,
+        raw_packet_size=100,
+        ltp=100.0,
+        cumulative_volume=500,
+    )
+    agg.process_tick(tick)
+    bar = agg.get_current_bar_snapshot("RELIANCE")
+    assert bar is not None
+    assert bar.is_authoritative is False
+    assert bar.quality_status == "UNTRUSTED"

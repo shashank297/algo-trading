@@ -73,6 +73,11 @@ class StreamSequenceTracker:
             self._last_sequences[stream_key] = sequence_number
             return is_gap, False, gap_size
 
+    def reset(self) -> None:
+        """Reset sequence tracker state on connection reconnect."""
+        with self._lock:
+            self._last_sequences.clear()
+
 
 @dataclass
 class StreamMetrics:

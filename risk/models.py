@@ -53,10 +53,10 @@ class TradeProposal(BaseModel):
 
     @field_validator("requested_notional", "capital", "current_position_notional")
     @classmethod
-    def validate_finite_floats(cls, value: float) -> float:
+    def validate_finite_numbers(cls, value: float) -> float:
         if not math.isfinite(value):
-            raise ValueError(f"Float value must be finite, got {value}")
-        return float(value)
+            raise ValueError(f"Value must be a finite number, got {value}")
+        return value
 
     @field_validator("symbol")
     @classmethod

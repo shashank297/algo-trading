@@ -300,17 +300,42 @@ class PortfolioEventBacktester:
                 continue
             row = day.loc[symbol]
             open_tick_missing = False
-            if mode == "paper" and (execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH"):
-                base_price = float(row.get("close") or row.get("price") or row.get("open") or 0.0)
+            observation = row.get("open_tick_observation")
+            if observation is not None and hasattr(observation, "price"):
+                if getattr(observation, "quality_state", "TRUSTED") == "TRUSTED" and float(observation.price) > 0:
+                    base_price = float(observation.price)
+                    execution_timestamp = pd.Timestamp(observation.timestamp)
+                    source_seq = getattr(observation, "sequence_number", None)
+                    execution_source = "OBSERVED_TICK"
+                else:
+                    open_tick_missing = True
+                    base_price = float(row.get("open") or row.get("close") or 1.0)
+                    execution_timestamp = date
+                    source_seq = None
+                    execution_source = "UNAVAILABLE"
             elif mode == "paper" and (execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN"):
                 open_tick = row.get("open_tick_price")
                 if open_tick is None or float(open_tick) <= 0:
                     open_tick_missing = True
                     base_price = float(row.get("open") or row.get("close") or 1.0)
+                    execution_timestamp = date
+                    source_seq = None
+                    execution_source = "UNAVAILABLE"
                 else:
                     base_price = float(open_tick)
+                    execution_timestamp = pd.Timestamp(row.get("open_tick_timestamp") or date)
+                    source_seq = row.get("source_sequence_number")
+                    execution_source = "OBSERVED_TICK"
+            elif mode == "paper" and (execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH"):
+                base_price = float(row.get("close") or row.get("price") or row.get("open") or 0.0)
+                execution_timestamp = date
+                source_seq = None
+                execution_source = "COMPLETED_BAR"
             else:
                 base_price = float(row.get("open") or row.get("close") or 0.0)
+                execution_timestamp = date
+                source_seq = None
+                execution_source = "COMPLETED_BAR"
 
             tw = float(target_by_symbol.get(symbol, 0.0)) if pd.notna(target_by_symbol.get(symbol, 0.0)) else 0.0
             target_quantity = float(np.floor(equity * tw / max(base_price, 1e-12))) if not pd.isna(base_price) and base_price > 0 else 0.0
@@ -320,7 +345,8 @@ class PortfolioEventBacktester:
                 continue
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
             requested_abs = float(abs(requested_quantity))
-            effective_schedule = get_cost_schedule(date)
+            sched_date = execution_timestamp.tz_convert("Asia/Kolkata").date() if hasattr(execution_timestamp, "tz_convert") and execution_timestamp.tzinfo else (execution_timestamp.date() if hasattr(execution_timestamp, "date") else date)
+            effective_schedule = get_cost_schedule(sched_date)
             lagged_adv_raw = row.get("lagged_adv20")
             lagged_adv = float(lagged_adv_raw) if pd.notna(lagged_adv_raw) and float(lagged_adv_raw) > 0 else np.nan
             lagged_val_raw = row.get("lagged_traded_value")
@@ -374,12 +400,16 @@ class PortfolioEventBacktester:
                 "order_id": order_id, "run_id": run_id, "symbol": symbol, "side": side.value,
                 "quantity": float(requested_abs), "order_type": OrderType.MARKET.value,
                 "time_in_force": TimeInForce.DAY.value, "status": status.value,
-                "requested_at": date, "filled_at": date if filled_quantity > 0 else None,
+                "requested_at": execution_timestamp, "filled_at": execution_timestamp if filled_quantity > 0 else None,
                 "limit_price": None, "stop_price": None,
                 "average_fill_price": execution_price if filled_quantity > 0 else None,
                 "slippage_bps": self.cost_schedule.slippage_bps,
                 "fees": breakdown.statutory_and_broker_fees if breakdown is not None else 0.0,
-                "metadata_json": json.dumps({"reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason}),
+                "metadata_json": json.dumps({
+                    "reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason,
+                    "execution_mode": execution_mode, "execution_source": execution_source,
+                    "execution_timestamp": str(execution_timestamp), "source_sequence_number": source_seq,
+                }),
             })
             if filled_quantity <= 0:
                 continue
@@ -395,7 +425,7 @@ class PortfolioEventBacktester:
             drag_costs = breakdown.execution_drag if breakdown is not None else 0.0
             if side == OrderSide.BUY:
                 if current_quantity <= 0:
-                    entry_timestamps[symbol] = date
+                    entry_timestamps[symbol] = execution_timestamp
                     entry_reasons[symbol] = reason
                 old_value = current_quantity * previous_average
                 new_quantity = current_quantity + filled_quantity
@@ -430,13 +460,13 @@ class PortfolioEventBacktester:
                 realized_pnl = gross_pnl - allocated_entry_cost - total_costs
                 exit_classification = "RANK_REMOVAL" if target_by_symbol.get(symbol, 0.0) <= 0 else "REBALANCE_REDUCTION"
                 if previous_entry is not None:
-                    holding_days = (date - previous_entry).total_seconds() / 86_400.0
+                    holding_days = (execution_timestamp - previous_entry).total_seconds() / 86_400.0
                     round_trips.append({
                         "trade_id": fill_id,
                         "run_id": run_id,
                         "symbol": symbol,
                         "entry_timestamp": previous_entry,
-                        "exit_timestamp": date,
+                        "exit_timestamp": execution_timestamp,
                         "quantity": float(filled_quantity),
                         "entry_price": previous_average,
                         "exit_price": execution_price,
@@ -459,14 +489,17 @@ class PortfolioEventBacktester:
                 entry_execution_cost_pools.pop(symbol, None)
             fills.append({
                 "fill_id": fill_id, "order_id": order_id, "run_id": run_id, "symbol": symbol,
-                "timestamp": date, "quantity": float(filled_quantity), "price": execution_price,
+                "timestamp": execution_timestamp, "quantity": float(filled_quantity), "price": execution_price,
                 "side": side.value, "fill_type": "PAPER" if mode == "paper" else "BACKTEST",
                 "fees": stat_fees, "slippage_bps": self.cost_schedule.slippage_bps,
-                "metadata_json": json.dumps({"reason": reason, "participation": participation}),
+                "metadata_json": json.dumps({
+                    "reason": reason, "participation": participation, "execution_mode": execution_mode,
+                    "execution_source": execution_source, "source_sequence_number": source_seq,
+                }),
             })
-            costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": date, **(breakdown.__dict__ if breakdown else {}), "total_cost": total_costs})
+            costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": execution_timestamp, **(breakdown.__dict__ if breakdown else {}), "total_cost": total_costs})
             attribution.append({
-                "run_id": run_id, "timestamp": date, "symbol": symbol, "side": side.value,
+                "run_id": run_id, "timestamp": execution_timestamp, "symbol": symbol, "side": side.value,
                 "reason": reason, "realized_pnl": realized_pnl, "cost": total_costs,
                 "target_weight": target_by_symbol.get(symbol, 0.0),
                 "quantity": float(filled_quantity), "price": execution_price,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -16,7 +17,11 @@ from risk.models import RiskAction, RiskDecision, TradeProposal
 from storage import DuckDBManager
 from trading_stack.backtest import ExecutionModel, PaperBroker
 from trading_stack.calendars import MarketCalendar
-from trading_stack.domain import OrderSide, PaperExecutionMode
+from trading_stack.domain import (
+    OpeningTickObservation,
+    OrderSide,
+    PaperExecutionMode,
+)
 from trading_stack.features import FeatureFactory
 from trading_stack.strategies import StrategyRegistry
 
@@ -69,6 +74,7 @@ class ForwardPaperSessionEngine:
         execution_mode: str = "EOD_BATCH",
         open_tick_price: float | None = None,
         open_tick_timestamp: datetime | None = None,
+        opening_observation: OpeningTickObservation | None = None,
     ) -> ForwardPaperResult:
         parameters = parameters or {}
         as_of = as_of or datetime.now(timezone.utc)
@@ -153,12 +159,24 @@ class ForwardPaperSessionEngine:
         round_trips: list[dict[str, Any]] = []
         risk_decisions: list[RiskDecision] = []
         for bar in new_bars.sort_values(by=["timestamp"]).to_dict(orient="records"):
-            if open_tick_price is not None:
-                bar["open_tick_price"] = open_tick_price
-            if open_tick_timestamp is not None:
-                bar["open_tick_timestamp"] = open_tick_timestamp
             bar_timestamp = pd.Timestamp(bar["timestamp"]).tz_convert("UTC")
             bar_session_date = bar_timestamp.tz_convert(self.calendar.zone).date()
+
+            if opening_observation is not None:
+                obs_ts = pd.Timestamp(opening_observation.timestamp)
+                obs_ts = obs_ts.tz_localize("UTC") if obs_ts.tzinfo is None else obs_ts
+                if obs_ts.tz_convert(self.calendar.zone).date() == bar_session_date:
+                    bar["open_tick_observation"] = opening_observation
+            elif open_tick_price is not None:
+                if open_tick_timestamp is not None:
+                    ts_val = pd.Timestamp(open_tick_timestamp)
+                    ts_val = ts_val.tz_localize("UTC") if ts_val.tzinfo is None else ts_val
+                    if ts_val.tz_convert(self.calendar.zone).date() == bar_session_date:
+                        bar["open_tick_price"] = open_tick_price
+                        bar["open_tick_timestamp"] = open_tick_timestamp
+                elif len(new_bars) == 1 and bar_timestamp == pd.Timestamp(new_bars.iloc[-1]["timestamp"]).tz_convert("UTC"):
+                    bar["open_tick_price"] = open_tick_price
+
             if daily_start_date != bar_session_date:
                 daily_start_equity = cash + quantity * float(bar["open"])
                 daily_start_date = bar_session_date
@@ -246,20 +264,50 @@ class ForwardPaperSessionEngine:
         dict[str, Any] | None, dict[str, Any] | None,
         dict[str, Any] | None, dict[str, Any] | None, RiskDecision | None,
     ]:
+        source_seq = None
+        execution_source = "COMPLETED_BAR"
         if execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH":
             price = float(bar.get("close") or bar.get("price") or 0.0)
             execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
         elif execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN":
-            open_tick_price = bar.get("open_tick_price")
-            if open_tick_price is None or float(open_tick_price) <= 0:
-                # No live opening tick observed. Do NOT fall back to completed bar open.
-                return (
-                    cash, quantity, average_cost, entry_timestamp, entry_reason, entry_cost_pool,
-                    entry_execution_cost_pool,
-                    None, None, None, None, None,
-                )
-            price = float(open_tick_price)
-            execution_timestamp = pd.Timestamp(bar.get("open_tick_timestamp") or bar["timestamp"]).to_pydatetime()
+            obs = bar.get("open_tick_observation")
+            if obs is not None and hasattr(obs, "price"):
+                if getattr(obs, "quality_state", "TRUSTED") == "TRUSTED" and float(obs.price) > 0:
+                    price = float(obs.price)
+                    execution_timestamp = pd.Timestamp(obs.timestamp).to_pydatetime()
+                    source_seq = getattr(obs, "sequence_number", None)
+                    execution_source = "OBSERVED_TICK"
+                else:
+                    price = float(bar.get("open") or bar.get("close") or 1.0)
+                    execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
+                    rejected_order = {
+                        "order_id": str(uuid.uuid4()), "run_id": session_id, "symbol": symbol,
+                        "side": (OrderSide.BUY if float(pending.get("target_position", 0.0)) > 0 else OrderSide.SELL).value,
+                        "quantity": 0.0, "order_type": "MARKET", "time_in_force": "DAY",
+                        "status": "REJECTED", "requested_at": execution_timestamp, "filled_at": None,
+                        "limit_price": None, "stop_price": None, "average_fill_price": None,
+                        "slippage_bps": 0.0, "fees": 0.0,
+                        "metadata_json": json.dumps({"reason": pending.get("reason", "signal"), "rejection_reason": "MISSED_LIVE_OPEN_PRICE", "execution_mode": execution_mode, "execution_source": "UNAVAILABLE"}),
+                    }
+                    return (cash, quantity, average_cost, entry_timestamp, entry_reason, entry_cost_pool, entry_execution_cost_pool, rejected_order, None, None, None, None)
+            elif bar.get("open_tick_price") is not None and float(bar["open_tick_price"]) > 0:
+                price = float(bar["open_tick_price"])
+                execution_timestamp = pd.Timestamp(bar.get("open_tick_timestamp") or bar["timestamp"]).to_pydatetime()
+                source_seq = bar.get("source_sequence_number")
+                execution_source = "OBSERVED_TICK"
+            else:
+                price = float(bar.get("open") or bar.get("close") or 1.0)
+                execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
+                rejected_order = {
+                    "order_id": str(uuid.uuid4()), "run_id": session_id, "symbol": symbol,
+                    "side": (OrderSide.BUY if float(pending.get("target_position", 0.0)) > 0 else OrderSide.SELL).value,
+                    "quantity": 0.0, "order_type": "MARKET", "time_in_force": "DAY",
+                    "status": "REJECTED", "requested_at": execution_timestamp, "filled_at": None,
+                    "limit_price": None, "stop_price": None, "average_fill_price": None,
+                    "slippage_bps": 0.0, "fees": 0.0,
+                    "metadata_json": json.dumps({"reason": pending.get("reason", "signal"), "rejection_reason": "MISSED_LIVE_OPEN_PRICE", "execution_mode": execution_mode, "execution_source": "UNAVAILABLE"}),
+                }
+                return (cash, quantity, average_cost, entry_timestamp, entry_reason, entry_cost_pool, entry_execution_cost_pool, rejected_order, None, None, None, None)
         else:
             price = float(bar.get("close") or bar.get("price") or 0.0)
             execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()

@@ -1,8 +1,6 @@
-"""High-level orchestration for research, backtesting, and paper trading."""
-
-from __future__ import annotations
-
+import hashlib
 import json
+import uuid
 from datetime import datetime, timezone
 from typing import Any
 
@@ -73,83 +71,10 @@ class StrategyPipeline:
         timeframe: str,
         *,
         bypass_quality_gate: bool = False,
-        require_authoritative_certification: bool = False,
+        require_authoritative_certification: bool | None = None,
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> pd.DataFrame:
         """Load stored candles for a symbol/timeframe from DuckDB, with optional corporate action adjustment."""
-
-        if not bypass_quality_gate:
-            must_certify = require_authoritative_certification or self.require_authoritative_certification
-            try:
-                # 1. Fetch exact latest dataset record from market_datasets
-                ds_record = self.db.conn.execute(
-                    """
-                    SELECT dataset_id, status, lifecycle_status FROM market_datasets
-                    WHERE canonical_symbol = ? AND timeframe = ?
-                    ORDER BY retrieved_at DESC LIMIT 1
-                    """,
-                    [symbol, timeframe],
-                ).fetchone()
-                if ds_record is not None:
-                    dataset_id, status, lifecycle_status = ds_record
-                    if status != "VERIFIED" or lifecycle_status != "CANONICAL_PROMOTED":
-                        raise DataQualityError(
-                            f"DataQualityError: Dataset {dataset_id} for {symbol} {timeframe} has status={status}, "
-                            f"lifecycle={lifecycle_status}; must be VERIFIED and CANONICAL_PROMOTED."
-                        )
-                    # 2. Check quality_report records scoped directly to this dataset
-                    quality_rows = self.db.conn.execute(
-                        """
-                        SELECT check_type, issue_count FROM quality_report 
-                        WHERE dataset_id = ? OR (dataset_id IS NULL AND symbol = ? AND timeframe = ?)
-                        ORDER BY checked_at DESC
-                        """,
-                        [dataset_id, symbol, timeframe],
-                    ).fetchall()
-                elif must_certify:
-                    raise DataQualityError(
-                        f"DataQualityError: No canonical dataset record found for {symbol} {timeframe}. "
-                        "Only verified, certified datasets may be used in research."
-                    )
-                else:
-                    quality_rows = self.db.conn.execute(
-                        """
-                        SELECT check_type, issue_count FROM quality_report 
-                        WHERE symbol = ? AND timeframe = ?
-                        ORDER BY checked_at DESC
-                        """,
-                        [symbol, timeframe],
-                    ).fetchall()
-
-                if must_certify and not quality_rows:
-                    raise DataQualityError(
-                        f"DataQualityError: No quality report records found for {symbol} {timeframe}. "
-                        "Positive data quality certification is required."
-                    )
-
-                observed_checks = set()
-                for q_type, count in quality_rows:
-                    observed_checks.add(q_type)
-                    if count and count > 0:
-                        raise DataQualityError(
-                            f"DataQualityError: {symbol} {timeframe} failed {q_type} check with {count} issues. "
-                            f"Resolve data quality or pass bypass_quality_gate=True."
-                        )
-
-                if must_certify:
-                    missing_checks = REQUIRED_AUTHORITATIVE_DQ_CHECKS - observed_checks
-                    if missing_checks:
-                        raise DataQualityError(
-                            f"DataQualityError: Incomplete DQ certification for {symbol} {timeframe}. "
-                            f"Missing required check categories: {sorted(missing_checks)}."
-                        )
-            except Exception as e:
-                if isinstance(e, DataQualityError):
-                    raise
-                logger.error("Data quality verification query failed for {}: {}", symbol, e)
-                raise DataQualityError(
-                    f"Data quality certification failed for {symbol} {timeframe}: {e}. Failing closed."
-                ) from e
 
         frame = self.db.conn.execute(
             """
@@ -163,6 +88,105 @@ class StrategyPipeline:
         ).df()
         if frame.empty:
             raise ValueError(f"No stored candles found for {symbol} {timeframe}")
+
+        if not bypass_quality_gate:
+            must_certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
+            try:
+                contributing_dataset_ids = [
+                    str(x).strip() for x in frame["dataset_id"].dropna().unique() if str(x).strip()
+                ]
+                null_dataset_count = int(frame["dataset_id"].isna().sum()) + int((frame["dataset_id"] == "").sum())
+
+                if must_certify:
+                    if null_dataset_count > 0 or not contributing_dataset_ids:
+                        raise DataQualityError(
+                            f"DataQualityError: {null_dataset_count} uncertified candle rows present with NULL dataset_id for {symbol} {timeframe}. "
+                            "Authoritative research requires every row to belong to a verified, certified dataset."
+                        )
+
+                    for ds_id in contributing_dataset_ids:
+                        # 1. Verify dataset in market_datasets
+                        ds_record = self.db.conn.execute(
+                            "SELECT status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
+                            [ds_id],
+                        ).fetchone()
+                        if not ds_record or ds_record[0] != "VERIFIED" or ds_record[1] != "CANONICAL_PROMOTED":
+                            raise DataQualityError(
+                                f"DataQualityError: Dataset {ds_id} contributing to {symbol} {timeframe} has status={ds_record[0] if ds_record else 'NONE'}, "
+                                f"lifecycle={ds_record[1] if ds_record else 'NONE'}; must be VERIFIED and CANONICAL_PROMOTED."
+                            )
+
+                        # 2. Verify atomic certification batch in data_quality_certifications
+                        cert_record = self.db.conn.execute(
+                            "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                            [ds_id],
+                        ).fetchone()
+                        if not cert_record or cert_record[1] != "CERTIFIED" or int(cert_record[2]) > 0:
+                            raise DataQualityError(
+                                f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} does not possess an active CERTIFIED batch in data_quality_certifications."
+                            )
+
+                        cert_id = cert_record[0]
+                        # 3. Verify exact 6 child checks in quality_report
+                        quality_rows = self.db.conn.execute(
+                            "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
+                            [cert_id],
+                        ).fetchall()
+                        observed_checks = {r[0] for r in quality_rows if int(r[1]) == 0}
+                        missing_checks = REQUIRED_AUTHORITATIVE_DQ_CHECKS - observed_checks
+                        if missing_checks:
+                            raise DataQualityError(
+                                f"DataQualityError: Incomplete DQ certification for dataset {ds_id} ({symbol} {timeframe}). "
+                                f"Missing required check categories: {sorted(missing_checks)}."
+                            )
+
+                    # Composed research frame validation
+                    # Timestamp duplicates
+                    dup_count = int(frame.duplicated(subset=["timestamp"]).sum())
+                    if dup_count > 0:
+                        raise DataQualityError(f"DataQualityError: Composed frame for {symbol} contains {dup_count} duplicate timestamps.")
+
+                    # Timestamp monotonicity
+                    ts_series = pd.to_datetime(frame["timestamp"], utc=True)
+                    if not ts_series.is_monotonic_increasing:
+                        raise DataQualityError(f"DataQualityError: Composed frame for {symbol} timestamps are not strictly monotonic.")
+
+                    # OHLC validity
+                    if (frame["high"] < frame["low"]).any() or (frame["open"] <= 0).any() or (frame["close"] <= 0).any() or (frame["volume"] < 0).any():
+                        raise DataQualityError(f"DataQualityError: Composed frame for {symbol} contains OHLC integrity violations.")
+
+                    # Persist research frame certification
+                    frame_hash = hashlib.sha256(frame[["timestamp", "open", "high", "low", "close", "volume"]].to_json().encode()).hexdigest()[:16]
+                    frame_cert_id = str(uuid.uuid4())
+                    now_utc = datetime.now(timezone.utc)
+                    self.db.conn.execute(
+                        """
+                        INSERT INTO research_frame_certifications (
+                            frame_certification_id, research_frame_hash, contributing_dataset_ids_json,
+                            symbol, timeframe, row_count, basis, validator_version, status, verified_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            frame_cert_id, frame_hash, json.dumps(contributing_dataset_ids),
+                            symbol, timeframe, len(frame), str(adjustment), "validator-v1", "CERTIFIED", now_utc,
+                        ],
+                    )
+                else:
+                    # Non-authoritative fallback check on quality_report
+                    quality_rows = self.db.conn.execute(
+                        "SELECT check_type, issue_count FROM quality_report WHERE symbol = ? AND timeframe = ? ORDER BY checked_at DESC",
+                        [symbol, timeframe],
+                    ).fetchall()
+                    for q_type, count in quality_rows:
+                        if count and int(count) > 0:
+                            raise DataQualityError(f"DataQualityError: {symbol} {timeframe} failed {q_type} check with {count} issues.")
+            except Exception as e:
+                if isinstance(e, DataQualityError):
+                    raise
+                logger.error("Data quality verification failed for {}: {}", symbol, e)
+                raise DataQualityError(
+                    f"Data quality certification failed for {symbol} {timeframe}: {e}. Failing closed."
+                ) from e
 
         adj_enum = (
             adjustment if isinstance(adjustment, PriceAdjustment)

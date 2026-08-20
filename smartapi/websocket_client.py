@@ -59,6 +59,9 @@ class SmartAPIWebSocketClient:
         quarantine_conn: Any = None,
         quarantine_db_path: str | None = None,
         raw_packet_sink: Any | None = None,
+        on_stream_degraded: Any | None = None,
+        on_stream_reanchored: Any | None = None,
+        on_gap_repaired: Any | None = None,
     ) -> None:
         """Initialize the WebSocket client."""
         self.auth = auth
@@ -68,6 +71,9 @@ class SmartAPIWebSocketClient:
         self.ping_interval = ping_interval_seconds
         self.allow_insecure_tls = allow_insecure_tls
         self.raw_packet_sink = raw_packet_sink
+        self.on_stream_degraded = on_stream_degraded
+        self.on_stream_reanchored = on_stream_reanchored
+        self.on_gap_repaired = on_gap_repaired
         self._quarantine_conn = quarantine_conn
         self._quarantine_db_path = quarantine_db_path
 
@@ -290,33 +296,34 @@ class SmartAPIWebSocketClient:
         return {"cert_reqs": ssl.CERT_REQUIRED}
 
     def _on_open(self, ws: websocket.WebSocketApp, generation: int) -> None:
-        """Handle socket connection open."""
+        """Handle WebSocket connection open event."""
         with self._state_lock:
-            if generation != self._generation_id or self._state == ConnectionState.STOPPING:
+            if generation != self._generation_id:
                 return
             self._state = ConnectionState.CONNECTED
-            self._last_rx_monotonic = self._monotonic()
             self._connected_monotonic = self._monotonic()
+            self._last_rx_monotonic = self._monotonic()
             self._reconnect_attempts = 0
 
-        logger.info("🟢 SmartStream WebSocket connected (gen={}).", generation)
+        self.metrics.connection_uptime_seconds = 0.0
+        self.metrics.sequence_tracker.reset()
+        logger.info("WebSocket connected (generation={})", generation)
 
-        # Replay all desired subscriptions
-        desired = self.registry.get_desired_state()
+        # Re-subscribe desired subscriptions
+        desired = self.registry.desired_subscriptions
         if desired:
             payloads = self.registry.build_action_payloads(desired, action=1)
             for p in payloads:
                 self._send_json(p)
-                self.metrics.subscription_replay_total += len(desired)
-            logger.info("📡 Replayed {} subscriptions across {} batches.", len(desired), len(payloads))
 
     def _on_data(
         self,
         ws: websocket.WebSocketApp,
-        data: bytes | str,
-        opcode: int,
-        fin: int,
-        generation: int,
+        data: Any,
+        opcode: int = 2,
+        fin: int = 1,
+        generation: int = 0,
+        **kwargs: Any,
     ) -> None:
         """Handle incoming binary market data packet."""
         recv_ns = time.monotonic_ns()
@@ -324,7 +331,11 @@ class SmartAPIWebSocketClient:
         self._last_rx_monotonic = self._monotonic()
 
         with self._state_lock:
-            if generation != self._generation_id or self._state not in (ConnectionState.CONNECTED, ConnectionState.CONNECTING):
+            if generation != self._generation_id or self._state not in (
+                ConnectionState.CONNECTED,
+                ConnectionState.CONNECTING,
+                ConnectionState.DEGRADED,
+            ):
                 return
 
         self.metrics.packets_received_total += 1
@@ -364,21 +375,44 @@ class SmartAPIWebSocketClient:
                 is_gap, is_dup, gap_size = self.metrics.sequence_tracker.inspect_sequence(event.exchange, event.token, seq_num)
                 if is_gap:
                     self.metrics.sequence_gaps_total += gap_size
+                    self._recovery_epoch += 1
+                    curr_epoch = self._recovery_epoch
                     with self._state_lock:
                         if self._state == ConnectionState.CONNECTED:
                             self._state = ConnectionState.DEGRADED
+                    resolved_sym = symbol_lookup(getattr(event, "exchange", "NSE"), getattr(event, "token", "")) or getattr(event, "token", "")
                     logger.warning(
-                        "Stream sequence gap detected: exchange={} token={} gap_size={}; transitioning connection to DEGRADED state and triggering resynchronization.",
-                        event.exchange, event.token, gap_size,
+                        "Stream sequence gap detected: exchange={} token={} symbol={} gap_size={}; transitioning connection to DEGRADED state and triggering resynchronization (epoch={}).",
+                        event.exchange, event.token, resolved_sym, gap_size, curr_epoch,
                     )
+                    if self.on_stream_degraded is not None:
+                        try:
+                            self.on_stream_degraded(event.exchange, event.token, resolved_sym, (recv_utc, None), curr_epoch)
+                        except Exception as exc:
+                            logger.error("Error in on_stream_degraded callback: {}", exc)
                     self._trigger_stream_resync(getattr(event, "exchange", "NSE"), getattr(event, "token", ""))
                 elif is_dup:
                     self.metrics.duplicate_packets_total += 1
                 else:
+                    was_degraded = False
                     with self._state_lock:
                         if self._state == ConnectionState.DEGRADED:
                             self._state = ConnectionState.CONNECTED
-                            logger.info("Stream synchronized: restored connection state to CONNECTED.")
+                            was_degraded = True
+                    if was_degraded:
+                        resolved_sym = symbol_lookup(getattr(event, "exchange", "NSE"), getattr(event, "token", "")) or getattr(event, "token", "")
+                        logger.info("Stream synchronized: restored connection state to CONNECTED for {}.", resolved_sym)
+                        if self.on_stream_reanchored is not None:
+                            try:
+                                self.on_stream_reanchored(event.exchange, event.token, resolved_sym, self._recovery_epoch)
+                            except Exception as exc:
+                                logger.error("Error in on_stream_reanchored callback: {}", exc)
+
+            # Tag tick quality state based on connection state
+            if self.state == ConnectionState.DEGRADED:
+                object.__setattr__(event, "quality_state", "DEGRADED")
+            else:
+                object.__setattr__(event, "quality_state", "TRUSTED")
 
             # Admission validation gate (mandatory fail-closed)
             admission = self.admission_validator.validate(event, received_at_utc=recv_utc)

@@ -6,12 +6,15 @@ from typing import Any
 
 
 CHECK_SEVERITY = {
+    "schema": "CRITICAL",
     "duplicates": "CRITICAL",
     "future_timestamps": "CRITICAL",
     "null_values": "CRITICAL",
     "ohlc_integrity": "CRITICAL",
+    "timestamp_integrity": "CRITICAL",
     "missing_candles": "ERROR",
     "session_alignment": "ERROR",
+    "missing_sessions": "ERROR",
     "anomalies": "WARNING",
 }
 

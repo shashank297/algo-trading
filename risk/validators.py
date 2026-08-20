@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import abc
+import math
+from typing import Any
 from risk.models import RiskPolicy, TradeProposal
 
 
@@ -16,32 +18,44 @@ class RiskValidator(abc.ABC):
 
 
 class RequiredRiskStateValidator(RiskValidator):
-    """Fail-closed check that mandatory risk state is provided for risk-increasing orders."""
+    """Fail-closed check that mandatory risk state is provided and finite for risk-increasing orders."""
 
     def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
         if proposal.is_pure_risk_reduction:
             return proposal.requested_notional, []
 
-        missing_fields: list[str] = []
-        if proposal.capital is None or proposal.capital <= 0:
-            missing_fields.append("capital")
-        if proposal.current_gross_exposure is None or proposal.current_gross_exposure < 0:
-            missing_fields.append("current_gross_exposure")
-        if proposal.daily_pnl is None:
-            missing_fields.append("daily_pnl")
-        if proposal.current_drawdown is None or proposal.current_drawdown < 0:
-            missing_fields.append("current_drawdown")
-        if proposal.current_sector_exposure is None or proposal.current_sector_exposure < 0:
-            missing_fields.append("current_sector_exposure")
-        if proposal.open_position_count is None or proposal.open_position_count < 0:
-            missing_fields.append("open_position_count")
-        if proposal.daily_turnover_crore is None or proposal.daily_turnover_crore < 0:
-            missing_fields.append("daily_turnover_crore")
-        if proposal.estimated_portfolio_var_pct is None or proposal.estimated_portfolio_var_pct < 0:
-            missing_fields.append("estimated_portfolio_var_pct")
+        reasons: list[str] = []
 
-        if missing_fields:
-            reasons = [f"MISSING_RISK_STATE:{field}" for field in missing_fields]
+        def check_field(name: str, val: Any, allow_negative: bool = False, require_positive: bool = False, is_int: bool = False) -> None:
+            if val is None:
+                reasons.append(f"MISSING_RISK_STATE:{name}")
+                return
+            if is_int:
+                if not isinstance(val, int) or isinstance(val, bool) or val < 0:
+                    reasons.append(f"INVALID_RISK_STATE:{name}")
+                return
+            if not isinstance(val, (int, float)) or isinstance(val, bool) or not math.isfinite(val):
+                reasons.append(f"INVALID_RISK_STATE:{name}")
+                return
+            if require_positive and val <= 0:
+                reasons.append(f"INVALID_RISK_STATE:{name}")
+                return
+            if not allow_negative and val < 0:
+                reasons.append(f"INVALID_RISK_STATE:{name}")
+                return
+
+        check_field("capital", proposal.capital, require_positive=True)
+        check_field("requested_notional", proposal.requested_notional, require_positive=True)
+        check_field("current_position_notional", proposal.current_position_notional, allow_negative=True)
+        check_field("daily_pnl", proposal.daily_pnl, allow_negative=True)
+        check_field("current_gross_exposure", proposal.current_gross_exposure)
+        check_field("current_sector_exposure", proposal.current_sector_exposure)
+        check_field("current_drawdown", proposal.current_drawdown)
+        check_field("daily_turnover_crore", proposal.daily_turnover_crore)
+        check_field("estimated_portfolio_var_pct", proposal.estimated_portfolio_var_pct)
+        check_field("open_position_count", proposal.open_position_count, is_int=True)
+
+        if reasons:
             return 0.0, reasons
 
         return proposal.requested_notional, []
