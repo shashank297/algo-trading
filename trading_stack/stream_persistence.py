@@ -61,6 +61,9 @@ class DuckDBStreamWriter:
         self._running = False
         self._thread: threading.Thread | None = None
         self._conn: duckdb.DuckDBPyConnection | None = None
+        self._flush_failures_total = 0
+        self._retried_records_total = 0
+        self._spooled_records_total = 0
         self._dropped_records = 0
         self._health = PersistenceHealth.STOPPED
 
@@ -230,10 +233,13 @@ class DuckDBStreamWriter:
                     tick_batch.clear()
                 else:
                     self._health = PersistenceHealth.DEGRADED
-                    self._dropped_records += len(tick_batch)
+                    self._flush_failures_total += 1
+                    self._retried_records_total += len(tick_batch)
                     if len(tick_batch) > 10_000:
                         spill = tick_batch[: len(tick_batch) - 5_000]
                         self._spool_dead_letter("tick", spill)
+                        self._spooled_records_total += len(spill)
+                        self._dropped_records += len(spill)
                         for _ in range(len(spill)):
                             self._queue.task_done()
                         del tick_batch[: len(tick_batch) - 5_000]
@@ -244,10 +250,13 @@ class DuckDBStreamWriter:
                     bar_batch.clear()
                 else:
                     self._health = PersistenceHealth.DEGRADED
-                    self._dropped_records += len(bar_batch)
+                    self._flush_failures_total += 1
+                    self._retried_records_total += len(bar_batch)
                     if len(bar_batch) > 10_000:
                         spill = bar_batch[: len(bar_batch) - 5_000]
                         self._spool_dead_letter("bar", spill)
+                        self._spooled_records_total += len(spill)
+                        self._dropped_records += len(spill)
                         for _ in range(len(spill)):
                             self._queue.task_done()
                         del bar_batch[: len(bar_batch) - 5_000]

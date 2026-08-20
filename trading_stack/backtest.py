@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from trading_stack.domain import AssetClass, BacktestMetrics, OrderSide, OrderStatus, OrderType, StrategyRun, TimeInForce
+from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import (
     IndianDeliveryCostSchedule,
     UnexecutableOrderError,
@@ -802,15 +803,17 @@ def _max_drawdown_duration(drawdown: pd.Series) -> int:
     return longest
 
 
-def _annualization_factor(timeframe: str) -> float:
+def _annualization_factor(timeframe: str, calendar: MarketCalendar | None = None) -> float:
+    if calendar is not None:
+        return calendar.annualization_factor(timeframe)
     label = str(timeframe).lower()
     if label.endswith("m"):
         minutes = int(label[:-1] or 1)
-        bars_per_day = max(int(round(390 / minutes)), 1)
+        bars_per_day = max(int(round(375 / minutes)), 1)
         return 252.0 * bars_per_day
     if label.endswith("h"):
         hours = int(label[:-1] or 1)
-        bars_per_day = max(int(round(6.5 / hours)), 1)
+        bars_per_day = max(int(round(6.25 / hours)), 1)
         return 252.0 * bars_per_day
     return 252.0
 

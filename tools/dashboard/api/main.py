@@ -40,14 +40,11 @@ DB_PATH = Path(__file__).resolve().parent.parent.parent.parent / "market_data.du
 
 def get_db():
     if not DB_PATH.exists():
-        raise HTTPException(status_code=500, detail="Database file not found")
+        raise HTTPException(status_code=500, detail=f"Database file not found at {DB_PATH}")
     try:
         return duckdb.connect(str(DB_PATH), read_only=True)
-    except Exception:
-        try:
-            return duckdb.connect(str(DB_PATH))
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Database read-only connection error: {str(e)}")
 
 
 
@@ -314,13 +311,23 @@ def get_analytics_stats(
             # Scope: absolute ₹ profit from matching trades
             base_investment_profit = _safe_float(row["total_pnl"])
         else:
-            # Full-run: use stored total_return * 100,000 for consistency
+            # Full-run: resolve starting_capital from strategy_runs or default to 100k
+            df_cap = conn.execute(
+                "SELECT starting_capital FROM strategy_runs WHERE run_id = ?",
+                [run_id],
+            ).df()
+            start_cap = (
+                _safe_float(df_cap["starting_capital"].iloc[0])
+                if not df_cap.empty and "starting_capital" in df_cap.columns and pd.notna(df_cap["starting_capital"].iloc[0])
+                else 100_000.0
+            )
+
             df_ret = conn.execute(
                 "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'total_return'",
                 [run_id],
             ).df()
             net_return = _safe_float(df_ret["metric_value"].iloc[0]) if not df_ret.empty else 0.0
-            base_investment_profit = net_return * 100_000.0
+            base_investment_profit = net_return * start_cap
 
         # Max drawdown from stored metrics
         df_dd = conn.execute(

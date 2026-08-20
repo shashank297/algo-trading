@@ -284,7 +284,8 @@ class ForwardPaperSessionEngine:
             price=price, timestamp=pd.Timestamp(bar["timestamp"]).to_pydatetime(),
             metadata={"signal_timestamp": str(pending["signal_timestamp"]), "reason": pending["reason"]},
             risk_decision=decision,
-            volume=float(bar.get("volume") or 0.0), close_price=float(bar.get("close") or price),
+            volume=float(bar.get("lagged_adv20") or bar.get("prior_volume") or bar.get("volume") or 0.0),
+            close_price=float(bar.get("prior_close") or bar.get("open") or price),
         ) if (abs(delta) >= 1 or decision.action == RiskAction.REJECT) else None
         if execution is None:
             return (

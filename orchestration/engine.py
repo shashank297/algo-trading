@@ -114,9 +114,9 @@ class TaskOrchestrator:
         self.db.update_research_task(task_id, state=TaskState.PENDING.value)
 
     def cancel_task(self, task_id: str) -> None:
-        """Cancel a task before any agent or execution tool can act on it."""
+        """Cancel a task before or during execution."""
 
-        self._require_state(task_id, {TaskState.PENDING, TaskState.WAITING, TaskState.RETRYING})
+        self._require_state(task_id, {TaskState.PENDING, TaskState.WAITING, TaskState.RETRYING, TaskState.RUNNING})
         self.db.update_research_task(task_id, state=TaskState.CANCELLED.value, finished_at=datetime.now(timezone.utc))
 
     def _require_state(self, task_id: str, allowed: set[TaskState]) -> None:

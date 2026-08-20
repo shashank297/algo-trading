@@ -79,6 +79,28 @@ class MarketCalendar:
             return trading_date.weekday() < 5
         return trading_date.weekday() < 5 and trading_date not in self.spec.holidays
 
+    @property
+    def session_minutes(self) -> float:
+        """Return standard session duration in minutes."""
+        start_min = self.session_open.hour * 60 + self.session_open.minute
+        end_min = self.session_close.hour * 60 + self.session_close.minute
+        if end_min < start_min:
+            end_min += 24 * 60
+        return float(max(end_min - start_min, 1))
+
+    def annualization_factor(self, timeframe: str) -> float:
+        """Calculate dynamic periods per year based on session duration."""
+        label = str(timeframe).lower()
+        if label.endswith("m"):
+            minutes = int(label[:-1] or 1)
+            bars_per_day = max(int(round(self.session_minutes / minutes)), 1)
+            return 252.0 * bars_per_day
+        if label.endswith("h"):
+            hours = int(label[:-1] or 1)
+            bars_per_day = max(int(round((self.session_minutes / 60.0) / hours)), 1)
+            return 252.0 * bars_per_day
+        return 252.0
+
     def is_special_session(self, trading_date: date) -> bool:
         """Return whether a date is an explicitly declared non-standard session."""
 

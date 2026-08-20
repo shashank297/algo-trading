@@ -113,10 +113,16 @@ class HistoricalDataClient:
             rpm=int(rate_limit_config["requests_per_minute"]),
         )
         self.endpoint = f"{config['smartapi']['base_url'].rstrip('/')}{self.HISTORICAL_ENDPOINT}"
-        self._session = requests.Session()
+        self._local = threading.local()
         timezone_config = config["timezone"]
         self.market_open = time_value.fromisoformat(timezone_config["market_open"])
         self.market_close = time_value.fromisoformat(timezone_config["market_close"])
+
+    @property
+    def _session(self) -> requests.Session:
+        if not hasattr(self._local, "session") or self._local.session is None:
+            self._local.session = requests.Session()
+        return self._local.session
 
     def fetch_candles(
         self,
@@ -308,12 +314,17 @@ class HistoricalDataClient:
                 if len(row) < 6:
                     logger.warning("Skipping malformed candle row: {}", row)
                     continue
-                # SmartAPI can return naive timestamps that are actually IST. 
-                # Forcing UTC fixes timezone shift bugs.
-                timestamp = pd.to_datetime(row[0], utc=True).to_pydatetime()
+                # SmartAPI can return naive timestamps that are actually IST.
+                # Explicitly localize naive timestamps to IST to prevent UTC shift.
+                ts = pd.Timestamp(row[0])
+                if ts.tzinfo is None:
+                    ts = ts.tz_localize(IST)
+                else:
+                    ts = ts.tz_convert(IST)
+                timestamp = ts.to_pydatetime()
                 parsed_rows.append(
                     {
-                        "timestamp": timestamp.astimezone(IST),
+                        "timestamp": timestamp,
                         "open": row[1],
                         "high": row[2],
                         "low": row[3],

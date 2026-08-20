@@ -45,7 +45,11 @@ class CrossSectionalRankingStrategy(BaseStrategy):
         if ranked.empty:
             return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
 
-        # Point-in-Time Universe filtering (eliminates survivorship bias)
+        # Point-in-Time Universe filtering via dataset eligible column
+        if "eligible" in panel.columns:
+            panel = panel[panel["eligible"]].copy()
+
+        # Legacy fallback if pit_db_conn is explicitly provided in strategy parameters
         universe_name = self.parameters.get("universe_name") or self.parameters.get("pit_universe_name")
         pit_conn = self.parameters.get("pit_db_conn") or self.parameters.get("db_conn")
         if universe_name and pit_conn is not None:

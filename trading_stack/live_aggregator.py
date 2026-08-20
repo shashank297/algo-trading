@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Callable
 
 import pandas as pd
@@ -38,7 +39,13 @@ TIMEFRAME_SECONDS: dict[str, int] = {
 
 def _floor_timestamp_to_window(dt: datetime, timeframe: str) -> pd.Timestamp:
     """Align a datetime to the start boundary of its timeframe candle window."""
-    secs = TIMEFRAME_SECONDS.get(timeframe.lower(), 60)
+    tf = timeframe.lower()
+    if tf == "1d":
+        # Align daily bars to the start of the NSE trading session (09:15 IST)
+        local_dt = pd.Timestamp(dt).tz_convert("Asia/Kolkata") if getattr(dt, "tzinfo", None) else pd.Timestamp(dt, tz="Asia/Kolkata")
+        session_start = datetime.combine(local_dt.date(), time(9, 15), tzinfo=ZoneInfo("Asia/Kolkata"))
+        return pd.Timestamp(session_start.astimezone(timezone.utc))
+    secs = TIMEFRAME_SECONDS.get(tf, 60)
     epoch_secs = int(dt.timestamp())
     window_start_secs = (epoch_secs // secs) * secs
     return pd.Timestamp(datetime.fromtimestamp(window_start_secs, tz=timezone.utc))
@@ -150,12 +157,14 @@ class RealtimeBarAggregator:
                 tick_volume = None
 
 
-            # If tick belongs to a strictly NEWER window, finalize the open older bar
+            # If tick belongs to a strictly NEWER window, finalize the open older bar if lateness period elapsed
             if open_bar is not None and window_start > open_bar["window_start"]:
                 if (sym, open_bar["window_start"]) not in self._closed_windows:
                     bar = self._build_bar(open_bar, is_final=True)
                     completed_bars.append(bar)
                     self._closed_windows.add((sym, open_bar["window_start"]))
+                    if len(self._closed_windows) > 10_000:
+                        self._closed_windows = set(list(self._closed_windows)[-5000:])
                 open_bar = None
                 self._open_bars.pop(sym, None)
 

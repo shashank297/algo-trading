@@ -161,9 +161,6 @@ class ForwardPortfolioPaperSessionEngine:
 
         for session_timestamp in dates:
             day = panel[panel["timestamp"] == session_timestamp].set_index("symbol", drop=False)
-            # A temporary missing bar freezes that holding at its last observed close.
-            # The rebalance engine skips unavailable symbols rather than inventing OHLC data.
-            latest_prices.update({str(symbol): float(row["close"]) for symbol, row in day.iterrows()})
             session_date = session_timestamp.tz_convert(self.calendar.zone).date()
             if session_date != daily_start_date:
                 daily_start_equity = cash + sum(
@@ -194,6 +191,10 @@ class ForwardPortfolioPaperSessionEngine:
                 all_round_trips.extend(generated["round_trips"])
                 all_costs.extend(generated["costs"])
                 all_rebalances.append(generated["rebalance"])
+
+            # A temporary missing bar freezes that holding at its last observed close.
+            # Update latest_prices with completed session's close after rebalance execution
+            latest_prices.update({str(symbol): float(row["close"]) for symbol, row in day.iterrows()})
             pending = self._targets_at_or_before(signals, session_timestamp)
             equity = cash + sum(quantity * latest_prices[symbol] for symbol, quantity in quantities.items())
             peak_equity = max(peak_equity, equity)

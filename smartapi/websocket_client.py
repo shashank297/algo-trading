@@ -177,9 +177,21 @@ class SmartAPIWebSocketClient:
         if self._ws_thread and self._ws_thread.is_alive():
             self._ws_thread.join(timeout=2.0)
 
+        # Lossless shutdown: drain dispatch and quarantine queues before closing
+        start_drain = time.monotonic()
+        while not self._dispatch_queue.empty() and (time.monotonic() - start_drain) < 3.0:
+            time.sleep(0.05)
+        while not self._quarantine_queue.empty() and (time.monotonic() - start_drain) < 3.0:
+            time.sleep(0.05)
+
         with self._state_lock:
             self._state = ConnectionState.STOPPED
             self._ws = None
+
+        if self._dispatch_thread and self._dispatch_thread.is_alive():
+            self._dispatch_thread.join(timeout=1.0)
+        if self._quarantine_thread and self._quarantine_thread.is_alive():
+            self._quarantine_thread.join(timeout=1.0)
 
         logger.info("🛑 SmartAPI WebSocket client stopped.")
 

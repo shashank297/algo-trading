@@ -485,7 +485,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     instrument_master.download_instrument_master()
 
     stream_mode = LiveTickerMode(args.stream_mode)
-    calendar = build_nse_calendar()
+    calendar = configured_nse_calendar(bootstrap_config)
     admission_policy = LiveAdmissionPolicy(
         max_future_skew_seconds=1.0,
         max_stale_latency_seconds=2.0,
@@ -510,7 +510,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     db_writer = DuckDBStreamWriter(db_path=db_path, batch_size=200, flush_interval_seconds=1.0)
     db_writer.start()
 
-    aggregator = RealtimeBarAggregator(timeframe="1m")
+    aggregator = RealtimeBarAggregator(timeframe="1m", market_calendar=calendar)
 
     latest_ticks: dict[str, Any] = {}
     ticks_lock = threading.Lock()
@@ -538,18 +538,15 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     client.subscribe_tick(on_tick)
     aggregator.subscribe_bar(on_bar)
 
-    # Determine symbols to stream
+    # Determine symbols to stream (fail closed on missing snapshot)
     symbols_to_stream: list[str] = []
     if args.symbols:
         symbols_to_stream = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     elif args.universe_snapshot:
-        snapshot_path = PROJECT_ROOT / "config" / "universes" / f"{args.universe_snapshot}.yaml"
-        if snapshot_path.is_file():
-            snapshot_data = load_yaml(str(snapshot_path))
-            symbols_to_stream = [
-                str(m["symbol"]) for m in snapshot_data.get("members", [])
-                if m.get("paper_eligible", True)
-            ]
+        db = DuckDBManager(db_path)
+        symbols_to_stream = load_universe_snapshot_symbols(db, args.universe_snapshot)
+        if not symbols_to_stream:
+            raise ValueError(f"Universe snapshot '{args.universe_snapshot}' could not be resolved from database.")
     if not symbols_to_stream:
         symbols_config = load_yaml(str(PROJECT_ROOT / "config" / "symbols.yaml"))
         symbols_to_stream = [str(s["symbol"]) for s in symbols_config.get("symbols", [])]

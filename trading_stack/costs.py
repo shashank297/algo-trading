@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import asdict, dataclass
-from datetime import date
+from datetime import date, datetime
 from enum import Enum
 
 from data_platform.contracts import OrderSide
@@ -151,6 +151,33 @@ class IndianDeliveryCostSchedule:
                 f"Calculated execution price {exec_price} is non-positive or non-finite for price {price} and drag {total_bps:.2f} bps"
             )
         return exec_price
+
+
+DEFAULT_COST_SCHEDULES: tuple[IndianDeliveryCostSchedule, ...] = (
+    IndianDeliveryCostSchedule(
+        version="angel-nse-delivery-2024-10",
+        effective_from=date(2024, 10, 1),
+        stt_buy_bps=10.0,
+        stt_sell_bps=10.0,
+        exchange_transaction_bps=0.297,
+    ),
+    IndianDeliveryCostSchedule(
+        version="angel-nse-delivery-2026-04",
+        effective_from=date(2026, 4, 1),
+        stt_buy_bps=10.0,
+        stt_sell_bps=10.0,
+        exchange_transaction_bps=0.30699,
+    ),
+)
+
+
+def get_cost_schedule(as_of: date | datetime | None = None) -> IndianDeliveryCostSchedule:
+    """Resolve the active cost schedule as of a specific trade date."""
+    if as_of is None:
+        return DEFAULT_COST_SCHEDULES[-1]
+    ref_date = as_of.date() if isinstance(as_of, datetime) else as_of
+    applicable = [s for s in DEFAULT_COST_SCHEDULES if s.effective_from <= ref_date]
+    return applicable[-1] if applicable else DEFAULT_COST_SCHEDULES[0]
 
 
 

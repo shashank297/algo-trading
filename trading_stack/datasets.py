@@ -8,6 +8,7 @@ from dataclasses import dataclass, field, fields
 from threading import Lock
 from typing import ClassVar
 
+import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -21,6 +22,12 @@ from trading_stack.calendars import build_default_calendars
 
 
 @dataclass(frozen=True)
+class ResearchUniverse:
+    universe_name: str
+    snapshot_id: str
+
+
+@dataclass(frozen=True)
 class ResearchDataset:
     universe_snapshot_id: str
     dataset_snapshot_ids: dict[str, str | None]
@@ -30,6 +37,11 @@ class ResearchDataset:
     benchmark_relationship: str | None = None
     exclusions: pd.DataFrame = field(default_factory=pd.DataFrame)
     survivorship_bias: bool = True
+    universe_name: str = "NIFTY200"
+    source_basis: str = "UNADJUSTED"
+    canonical_basis: str = "SPLIT_ADJUSTED"
+    research_basis: str = "SPLIT_ADJUSTED"
+    corporate_action_version: str = "v1"
 
     @property
     def data_hash(self) -> str:
@@ -39,10 +51,13 @@ class ResearchDataset:
         )
         digest.update(json.dumps({
             "universe_snapshot_id": self.universe_snapshot_id,
+            "universe_name": self.universe_name,
             "dataset_snapshot_ids": self.dataset_snapshot_ids,
             "benchmark_symbol": self.benchmark_symbol,
             "benchmark_provider_symbol": self.benchmark_provider_symbol,
             "benchmark_relationship": self.benchmark_relationship,
+            "research_basis": self.research_basis,
+            "corporate_action_version": self.corporate_action_version,
         }, sort_keys=True, default=str).encode())
         return digest.hexdigest()
 
@@ -71,19 +86,27 @@ class SynchronizedPanelBuilder:
         timeframe: str,
         *,
         universe_snapshot_id: str = "CONFIGURED_UNIVERSE",
+        universe_name: str | None = None,
         benchmark_symbol: str | None = "NIFTY",
         minimum_lookback: int = 1,
-        adjustment: str = "UNADJUSTED",
+        adjustment: str | PriceAdjustment = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> ResearchDataset:
         """Reuse one immutable featured panel and derive strategy-specific eligibility."""
+
+        resolved_adjustment = (
+            adjustment.value if isinstance(adjustment, PriceAdjustment) else str(adjustment).upper()
+        )
+        resolved_universe_name = universe_name or (
+            "NIFTY200" if "NIFTY200" in universe_snapshot_id.upper() or "NIFTY_200" in universe_snapshot_id.upper() else universe_snapshot_id
+        )
 
         feature_config = tuple(
             (item.name, getattr(self.feature_factory, item.name))
             for item in fields(self.feature_factory)
         )
         key = (
-            str(self.db.db_path), tuple(symbols), timeframe, universe_snapshot_id,
-            benchmark_symbol, feature_config, self.db.market_data_revision(), str(adjustment).upper(),
+            str(self.db.db_path), tuple(symbols), timeframe, universe_snapshot_id, resolved_universe_name,
+            benchmark_symbol, feature_config, self.db.market_data_revision(), resolved_adjustment,
         )
         with self._panel_cache_lock:
             cached = self._panel_cache.get(key)
@@ -92,13 +115,16 @@ class SynchronizedPanelBuilder:
                     symbols,
                     timeframe,
                     universe_snapshot_id=universe_snapshot_id,
+                    universe_name=resolved_universe_name,
                     benchmark_symbol=benchmark_symbol,
                     minimum_lookback=1,
-                    adjustment=adjustment,
+                    adjustment=resolved_adjustment,
                 )
                 self._panel_cache[key] = cached
         panel = cached.panel.copy()
         panel["eligible"] = panel.groupby("symbol").cumcount() + 1 >= minimum_lookback
+        if "pit_eligible" in panel:
+            panel["eligible"] &= panel["pit_eligible"]
         if "benchmark_close" in panel:
             panel["eligible"] &= panel["benchmark_close"].notna()
         return ResearchDataset(
@@ -110,6 +136,11 @@ class SynchronizedPanelBuilder:
             benchmark_relationship=cached.benchmark_relationship,
             exclusions=cached.exclusions.copy(),
             survivorship_bias=cached.survivorship_bias,
+            universe_name=cached.universe_name,
+            source_basis=cached.source_basis,
+            canonical_basis=cached.canonical_basis,
+            research_basis=cached.research_basis,
+            corporate_action_version=cached.corporate_action_version,
         )
 
     def _build_uncached(
@@ -118,24 +149,30 @@ class SynchronizedPanelBuilder:
         timeframe: str,
         *,
         universe_snapshot_id: str = "CONFIGURED_UNIVERSE",
+        universe_name: str = "NIFTY200",
         benchmark_symbol: str | None = "NIFTY",
         minimum_lookback: int = 1,
-        adjustment: str = "UNADJUSTED",
+        adjustment: str | PriceAdjustment = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> ResearchDataset:
         if not symbols:
             raise ValueError("A synchronized dataset requires at least one symbol.")
+        resolved_adjustment = (
+            adjustment.value if isinstance(adjustment, PriceAdjustment) else str(adjustment).upper()
+        )
         logger.bind(
             event="panel_build_started",
             symbol_count=len(symbols),
             timeframe=timeframe,
             universe_snapshot_id=universe_snapshot_id,
+            universe_name=universe_name,
+            adjustment=resolved_adjustment,
         ).info("panel_build_started")
         panels: list[pd.DataFrame] = []
         exclusions: list[dict[str, object]] = []
         dataset_ids: dict[str, str | None] = {}
         sectors = self._sector_map(symbols, universe_snapshot_id)
         resolved_benchmark, benchmark_relationship = self._resolve_benchmark(benchmark_symbol, timeframe)
-        benchmark = self._load_bars(resolved_benchmark, timeframe, adjustment=adjustment) if resolved_benchmark else pd.DataFrame()
+        benchmark = self._load_bars(resolved_benchmark, timeframe, adjustment=resolved_adjustment) if resolved_benchmark else pd.DataFrame()
         if benchmark_symbol and benchmark.empty:
             raise ValueError(
                 f"Benchmark {benchmark_symbol} {timeframe} has no stored candle data or approved provider mapping."
@@ -143,7 +180,7 @@ class SynchronizedPanelBuilder:
         benchmark_close = benchmark[["timestamp", "close"]].rename(columns={"close": "benchmark_close"}) if not benchmark.empty else pd.DataFrame()
         adjustment_states: set[str] = set()
         for index, symbol in enumerate(symbols, start=1):
-            bars = self._load_bars(symbol, timeframe, adjustment=adjustment)
+            bars = self._load_bars(symbol, timeframe, adjustment=resolved_adjustment)
             if bars.empty:
                 exclusions.append({"symbol": symbol, "reason": "MISSING_DATA", "timestamp": pd.NaT})
                 dataset_ids[symbol] = None
@@ -176,6 +213,51 @@ class SynchronizedPanelBuilder:
         if not panels:
             raise ValueError("No requested symbols have stored candle data.")
         panel = pd.concat(panels, ignore_index=True).sort_values(["timestamp", "symbol"]).reset_index(drop=True)
+        
+        # Point-In-Time Universe Filtering
+        survivorship_bias = True
+        try:
+            pit_rows = self.db.conn.execute(
+                """
+                SELECT symbol, effective_from, effective_until 
+                FROM index_constituents_pit 
+                WHERE universe_name = ?
+                """,
+                [universe_name.upper()],
+            ).fetchall()
+            if pit_rows:
+                pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until"])
+                pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
+                pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
+                
+                panel_dates = pd.to_datetime(panel["timestamp"]).dt.tz_convert(self.calendar.zone).dt.date
+                panel_syms = panel["symbol"].values
+                
+                # Check active interval per row
+                is_member_mask = np.zeros(len(panel), dtype=bool)
+                for sym, grp in pit_df.groupby("symbol"):
+                    sym_indices = np.where(panel_syms == sym)[0]
+                    if len(sym_indices) == 0:
+                        continue
+                    sym_dates = panel_dates.iloc[sym_indices].values
+                    for _, row in grp.iterrows():
+                        eff_from = row["effective_from"]
+                        eff_until = row["effective_until"]
+                        if pd.isna(eff_until) or eff_until is None:
+                            in_interval = sym_dates >= eff_from
+                        else:
+                            in_interval = (sym_dates >= eff_from) & (sym_dates < eff_until)
+                        is_member_mask[sym_indices[in_interval]] = True
+                
+                panel["pit_eligible"] = is_member_mask
+                panel["eligible"] &= panel["pit_eligible"]
+                survivorship_bias = False
+            else:
+                panel["pit_eligible"] = True
+        except Exception as exc:
+            logger.warning("PIT universe filtering encountered error: {}. Defaulting to snapshot.", exc)
+            panel["pit_eligible"] = True
+
         if "benchmark_close" in panel:
             panel["eligible"] &= panel["benchmark_close"].notna()
         reference_timestamps = set(
@@ -203,6 +285,7 @@ class SynchronizedPanelBuilder:
             included_symbols=int(panel["symbol"].nunique()),
             exclusion_records=len(exclusions),
             timeframe=timeframe,
+            survivorship_bias=survivorship_bias,
         ).info("panel_build_finished")
         return ResearchDataset(
             universe_snapshot_id=universe_snapshot_id,
@@ -212,6 +295,12 @@ class SynchronizedPanelBuilder:
             benchmark_provider_symbol=resolved_benchmark,
             benchmark_relationship=benchmark_relationship,
             exclusions=pd.DataFrame(exclusions),
+            survivorship_bias=survivorship_bias,
+            universe_name=universe_name,
+            source_basis="UNADJUSTED",
+            canonical_basis="SPLIT_ADJUSTED",
+            research_basis=resolved_adjustment,
+            corporate_action_version="v1",
         )
 
     def _resolve_benchmark(self, symbol: str | None, timeframe: str) -> tuple[str | None, str | None]:
@@ -247,7 +336,7 @@ class SynchronizedPanelBuilder:
         self,
         symbol: str | None,
         timeframe: str,
-        adjustment: PriceAdjustment | str = PriceAdjustment.UNADJUSTED,
+        adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> pd.DataFrame:
         if not symbol:
             return pd.DataFrame()
@@ -257,17 +346,24 @@ class SynchronizedPanelBuilder:
                FROM historical_candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp""",
             [symbol, timeframe],
         ).df()
-        adj_enum = PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
+        adj_enum = (
+            adjustment if isinstance(adjustment, PriceAdjustment)
+            else PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
+        )
         if not frame.empty:
             ca_df = self.db.get_corporate_actions(symbol)
             frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
         return frame
 
-
     def _latest_dataset_id(self, symbol: str, timeframe: str) -> str | None:
         row = self.db.conn.execute(
-            "SELECT dataset_id FROM market_datasets WHERE canonical_symbol = ? AND timeframe = ? ORDER BY retrieved_at DESC LIMIT 1",
-            [symbol, timeframe],
+            """SELECT dataset_id FROM market_datasets 
+               WHERE (canonical_symbol = ? OR symbol = ?) 
+                 AND timeframe = ? 
+                 AND lifecycle_status = 'CANONICAL_PROMOTED' 
+                 AND status = 'VERIFIED'
+               ORDER BY retrieved_at DESC LIMIT 1""",
+            [symbol, symbol, timeframe],
         ).fetchone()
         return str(row[0]) if row else None
 
@@ -284,5 +380,6 @@ class SynchronizedPanelBuilder:
                     if candidate is not None and str(candidate) in requested:
                         mapping[str(candidate)] = str(sector)
             return mapping
-        except Exception:
+        except Exception as exc:
+            logger.warning("Failed to load sector mapping for snapshot {}: {}", snapshot_id, exc)
             return {}

@@ -94,9 +94,20 @@ class PortfolioEventBacktester:
         signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
         effective_parameters = {**dict(getattr(strategy, "parameters", {})), **(parameters or {})}
         run_id = self._run_id(strategy.name, dataset.data_hash, effective_parameters, mode)
+        panel_causal = panel.copy()
+        panel_causal["lagged_adv20"] = (
+            panel_causal.groupby("symbol")["volume"]
+            .shift(1)
+            .rolling(20, min_periods=1)
+            .mean()
+            .fillna(panel_causal["volume"])
+        )
+        panel_causal["lagged_close"] = panel_causal.groupby("symbol")["close"].shift(1).fillna(panel_causal["open"])
+        panel_causal["lagged_traded_value"] = panel_causal["lagged_close"] * panel_causal["lagged_adv20"]
+
         day_groups = {
             pd.Timestamp(timestamp): group.set_index("symbol", drop=False)
-            for timestamp, group in panel.groupby("timestamp", sort=True)
+            for timestamp, group in panel_causal.groupby("timestamp", sort=True)
         }
         dates = sorted(day_groups)
         next_date = {dates[index]: dates[index + 1] for index in range(len(dates) - 1)}
@@ -125,8 +136,7 @@ class PortfolioEventBacktester:
 
         for session_index, date in enumerate(dates, start=1):
             day = day_groups[pd.Timestamp(date)]
-            for symbol, row in day.iterrows():
-                last_prices[str(symbol)] = float(row["close"])
+            # Execute rebalancing orders at Day T+1 open using cash, Day T valuations and lagged ADV
             if date in executions:
                 for targets in executions[date]:
                     cash, generated = self._rebalance(
@@ -150,6 +160,10 @@ class PortfolioEventBacktester:
                     attribution_rows.extend(generated["attribution"])
                     round_trip_rows.extend(generated["round_trips"])
                     rebalance_rows.append(generated["rebalance"])
+
+            # After rebalancing at open, update last_prices to Day T+1 CLOSE for EOD mark-to-market
+            for symbol, row in day.iterrows():
+                last_prices[str(symbol)] = float(row["close"])
             market_value = sum(quantity * last_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
             equity = cash + market_value
             gross_exposure = market_value / equity if equity > 0 else 0.0
@@ -222,7 +236,7 @@ class PortfolioEventBacktester:
             attribution=pd.DataFrame(attribution_rows),
             round_trips=pd.DataFrame(round_trip_rows),
             cost_components=pd.DataFrame(cost_rows),
-            exclusions=dataset.exclusions,
+            exclusions=getattr(dataset, "exclusions", pd.DataFrame()),
         )
 
     def _rebalance(
@@ -278,19 +292,25 @@ class PortfolioEventBacktester:
                 continue
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
             requested_abs = abs(requested_quantity)
-            traded_value = float(row["close"] * row["volume"])
+            lagged_adv = float(row.get("lagged_adv20", row["volume"]))
+            if pd.isna(lagged_adv) or lagged_adv <= 0:
+                lagged_adv = float(row["volume"])
+            lagged_traded_value = float(row.get("lagged_traded_value", open_price * lagged_adv))
+            if pd.isna(lagged_traded_value) or lagged_traded_value <= 0:
+                lagged_traded_value = open_price * lagged_adv
+
             order_id = str(uuid.uuid4())
             reason_row = targets[targets["symbol"].astype(str) == symbol]
             reason = str(reason_row["reason"].iloc[0]) if not reason_row.empty else "rank_removal"
             status = OrderStatus.FILLED
             filled_quantity = requested_abs
             rejection_reason = None
-            if traded_value < self.cost_schedule.minimum_daily_traded_value:
+            if lagged_traded_value < self.cost_schedule.minimum_daily_traded_value:
                 status = OrderStatus.REJECTED
                 filled_quantity = 0.0
                 rejection_reason = "LIQUIDITY_REJECTION"
             else:
-                volume_cap = np.floor(float(row["volume"]) * self.cost_schedule.max_volume_participation)
+                volume_cap = np.floor(lagged_adv * self.cost_schedule.max_volume_participation)
                 filled_quantity = min(filled_quantity, volume_cap)
                 if side == OrderSide.SELL:
                     filled_quantity = min(filled_quantity, current_quantity)
@@ -299,7 +319,7 @@ class PortfolioEventBacktester:
                     rejection_reason = "VOLUME_CAP_REJECTION"
                 elif filled_quantity < requested_abs:
                     status = OrderStatus.PARTIALLY_FILLED
-            participation = filled_quantity / max(float(row["volume"]), 1.0)
+            participation = filled_quantity / max(lagged_adv, 1.0)
             execution_price = self.cost_schedule.execution_price(open_price, side, participation)
             notional = filled_quantity * execution_price
             breakdown = self.cost_schedule.calculate(notional, side, participation)
@@ -307,7 +327,7 @@ class PortfolioEventBacktester:
                 affordable = np.floor(max(cash - breakdown.statutory_and_broker_fees, 0.0) / max(execution_price, 1e-12))
                 if affordable < filled_quantity:
                     filled_quantity = affordable
-                    participation = filled_quantity / max(float(row["volume"]), 1.0)
+                    participation = filled_quantity / max(lagged_adv, 1.0)
                     execution_price = self.cost_schedule.execution_price(open_price, side, participation)
                     notional = filled_quantity * execution_price
                     breakdown = self.cost_schedule.calculate(notional, side, participation)

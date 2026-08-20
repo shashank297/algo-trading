@@ -165,6 +165,7 @@ def ingest_raw_provider_dataset(
     policy: SourceSemanticsPolicy | None = None,
     corporate_actions: pd.DataFrame | list[Any] | None = None,
     target_adjustment: PriceAdjustment = PriceAdjustment.SPLIT_ADJUSTED,
+    existing_raw_dataset_id: str | None = None,
 ) -> RawIntakeResult:
     """Universal forensic ingestion gateway for raw provider responses.
     
@@ -174,7 +175,7 @@ def ingest_raw_provider_dataset(
     4. If structurally valid: promotes through source-semantics admission and canonical adjustment.
     """
     retrieval_time = retrieved_at or datetime.now(timezone.utc)
-    raw_id = str(uuid.uuid4())
+    raw_id = existing_raw_dataset_id or str(uuid.uuid4())
 
     # 1. Normalize rows into parsed_rows tuple preserving row ordinals
     if isinstance(bars, pd.DataFrame):
@@ -213,8 +214,9 @@ def ingest_raw_provider_dataset(
         parsed_rows=parsed_rows_tuple,
     )
 
-    # 3. Durably commit raw provider observation before running validation
-    db.persist_raw_dataset(raw_dataset)
+    # 3. Durably commit raw provider observation before running validation (if not already recorded)
+    if existing_raw_dataset_id is None:
+        db.persist_raw_dataset(raw_dataset)
 
     # 4. Run exhaustive structural validator
     validation = RawStructuralValidator.validate(parsed_rows_tuple)
@@ -375,6 +377,7 @@ def recover_incomplete_raw_intakes(
             declared_adjustment=decl_adj,
             db=db,
             policy=policy,
+            existing_raw_dataset_id=dataset_id,
         )
         results.append(res)
 
