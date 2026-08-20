@@ -34,6 +34,20 @@ class QualitySeverityTests(unittest.TestCase):
         self.assertFalse(report["passed"])
         self.assertEqual(report["status"], "ERROR")
 
+    def test_check_failed_status_always_critical_and_pages(self) -> None:
+        """When a check crashes with CHECK_FAILED, severity is overridden to CRITICAL and pages operator."""
+        checks = {
+            "session_alignment": {"status": "CHECK_FAILED", "count": 0, "error": "Query timeout"},
+            "duplicates": {"count": 0},
+        }
+        summary = summarize_quality(checks)
+        self.assertFalse(summary["passed"])
+        self.assertEqual(summary["status"], "CRITICAL")
+        self.assertTrue(summary["page_operator"])
+        self.assertTrue(summary["has_check_failure"])
+        self.assertEqual(checks["session_alignment"]["severity"], "CRITICAL")
+        self.assertFalse(checks["session_alignment"]["check_executed"])
+
 
 if __name__ == "__main__":
     unittest.main()

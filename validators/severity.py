@@ -20,11 +20,18 @@ def summarize_quality(checks: dict[str, dict[str, Any]]) -> dict[str, Any]:
     """Annotate checks and return blocking, warning, and paging totals."""
 
     totals = {"CRITICAL": 0, "ERROR": 0, "WARNING": 0}
+    has_check_failure = False
     for name, result in checks.items():
-        severity = CHECK_SEVERITY.get(name, "ERROR")
+        if result.get("status") == "CHECK_FAILED":
+            severity = "CRITICAL"
+            result["check_executed"] = False
+            has_check_failure = True
+        else:
+            severity = CHECK_SEVERITY.get(name, "ERROR")
         result["severity"] = severity
         totals[severity] += int(result.get("count", 0))
-    if totals["CRITICAL"]:
+
+    if totals["CRITICAL"] or has_check_failure:
         status = "CRITICAL"
     elif totals["ERROR"]:
         status = "ERROR"
@@ -33,9 +40,10 @@ def summarize_quality(checks: dict[str, dict[str, Any]]) -> dict[str, Any]:
     else:
         status = "HEALTHY"
     return {
-        "passed": totals["CRITICAL"] == 0 and totals["ERROR"] == 0,
+        "passed": totals["CRITICAL"] == 0 and totals["ERROR"] == 0 and not has_check_failure,
         "status": status,
         "blocking_issue_count": totals["CRITICAL"] + totals["ERROR"],
         "warning_count": totals["WARNING"],
-        "page_operator": totals["CRITICAL"] > 0,
+        "page_operator": totals["CRITICAL"] > 0 or has_check_failure,
+        "has_check_failure": has_check_failure,
     }

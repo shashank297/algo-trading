@@ -3,20 +3,23 @@ import sys
 import os
 import argparse
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 def run_step(command: list[str], description: str) -> None:
     print(f"\n{'='*60}")
-    print(f"🚀 STAGE: {description}")
+    print(f">> STAGE: {description}")
     print(f"{'='*60}")
     
     # Run the subprocess and stream output directly to the console
     result = subprocess.run(command, env=os.environ.copy())
     
     if result.returncode != 0:
-        print(f"\n❌ FATAL ERROR in stage: {description}")
+        print(f"\n[FATAL ERROR] Stage failed: {description}")
         print("Pipeline aborted.")
         sys.exit(result.returncode)
         
-    print(f"\n✅ SUCCESS: {description} completed.")
+    print(f"\n[OK] {description} completed.")
 
 def main():
     parser = argparse.ArgumentParser(description="End-to-End Orchestrator for Algo Trading Pipeline")
@@ -62,8 +65,9 @@ def main():
     )
 
     print(f"\n{'='*60}")
-    print("🎉 PIPELINE COMPLETED SUCCESSFULLY")
+    print("[DONE] PIPELINE COMPLETED SUCCESSFULLY")
     print(f"{'='*60}")
+
 
     # Stage 4: Launch API
     if not args.skip_api:

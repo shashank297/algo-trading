@@ -70,9 +70,21 @@ class AdmissionReasonCode(str, Enum):
 
 
 @dataclass(frozen=True, slots=True)
+class EventTimePolicy:
+    """Versioned event-time contract shared by admission, aggregation, and features."""
+
+    max_future_skew_seconds: float = 1.0
+    max_feed_staleness_seconds: float = 5.0
+    max_out_of_order_seconds: float = 2.0
+    bar_finalization_lateness_seconds: float = 2.0
+    version: str = "event-time-v1"
+
+
+@dataclass(frozen=True, slots=True)
 class LiveAdmissionPolicy:
     """Configurable boundaries and thresholds for live tick admission."""
 
+    event_time: EventTimePolicy = field(default_factory=EventTimePolicy)
     max_future_skew_seconds: float = 1.0
     max_stale_latency_seconds: float = 5.0
     max_price_velocity_pct: float = 0.10  # 10% instant single-tick jump threshold
@@ -93,8 +105,8 @@ class LiveAdmissionPolicy:
 class TokenStreamState:
     """Internal state tracking for a specific instrument stream."""
 
-    last_sequence_number: int | None = None
     highest_sequence_seen: int | None = None
+    last_arrival_sequence: int | None = None
     last_exchange_timestamp: datetime | None = None
     last_ltp: float | None = None
     last_cumulative_volume: int = 0
@@ -141,6 +153,7 @@ class LiveMarketDataAdmissionValidator:
         self._token_states: dict[str, TokenStreamState] = {}
         self._dedup_cache: deque[str] = deque(maxlen=self.policy.dedup_cache_size)
         self._dedup_set: set[str] = set()
+        self._clock_offsets_ms: deque[float] = deque(maxlen=1000)
 
         # Telemetry counters
         self._stats: dict[str, int] = {
@@ -233,6 +246,7 @@ class LiveMarketDataAdmissionValidator:
 
         # 4. Check temporal validity: future timestamp vs stale latency
         future_skew = (tick_timestamp - now_utc).total_seconds()
+        self._clock_offsets_ms.append(future_skew * 1000.0)
         if future_skew > self.policy.max_future_skew_seconds:
             reasons.append(AdmissionReasonCode.FUTURE_TIMESTAMP_EXCEEDED)
             self._stats["rejected_malformed"] += 1
@@ -244,7 +258,7 @@ class LiveMarketDataAdmissionValidator:
             self._stats["dropped_stale"] += 1
             return self._build_result(token, symbol, exchange, TickAdmissionAction.DROP_STALE, reasons, tick_timestamp, now_utc, 0.0, 0.0, seq_no, latency_ms)
 
-        # 5. Check exchange calendar (Weekend and Holiday gating)
+        # 5. Check exchange calendar using single MarketCalendar authority
         if self.policy.check_session_hours:
             ist_ts = pd.Timestamp(tick_timestamp).tz_convert(IST)
             ist_date = ist_ts.date()
@@ -258,7 +272,7 @@ class LiveMarketDataAdmissionValidator:
                 self._stats["dropped_out_of_session"] += 1
                 return self._build_result(token, symbol, exchange, TickAdmissionAction.DROP_OUT_OF_SESSION, reasons, tick_timestamp, now_utc, 0.0, 0.0, seq_no, latency_ms)
 
-            if not self.calendar.is_market_open(exchange, tick_timestamp):
+            if not self.market_calendar.is_session_open(tick_timestamp):
                 reasons.append(AdmissionReasonCode.OUT_OF_SESSION_HOURS)
                 self._stats["dropped_out_of_session"] += 1
                 return self._build_result(token, symbol, exchange, TickAdmissionAction.DROP_OUT_OF_SESSION, reasons, tick_timestamp, now_utc, 0.0, 0.0, seq_no, latency_ms)
@@ -336,14 +350,14 @@ class LiveMarketDataAdmissionValidator:
 
         # A. Sequence number monotonicity without regression (within same session)
         if seq_no is not None and seq_no > 0:
-            if state.session_date == current_session_date and state.last_sequence_number is not None and state.last_sequence_number > 0:
-                if seq_no == state.last_sequence_number:
+            if state.session_date == current_session_date and state.highest_sequence_seen is not None and state.highest_sequence_seen > 0:
+                if seq_no == state.highest_sequence_seen:
                     reasons.append(AdmissionReasonCode.DUPLICATE_SEQUENCE_NUMBER)
                     self._stats["dropped_duplicate"] += 1
                     return self._build_result(token, symbol, exchange, TickAdmissionAction.DROP_DUPLICATE, reasons, tick_timestamp, now_utc, price, cumulative_volume, seq_no, latency_ms)
-                elif seq_no < state.last_sequence_number:
+                elif seq_no < state.highest_sequence_seen:
                     reasons.append(AdmissionReasonCode.SEQUENCE_GAP_DETECTED)
-                elif seq_no > state.last_sequence_number + 1:
+                elif seq_no > state.highest_sequence_seen + 1:
                     reasons.append(AdmissionReasonCode.SEQUENCE_GAP_DETECTED)
 
         # B. Out-of-order timestamp check (within same session)
@@ -353,7 +367,6 @@ class LiveMarketDataAdmissionValidator:
                 reasons.append(AdmissionReasonCode.OUT_OF_ORDER_TIMESTAMP)
                 self._stats["dropped_stale"] += 1
                 return self._build_result(token, symbol, exchange, TickAdmissionAction.DROP_STALE, reasons, tick_timestamp, now_utc, price, cumulative_volume, seq_no, latency_ms)
-
 
         # C. Cumulative volume monotonicity across SAME session
         if self.policy.enforce_monotonic_cumulative_volume and not is_depth20:
@@ -378,7 +391,7 @@ class LiveMarketDataAdmissionValidator:
         # 9. Update state & commit deduplication record
         if seq_no is not None:
             state.highest_sequence_seen = max(state.highest_sequence_seen or 0, seq_no)
-        state.last_sequence_number = seq_no
+        state.last_arrival_sequence = seq_no
         state.last_exchange_timestamp = tick_timestamp
         if not is_depth20:
             state.last_ltp = price
@@ -399,6 +412,13 @@ class LiveMarketDataAdmissionValidator:
             tick_timestamp, now_utc, price, cumulative_volume, seq_no, latency_ms,
             price_velocity_pct=velocity_pct,
         )
+
+    @property
+    def clock_health_p90_ms(self) -> float:
+        """Return 90th percentile of rolling clock skew offsets in milliseconds."""
+        if not self._clock_offsets_ms:
+            return 0.0
+        return float(np.percentile(list(self._clock_offsets_ms), 90))
 
     def _validate_depth_book(
         self,

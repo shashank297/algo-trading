@@ -26,6 +26,7 @@ from main import (
     validate_config,
 )
 from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
+from data_platform.service import admit_and_promote_dataset
 from smartapi import HistoricalDataClient, InstrumentMaster, RateLimiter, SmartAPIAuth
 from storage import DuckDBManager
 from utils import LoggerSetup, get_ist_now
@@ -226,23 +227,17 @@ def _persist_backfill_batch(
         },
     )
     with db.transaction():
-        db.record_dataset(snapshot.storage_metadata(), snapshot.bars)
         for _, requested_start, requested_end in windows:
             _record_backfill_attempt(
                 db, symbol, timeframe, requested_start, requested_end,
                 "SUCCEEDED", None, snapshot.dataset_id,
             )
-        inserted = db.upsert_candles(
-            snapshot.bars,
-            symbol,
-            token,
-            exchange,
-            timeframe,
-            adjustment=PriceAdjustment.UNADJUSTED.value,
-            provider_name="angel_one",
-            dataset_id=snapshot.dataset_id,
+        result = admit_and_promote_dataset(
+            snapshot=snapshot,
+            db=db,
+            target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
         )
-    return inserted
+    return len(result.bars) if result.bars is not None else 0
 
 
 def _record_backfill_attempt(

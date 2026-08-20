@@ -246,6 +246,79 @@ class TestLiveAdmissionGateway(unittest.TestCase):
         self.assertIn("CROSSED_BOOK_BID_GE_ASK", quar_df["reasons"].iloc[0])
         con.close()
 
+    def test_event_time_policy_shared_between_admission_and_aggregator(self) -> None:
+        """EventTimePolicy thresholds propagate to both admission validator and realtime bar aggregator."""
+        from data_platform.live_admission import EventTimePolicy
+        from trading_stack.live_aggregator import RealtimeBarAggregator
+
+        shared_policy = EventTimePolicy(
+            max_future_skew_seconds=1.5,
+            max_feed_staleness_seconds=6.0,
+            max_out_of_order_seconds=3.0,
+            bar_finalization_lateness_seconds=4.5,
+        )
+        adm_policy = LiveAdmissionPolicy(event_time=shared_policy)
+        validator = LiveMarketDataAdmissionValidator(policy=adm_policy)
+        aggregator = RealtimeBarAggregator(event_time_policy=shared_policy)
+
+        self.assertEqual(validator.policy.event_time.max_future_skew_seconds, 1.5)
+        self.assertEqual(validator.policy.event_time.max_feed_staleness_seconds, 6.0)
+        self.assertEqual(aggregator.allowed_lateness.total_seconds(), 4.5)
+
+    def test_highest_sequence_seen_never_regresses(self) -> None:
+        """Sequence watermark highest_sequence_seen only increases monotonically even with late out-of-order packets."""
+        recv_utc = datetime(2023, 1, 18, 5, 0, 0, tzinfo=timezone.utc)
+        tick_ts = datetime(2023, 1, 18, 4, 59, 59, 800000, tzinfo=timezone.utc)
+
+        # Tick 1: sequence 100
+        t1 = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=tick_ts, received_at_utc=recv_utc, received_monotonic_ns=1,
+            raw_packet_size=51, sequence_number=100, ltp=600.50,
+        )
+        res1 = self.validator.validate(t1, received_at_utc=recv_utc)
+        self.assertTrue(res1.is_accepted)
+        state = self.validator._token_states["3045"]
+        self.assertEqual(state.highest_sequence_seen, 100)
+        self.assertEqual(state.last_arrival_sequence, 100)
+
+        # Tick 2: late arrival with sequence 99
+        t2 = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=tick_ts, received_at_utc=recv_utc, received_monotonic_ns=2,
+            raw_packet_size=51, sequence_number=99, ltp=600.50,
+        )
+        res2 = self.validator.validate(t2, received_at_utc=recv_utc)
+        self.assertTrue(res2.is_accepted)
+        self.assertEqual(state.highest_sequence_seen, 100)  # Monotonic high does NOT regress to 99!
+        self.assertEqual(state.last_arrival_sequence, 99)
+
+        # Tick 3: sequence 101
+        t3 = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=tick_ts, received_at_utc=recv_utc, received_monotonic_ns=3,
+            raw_packet_size=51, sequence_number=101, ltp=600.50,
+        )
+        res3 = self.validator.validate(t3, received_at_utc=recv_utc)
+        self.assertTrue(res3.is_accepted)
+        self.assertEqual(state.highest_sequence_seen, 101)
+        self.assertEqual(state.last_arrival_sequence, 101)
+
+    def test_future_timestamp_uses_individual_code_not_clock_skew(self) -> None:
+        """Single future tick emits FUTURE_TIMESTAMP_EXCEEDED; clock health tracks rolling skew."""
+        recv_utc = datetime(2023, 1, 18, 5, 0, 0, tzinfo=timezone.utc)
+        future_ts = datetime(2023, 1, 18, 5, 0, 5, tzinfo=timezone.utc)  # 5s ahead (policy limit 1s)
+
+        tick = LtpTick(
+            exchange="NSE", token="3045", symbol="SBIN", mode=LiveTickerMode.LTP,
+            exchange_timestamp=future_ts, received_at_utc=recv_utc, received_monotonic_ns=1,
+            raw_packet_size=51, ltp=600.0,
+        )
+        res = self.validator.validate(tick, received_at_utc=recv_utc)
+        self.assertEqual(res.action, TickAdmissionAction.REJECT_MALFORMED)
+        self.assertIn(AdmissionReasonCode.FUTURE_TIMESTAMP_EXCEEDED, res.reasons)
+        self.assertGreater(self.validator.clock_health_p90_ms, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

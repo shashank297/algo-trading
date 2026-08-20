@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+from enum import Enum
+import hashlib
+import json
+import os
+from pathlib import Path
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import duckdb
@@ -15,6 +21,15 @@ from data_platform.contracts import (
     MarketDataEvent,
 )
 from trading_stack.domain import Bar
+
+
+class PersistenceHealth(str, Enum):
+    """Operational health state for market data persistence."""
+
+    HEALTHY = "HEALTHY"
+    DEGRADED = "DEGRADED"
+    UNSAFE = "UNSAFE"
+    STOPPED = "STOPPED"
 
 
 class DuckDBStreamWriter:
@@ -47,6 +62,12 @@ class DuckDBStreamWriter:
         self._thread: threading.Thread | None = None
         self._conn: duckdb.DuckDBPyConnection | None = None
         self._dropped_records = 0
+        self._health = PersistenceHealth.STOPPED
+
+    @property
+    def health(self) -> PersistenceHealth:
+        """Return current persistence subsystem health."""
+        return self._health
 
     def start(self) -> None:
         """Initialize schema and start the background persistence worker thread."""
@@ -55,6 +76,7 @@ class DuckDBStreamWriter:
         self._conn = duckdb.connect(database=self.db_path)
         self._init_tables()
         self._running = True
+        self._health = PersistenceHealth.HEALTHY
         self._thread = threading.Thread(target=self._worker_loop, name="DuckDBStreamWriter", daemon=True)
         self._thread.start()
         logger.info("💾 DuckDBStreamWriter started (batch={}, flush={}s).", self.batch_size, self.flush_interval)
@@ -106,6 +128,7 @@ class DuckDBStreamWriter:
             return True
         except queue.Full:
             self._dropped_records += 1
+            self._health = PersistenceHealth.DEGRADED
             logger.warning("Persistence queue full! Dropped live tick. Total drops: {}", self._dropped_records)
             return False
 
@@ -120,8 +143,31 @@ class DuckDBStreamWriter:
             return True
         except queue.Full:
             self._dropped_records += 1
+            self._health = PersistenceHealth.DEGRADED
             logger.warning("Persistence queue full! Dropped bar. Total drops: {}", self._dropped_records)
             return False
+
+    def _spool_dead_letter(self, record_type: str, records: list[dict[str, Any]]) -> None:
+        """Persist failed batch records durably to disk with fsync before ACK."""
+        if not records:
+            return
+        spool_dir = Path("data/spool/stream")
+        spool_dir.mkdir(parents=True, exist_ok=True)
+        today_str = datetime.now(timezone.utc).strftime("%Y_%m_%d")
+        spool_file = spool_dir / f"stream_dead_letter_{today_str}.jsonl"
+        with open(spool_file, "a", encoding="utf-8") as f:
+            for item in records:
+                token = str(item.get("token") or item.get("symbol") or "")
+                seq = str(item.get("sequence_number") or item.get("timestamp") or "")
+                exch = str(item.get("exchange") or "")
+                ex_ts = str(item.get("exchange_timestamp") or item.get("timestamp") or "")
+                payload_json = json.dumps(item, default=str, sort_keys=True)
+                item_hash = hashlib.sha256(payload_json.encode()).hexdigest()[:16]
+                idempotency_key = f"{exch}:{token}:{seq}:{ex_ts}:{item_hash}"
+                f.write(json.dumps({"idempotency_key": idempotency_key, "record_type": record_type, "payload": item}) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        self._health = PersistenceHealth.UNSAFE
 
     def _worker_loop(self) -> None:
         """Accumulate records and flush on batch size or timer interval."""
@@ -166,8 +212,6 @@ class DuckDBStreamWriter:
                             "is_final": getattr(bar, "is_final", True),
                         }
                     )
-                self._queue.task_done()
-
             except queue.Empty:
                 pass
 
@@ -181,25 +225,57 @@ class DuckDBStreamWriter:
             if should_flush:
                 success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch)
                 if success_ticks:
+                    for _ in range(len(tick_batch)):
+                        self._queue.task_done()
                     tick_batch.clear()
                 else:
+                    self._health = PersistenceHealth.DEGRADED
                     self._dropped_records += len(tick_batch)
                     if len(tick_batch) > 10_000:
-                        # Drop oldest to avoid unbounded memory growth under permanent DB outage
+                        spill = tick_batch[: len(tick_batch) - 5_000]
+                        self._spool_dead_letter("tick", spill)
+                        for _ in range(len(spill)):
+                            self._queue.task_done()
                         del tick_batch[: len(tick_batch) - 5_000]
 
                 if success_bars:
+                    for _ in range(len(bar_batch)):
+                        self._queue.task_done()
                     bar_batch.clear()
                 else:
+                    self._health = PersistenceHealth.DEGRADED
                     self._dropped_records += len(bar_batch)
                     if len(bar_batch) > 10_000:
+                        spill = bar_batch[: len(bar_batch) - 5_000]
+                        self._spool_dead_letter("bar", spill)
+                        for _ in range(len(spill)):
+                            self._queue.task_done()
                         del bar_batch[: len(bar_batch) - 5_000]
 
                 last_flush_time = now
 
         # Final drain
         if tick_batch or bar_batch:
-            self._flush_batches(tick_batch, bar_batch)
+            success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch)
+            if success_ticks:
+                for _ in range(len(tick_batch)):
+                    self._queue.task_done()
+                tick_batch.clear()
+            else:
+                self._spool_dead_letter("tick", tick_batch)
+                for _ in range(len(tick_batch)):
+                    self._queue.task_done()
+                tick_batch.clear()
+
+            if success_bars:
+                for _ in range(len(bar_batch)):
+                    self._queue.task_done()
+                bar_batch.clear()
+            else:
+                self._spool_dead_letter("bar", bar_batch)
+                for _ in range(len(bar_batch)):
+                    self._queue.task_done()
+                bar_batch.clear()
 
     def _flush_batches(self, tick_batch: list[dict[str, Any]], bar_batch: list[dict[str, Any]]) -> tuple[bool, bool]:
         """Batch insert ticks and bars into DuckDB. Returns (ticks_ok, bars_ok)."""
@@ -234,15 +310,17 @@ class DuckDBStreamWriter:
 
         return ticks_ok, bars_ok
 
-    def stop(self) -> None:
+    def stop(self, timeout: float = 10.0) -> bool:
         """Gracefully drain the persistence queue, flush to DuckDB, and close connection."""
         if not self._running:
-            return
+            return True
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=10.0)
+            self._thread.join(timeout=timeout)
             if self._thread.is_alive():
-                logger.error("⚠️ DuckDBStreamWriter worker thread did not terminate within 10s timeout.")
+                self._health = PersistenceHealth.UNSAFE
+                logger.critical("⚠️ DuckDBStreamWriter worker thread did not terminate within {}s; DB connection NOT closed.", timeout)
+                return False
 
         if self._conn is not None:
             try:
@@ -250,5 +328,7 @@ class DuckDBStreamWriter:
             except Exception as exc:
                 logger.debug("Error closing DuckDB stream connection: {}", exc)
             self._conn = None
+        self._health = PersistenceHealth.STOPPED
         logger.info("💾 DuckDBStreamWriter stopped.")
+        return True
 

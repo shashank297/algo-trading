@@ -80,7 +80,27 @@ class TestDuckDBStreamWriter(unittest.TestCase):
         self.assertEqual(bars_df["symbol"].iloc[0], "RELIANCE-EQ")
         self.assertEqual(bars_df["close"].iloc[0], 104.0)
 
+    def test_persistence_health_lifecycle(self) -> None:
+        """Writer tracks HEALTHY when running, STOPPED when shut down."""
+        from trading_stack.stream_persistence import PersistenceHealth
+
+        self.assertEqual(self.writer.health, PersistenceHealth.HEALTHY)
+        self.writer.stop()
+        self.assertEqual(self.writer.health, PersistenceHealth.STOPPED)
+
+    def test_stream_dead_letter_fsync_on_forced_spool(self) -> None:
+        """Dead letter spool writes JSONL file durably with fsync on overflow."""
+        from trading_stack.stream_persistence import PersistenceHealth
+
+        records = [
+            {"token": "3045", "exchange": "NSE_CM", "sequence_number": 1, "exchange_timestamp": "2026-08-20T09:15:00Z", "ltp": 600.0}
+        ]
+        self.writer._spool_dead_letter("tick", records)
+        self.assertEqual(self.writer.health, PersistenceHealth.UNSAFE)
+
+        spool_files = list(Path("data/spool/stream").glob("stream_dead_letter_*.jsonl"))
+        self.assertTrue(len(spool_files) >= 1)
+
 
 if __name__ == "__main__":
-
     unittest.main()

@@ -15,6 +15,8 @@ from data_platform.contracts import (
     QuoteTick,
     SnapQuoteTick,
 )
+from data_platform.live_admission import EventTimePolicy
+from trading_stack.calendars import MarketCalendar, build_nse_calendar
 from trading_stack.domain import AssetClass, Bar, infer_market_spec
 from trading_stack.trading_calendar import TradingCalendar
 
@@ -51,6 +53,8 @@ class RealtimeBarAggregator:
         default_asset_class: AssetClass = AssetClass.INDIA_EQUITY,
         allowed_lateness_seconds: float = 2.0,
         calendar: TradingCalendar | None = None,
+        event_time_policy: EventTimePolicy | None = None,
+        market_calendar: MarketCalendar | None = None,
     ) -> None:
         """Initialize the event-time bar aggregator.
 
@@ -59,12 +63,20 @@ class RealtimeBarAggregator:
             default_asset_class: Market family if not inferred.
             allowed_lateness_seconds: Grace period in seconds for out-of-order ticks before window closure.
             calendar: TradingCalendar instance for session boundaries.
+            event_time_policy: Shared institutional EventTimePolicy instance.
+            market_calendar: MarketCalendar instance for trading session boundaries.
         """
         self.timeframe = timeframe.lower()
         self.interval_seconds = TIMEFRAME_SECONDS.get(self.timeframe, 60)
         self.default_asset_class = default_asset_class
-        self.allowed_lateness = timedelta(seconds=allowed_lateness_seconds)
+        lateness_sec = (
+            event_time_policy.bar_finalization_lateness_seconds
+            if event_time_policy is not None
+            else allowed_lateness_seconds
+        )
+        self.allowed_lateness = timedelta(seconds=lateness_sec)
         self.calendar = calendar or TradingCalendar()
+        self.market_calendar = market_calendar or build_nse_calendar()
 
         self._lock = threading.Lock()
         self._bar_subscribers: list[Callable[[Bar], None]] = []

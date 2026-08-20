@@ -90,7 +90,7 @@ class ResearchPlatformTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = DuckDBManager(str(Path(self.temp_dir.name) / "research.duckdb"))
         self.frame = self._bars(30)
-        self.db.upsert_candles(self.frame, "NIFTY", "26000", "NSE", "1d")
+        self.db.upsert_candles(self.frame, "NIFTY", "26000", "NSE", "1d", adjustment="UNADJUSTED")
 
     def tearDown(self) -> None:
         self.db.close()

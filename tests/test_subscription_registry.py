@@ -77,25 +77,13 @@ class TestSubscriptionRegistry(unittest.TestCase):
             self.registry.validate_and_add([SubscriptionKey(mode=LiveTickerMode.LTP, exchange_type=1, token="99999")])
         self.assertIn("Subscription limit exceeded", str(ctx.exception))
 
-    def test_depth_mode_50_limit_and_nse_cm_restriction(self) -> None:
-        """DEPTH mode allows maximum 50 tokens and only NSE_CM (exchange_type 1)."""
-        # Non-NSE_CM rejection (e.g. exchange_type=2 NSE_FO)
-        with self.assertRaises(ValueError) as ctx:
-            self.registry.validate_and_add([SubscriptionKey(mode=LiveTickerMode.DEPTH, exchange_type=2, token="FUT1")])
-        self.assertIn("DEPTH mode (Mode 4) is only supported on NSE_CM", str(ctx.exception))
+    def test_depth_mode_rejected_with_unsupported_feed_mode_error(self) -> None:
+        """DEPTH mode (Mode 4) is deprecated by Angel One and raises UnsupportedFeedModeError."""
+        from smartapi.stream_decoder import UnsupportedFeedModeError
 
-        # 50 DEPTH subscriptions allowed on NSE_CM
-        depth_50 = [
-            SubscriptionKey(mode=LiveTickerMode.DEPTH, exchange_type=1, token=str(2000 + i))
-            for i in range(50)
-        ]
-        self.registry.validate_and_add(depth_50)
-        self.assertEqual(self.registry.depth_count, 50)
-
-        # 51st DEPTH subscription rejected
-        with self.assertRaises(ValueError) as ctx:
-            self.registry.validate_and_add([SubscriptionKey(mode=LiveTickerMode.DEPTH, exchange_type=1, token="2999")])
-        self.assertIn("DEPTH subscription limit exceeded", str(ctx.exception))
+        with self.assertRaises(UnsupportedFeedModeError) as ctx:
+            self.registry.validate_and_add([SubscriptionKey(mode=LiveTickerMode.DEPTH, exchange_type=1, token="2885")])
+        self.assertIn("SmartAPI WebSocket 20-depth (Mode 4) was deprecated", str(ctx.exception))
 
     def test_unsubscribe_and_removal(self) -> None:
         keys = [

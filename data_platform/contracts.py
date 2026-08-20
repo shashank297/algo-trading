@@ -135,12 +135,15 @@ class DatasetSnapshot(BaseModel):
         invalid = (
             (frame["volume"] < 0)
             | (frame["open"] <= 0)
+            | (frame["close"] <= 0)
             | (frame["high"] < frame[["open", "close"]].max(axis=1))
             | (frame["low"] > frame[["open", "close"]].min(axis=1))
             | (frame["high"] < frame["low"])
         )
         if invalid.any():
-            raise ValueError("Bar prices violate OHLC invariants.")
+            frame = frame[~invalid].copy()
+            if frame.empty:
+                raise ValueError("All bar prices violate OHLC invariants.")
         return frame
 
     @classmethod
@@ -286,6 +289,8 @@ class SnapQuoteTick(QuoteTick):
 
     last_traded_timestamp: datetime | None = None
     open_interest: int | None = None
+    open_interest_change_raw: int | None = None
+    open_interest_change_pct: float | None = None
     oi_change_pct: float | None = None
     upper_circuit: float | None = None
     lower_circuit: float | None = None

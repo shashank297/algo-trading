@@ -1,0 +1,23 @@
+{
+  "exchange": "NSE_CM",
+  "token": "3045",
+  "mode": "SNAP_QUOTE",
+  "sequence_number": 10001,
+  "ltp": 600.5,
+  "last_traded_qty": 100,
+  "average_traded_price": 599.0,
+  "cumulative_volume": 1500000,
+  "total_buy_qty": 120000.0,
+  "total_sell_qty": 110000.0,
+  "day_open": 595.0,
+  "day_high": 605.0,
+  "day_low": 592.0,
+  "day_close": 598.0,
+  "open_interest": 850000,
+  "open_interest_change_raw": 12345,
+  "open_interest_change_pct": null,
+  "upper_circuit": 660.0,
+  "lower_circuit": 540.0,
+  "high_52w": 650.0,
+  "low_52w": 480.0
+}

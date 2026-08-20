@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from data_platform.contracts import LiveTickerMode
+from smartapi.stream_decoder import UnsupportedFeedModeError
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,10 +73,9 @@ class SubscriptionRegistry:
         projected = set(self._desired)
 
         for key in keys:
-            # Mode 4 (DEPTH) is restricted to NSE_CM (exchange_type=1) only
-            if key.mode == LiveTickerMode.DEPTH and key.exchange_type != 1:
-                raise ValueError(
-                    f"DEPTH mode (Mode 4) is only supported on NSE_CM (exchange_type 1). Got {key.exchange_type} for token {key.token}."
+            if key.mode == LiveTickerMode.DEPTH:
+                raise UnsupportedFeedModeError(
+                    "SmartAPI WebSocket 20-depth (Mode 4) was deprecated April 25, 2025. Use SNAP_QUOTE for Best-5 depth."
                 )
 
             if key not in projected:

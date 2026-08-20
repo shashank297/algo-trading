@@ -92,21 +92,22 @@ class TestSmartStreamDecoder(unittest.TestCase):
         self.assertEqual(event.day_close, 1490.00)
         self.assertEqual(event.raw_packet_size, 123)
 
-    def test_decode_snap_quote_packet_oi_double_and_best5_sides(self) -> None:
-        """Verify IEEE-754 double OI change percentage and explicit Best-5 BUY (1) vs SELL (0) sides."""
+    def test_decode_snap_quote_packet_oi_int64_and_best5_sides(self) -> None:
+        """Verify signed 64-bit int OI change raw and explicit Best-5 BUY (1) vs SELL (0) sides."""
         packet = build_snap_quote_packet(
             mode=3,
             exchange_type=1,
             token="2885",
             seq_num=801,
             open_interest=750_000,
-            oi_change_pct=4.875,  # 4.875% IEEE-754 double
+            oi_change_raw=4875,  # raw int64 from wire
         )
         event = SmartStreamDecoder.decode(packet, self.recv_utc, self.recv_ns)
 
         self.assertIsInstance(event, SnapQuoteTick)
         self.assertEqual(event.open_interest, 750_000)
-        self.assertAlmostEqual(event.oi_change_pct, 4.875, places=4)
+        self.assertEqual(event.open_interest_change_raw, 4875)
+        self.assertIsNone(event.open_interest_change_pct)
         self.assertEqual(event.raw_packet_size, 379)
 
         # Best-5 depth
@@ -124,6 +125,37 @@ class TestSmartStreamDecoder(unittest.TestCase):
             self.assertEqual(level.flag, 0)
             self.assertGreater(level.price, 0)
             self.assertGreater(level.quantity, 0)
+
+    def test_snap_quote_golden_real_binary_fixture(self) -> None:
+        """Verify decode of actual 379-byte golden binary packet against expected JSON."""
+        import json
+        from pathlib import Path
+
+        fixture_bin = Path("tests/fixtures/smartapi_snap_quote_real.bin").read_bytes()
+        fixture_expected = json.loads(Path("tests/fixtures/smartapi_snap_quote_real_expected.json").read_text(encoding="utf-8"))
+
+        event = SmartStreamDecoder.decode(fixture_bin, self.recv_utc, self.recv_ns)
+        self.assertIsInstance(event, SnapQuoteTick)
+        self.assertEqual(event.exchange, fixture_expected["exchange"])
+        self.assertEqual(event.token, fixture_expected["token"])
+        self.assertEqual(event.sequence_number, fixture_expected["sequence_number"])
+        self.assertEqual(event.ltp, fixture_expected["ltp"])
+        self.assertEqual(event.last_traded_qty, fixture_expected["last_traded_qty"])
+        self.assertEqual(event.average_traded_price, fixture_expected["average_traded_price"])
+        self.assertEqual(event.cumulative_volume, fixture_expected["cumulative_volume"])
+        self.assertEqual(event.total_buy_qty, fixture_expected["total_buy_qty"])
+        self.assertEqual(event.total_sell_qty, fixture_expected["total_sell_qty"])
+        self.assertEqual(event.day_open, fixture_expected["day_open"])
+        self.assertEqual(event.day_high, fixture_expected["day_high"])
+        self.assertEqual(event.day_low, fixture_expected["day_low"])
+        self.assertEqual(event.day_close, fixture_expected["day_close"])
+        self.assertEqual(event.open_interest, fixture_expected["open_interest"])
+        self.assertEqual(event.open_interest_change_raw, fixture_expected["open_interest_change_raw"])
+        self.assertIsNone(event.open_interest_change_pct)
+        self.assertEqual(event.upper_circuit, fixture_expected["upper_circuit"])
+        self.assertEqual(event.lower_circuit, fixture_expected["lower_circuit"])
+        self.assertEqual(event.high_52w, fixture_expected["high_52w"])
+        self.assertEqual(event.low_52w, fixture_expected["low_52w"])
 
     def test_snap_quote_golden_byte_offsets(self) -> None:
         """Verify exact byte offsets: Best-5 at bytes 147..347, Circuits at bytes 347..379."""
@@ -154,21 +186,6 @@ class TestSmartStreamDecoder(unittest.TestCase):
         self.assertEqual(event.lower_circuit, 2250.0)
         self.assertEqual(event.high_52w, 2800.0)
         self.assertEqual(event.low_52w, 2100.0)
-
-
-    def test_snap_quote_invalid_oi_change_sanitization(self) -> None:
-        """Non-finite or extreme OI change (>10,000%) returns None."""
-        packet_nan = build_snap_quote_packet(oi_change_pct=float("nan"))
-        event_nan = SmartStreamDecoder.decode(packet_nan, self.recv_utc, self.recv_ns)
-        self.assertIsNone(event_nan.oi_change_pct)
-
-        packet_inf = build_snap_quote_packet(oi_change_pct=float("inf"))
-        event_inf = SmartStreamDecoder.decode(packet_inf, self.recv_utc, self.recv_ns)
-        self.assertIsNone(event_inf.oi_change_pct)
-
-        packet_huge = build_snap_quote_packet(oi_change_pct=15_000_000.0)
-        event_huge = SmartStreamDecoder.decode(packet_huge, self.recv_utc, self.recv_ns)
-        self.assertIsNone(event_huge.oi_change_pct)
 
     def test_decode_depth20_packet_structure(self) -> None:
         """Verify dedicated 443-byte Mode 4 Depth20 parsing."""

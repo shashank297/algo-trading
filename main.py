@@ -29,13 +29,13 @@ from smartapi import (
 )
 from storage import DuckDBManager
 from utils import LoggerSetup, ReportGenerator, get_ist_now
+from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
+from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
+from data_platform.service import admit_and_promote_dataset
+from trading_stack.calendars import MarketCalendar, SessionOverride, build_nse_calendar
 from trading_stack.domain import Bar, infer_market_spec
 from trading_stack.live_aggregator import RealtimeBarAggregator
 from trading_stack.stream_persistence import DuckDBStreamWriter
-from trading_stack.calendars import MarketCalendar, SessionOverride, build_nse_calendar
-from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
-from trading_stack.trading_calendar import TradingCalendar
-
 from validators.duckdb_quality import DuckDBValidator
 
 PROJECT_ROOT = Path(__file__).resolve().parent
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--stream-mode",
-        choices=["LTP", "QUOTE", "SNAP_QUOTE", "DEPTH"],
+        choices=["LTP", "QUOTE", "SNAP_QUOTE"],
         default="SNAP_QUOTE",
         help="WebSocket streaming mode (default: SNAP_QUOTE).",
     )
@@ -485,7 +485,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     instrument_master.download_instrument_master()
 
     stream_mode = LiveTickerMode(args.stream_mode)
-    calendar = TradingCalendar()
+    calendar = build_nse_calendar()
     admission_policy = LiveAdmissionPolicy(
         max_future_skew_seconds=1.0,
         max_stale_latency_seconds=2.0,
@@ -499,14 +499,14 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         calendar=calendar,
     )
 
+    db_path = str(PROJECT_ROOT / bootstrap_config["database"]["path"])
     client = SmartAPIWebSocketClient(
         auth=auth,
         instrument_master=instrument_master,
         admission_validator=admission_validator,
     )
+    client.configure_quarantine_store(db_path)
 
-
-    db_path = str(PROJECT_ROOT / bootstrap_config["database"]["path"])
     db_writer = DuckDBStreamWriter(db_path=db_path, batch_size=200, flush_interval_seconds=1.0)
     db_writer.start()
 
@@ -809,7 +809,31 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         continue
 
-                    inserted = db.upsert_candles(candle_df, symbol, token, exchange, label)
+                    snapshot = DatasetSnapshot.from_bars(
+                        instrument=Instrument(
+                            canonical_symbol=symbol,
+                            exchange=exchange,
+                            provider_name="angel_one",
+                            provider_symbol=symbol,
+                            currency="INR",
+                            timezone="Asia/Kolkata",
+                        ),
+                        timeframe=label,
+                        bars=candle_df,
+                        adjustment=PriceAdjustment.UNADJUSTED,
+                        timezone_name="Asia/Kolkata",
+                        metadata={
+                            "source": "SmartAPI historical main ingestion",
+                            "from_datetime": from_datetime.isoformat(),
+                            "to_datetime": to_datetime.isoformat(),
+                        },
+                    )
+                    promo_res = admit_and_promote_dataset(
+                        snapshot=snapshot,
+                        db=db,
+                        target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
+                    )
+                    inserted = len(promo_res.bars) if promo_res.bars is not None else 0
                     duration = time.perf_counter() - task_started
                     db.log_download(
                         symbol=symbol,
@@ -962,13 +986,28 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         if repair_frame.empty:
                             continue
-                        repaired += db.upsert_candles(
-                            repair_frame,
-                            symbol,
-                            str(sym_config["token"]),
-                            str(sym_config["exchange"]),
-                            label,
+                        repair_snapshot = DatasetSnapshot.from_bars(
+                            instrument=Instrument(
+                                canonical_symbol=symbol,
+                                exchange=str(sym_config["exchange"]),
+                                provider_name="angel_one",
+                                provider_symbol=symbol,
+                                currency="INR",
+                                timezone="Asia/Kolkata",
+                            ),
+                            timeframe=label,
+                            bars=repair_frame,
+                            adjustment=PriceAdjustment.UNADJUSTED,
+                            timezone_name="Asia/Kolkata",
+                            metadata={"source": "SmartAPI historical gap repair"},
                         )
+                        repair_res = admit_and_promote_dataset(
+                            snapshot=repair_snapshot,
+                            db=db,
+                            target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
+                        )
+                        if repair_res.bars is not None:
+                            repaired += len(repair_res.bars)
                     if repaired:
                         project_logger.info("✅ {} {}: repaired {} missing daily bars.", symbol, label, repaired)
                         report = validator.run_all_checks(db, symbol)

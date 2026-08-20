@@ -56,6 +56,7 @@ class SmartAPIWebSocketClient:
         backoff_rng: Callable[[float, float], float] = random.uniform,
         websocket_factory: Any = websocket.WebSocketApp,
         quarantine_conn: Any = None,
+        quarantine_db_path: str | None = None,
     ) -> None:
         """Initialize the WebSocket client."""
         self.auth = auth
@@ -65,6 +66,7 @@ class SmartAPIWebSocketClient:
         self.ping_interval = ping_interval_seconds
         self.allow_insecure_tls = allow_insecure_tls
         self._quarantine_conn = quarantine_conn
+        self._quarantine_db_path = quarantine_db_path
 
         self._clock = clock
         self._monotonic = monotonic_clock
@@ -88,7 +90,6 @@ class SmartAPIWebSocketClient:
         self._quarantine_queue: queue.Queue[tuple[Any, Any]] = queue.Queue(maxsize=10_000)
         self._callbacks: list[Callable[[MarketDataEvent], None]] = []
         self._callback_lock = threading.Lock()
-
 
         self._last_rx_monotonic = 0.0
         self._connected_monotonic = 0.0
@@ -118,6 +119,10 @@ class SmartAPIWebSocketClient:
         with self._callback_lock:
             if callback in self._callbacks:
                 self._callbacks.remove(callback)
+
+    def configure_quarantine_store(self, db_path: str) -> None:
+        """Configure path for quarantine worker's dedicated DuckDB connection."""
+        self._quarantine_db_path = db_path
 
     def start(self) -> None:
         """Start the streaming client, dispatch worker, and connection loop."""
@@ -367,22 +372,39 @@ class SmartAPIWebSocketClient:
 
     def _quarantine_worker(self) -> None:
         """Asynchronously drain quarantine queue and persist records to DuckDB."""
-        while True:
-            with self._state_lock:
-                if self._state == ConnectionState.STOPPED:
-                    break
+        import duckdb
+        worker_conn = None
+        if self._quarantine_db_path:
             try:
-                item = self._quarantine_queue.get(timeout=0.5)
-            except queue.Empty:
-                continue
+                worker_conn = duckdb.connect(self._quarantine_db_path)
+            except Exception as exc:
+                logger.error("Failed to connect quarantine worker to DuckDB at {}: {}", self._quarantine_db_path, exc)
+        elif self._quarantine_conn is not None:
+            worker_conn = self._quarantine_conn
 
-            admission, payload = item
-            if self._quarantine_conn is not None:
+        try:
+            while True:
+                with self._state_lock:
+                    if self._state == ConnectionState.STOPPED and self._quarantine_queue.empty():
+                        break
                 try:
-                    self.admission_validator.persist_quarantine(self._quarantine_conn, admission, payload)
-                except Exception as exc:
-                    logger.debug("Asynchronous quarantine persistence warning: {}", exc)
-            self._quarantine_queue.task_done()
+                    item = self._quarantine_queue.get(timeout=0.5)
+                except queue.Empty:
+                    continue
+
+                admission, payload = item
+                if worker_conn is not None:
+                    try:
+                        self.admission_validator.persist_quarantine(worker_conn, admission, payload)
+                    except Exception as exc:
+                        logger.debug("Asynchronous quarantine persistence warning: {}", exc)
+                self._quarantine_queue.task_done()
+        finally:
+            if worker_conn is not None and worker_conn is not self._quarantine_conn:
+                try:
+                    worker_conn.close()
+                except Exception:
+                    pass
 
 
     def _on_ping(self, ws: websocket.WebSocketApp, msg: bytes | str, generation: int) -> None:

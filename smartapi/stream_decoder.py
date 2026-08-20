@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 import struct
 from datetime import datetime, timezone
 from typing import Callable
@@ -16,6 +15,11 @@ from data_platform.contracts import (
     QuoteTick,
     SnapQuoteTick,
 )
+
+
+class UnsupportedFeedModeError(RuntimeError):
+    """Raised when a production-deprecated SmartAPI feed mode (e.g. Mode 4 Depth20) is requested."""
+
 
 
 class PriceScaler:
@@ -220,9 +224,8 @@ class SmartStreamDecoder:
         open_raw, high_raw, low_raw, close_raw = struct.unpack_from("<qqqq", data, 91)
 
         lt_ts_raw, oi = struct.unpack_from("<qq", data, 123)
-        # Parse OI change percentage as 64-bit IEEE double (<d) at offset 139
-        oi_change_raw = struct.unpack_from("<d", data, 139)[0]
-        oi_change_pct = oi_change_raw if math.isfinite(oi_change_raw) and abs(oi_change_raw) <= 10_000.0 else None
+        # Parse OI change as signed 64-bit int (<q) at offset 139 per Angel One SmartStream protocol
+        oi_change_raw = struct.unpack_from("<q", data, 139)[0]
 
         # Parse Best-5 Depth (10 records * 20 bytes = 200 bytes at offset 147..347)
         best_5_buy: list[DepthLevel] = []
@@ -243,7 +246,6 @@ class SmartStreamDecoder:
 
         # Parse Circuit limits and 52-week statistics at offset 347..379
         upper_c_raw, lower_c_raw, h52_raw, l52_raw = struct.unpack_from("<qqqq", data, 347)
-
 
         ex_ts = datetime.fromtimestamp(ex_ts_raw / 1000.0, tz=timezone.utc) if ex_ts_raw > 0 else None
         last_trade_ts = (
@@ -276,7 +278,9 @@ class SmartStreamDecoder:
             day_close=PriceScaler.scale(close_raw, exchange_type),
             last_traded_timestamp=last_trade_ts,
             open_interest=oi,
-            oi_change_pct=oi_change_pct,
+            open_interest_change_raw=oi_change_raw,
+            open_interest_change_pct=None,
+            oi_change_pct=None,
             upper_circuit=PriceScaler.scale(upper_c_raw, exchange_type),
             lower_circuit=PriceScaler.scale(lower_c_raw, exchange_type),
             high_52w=PriceScaler.scale(h52_raw, exchange_type),

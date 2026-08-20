@@ -191,6 +191,11 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
         self.assertEqual(keys[0].token, "2885")
         self.assertEqual(keys[1].token, "3045")
 
+    def test_quarantine_worker_dedicated_db_path(self) -> None:
+        """Quarantine worker accepts a configured dedicated DB path and initializes gracefully."""
+        self.client.configure_quarantine_store(":memory:")
+        self.assertEqual(self.client._quarantine_db_path, ":memory:")
+
 
 if __name__ == "__main__":
     unittest.main()

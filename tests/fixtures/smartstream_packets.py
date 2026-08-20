@@ -80,7 +80,7 @@ def build_snap_quote_packet(
     day_close_raw: int = 249000,
     last_trade_ts_ms: int = 1690000000000,
     open_interest: int = 500_000,
-    oi_change_pct: float = 5.25,  # 5.25% IEEE-754 double
+    oi_change_raw: int = 525,  # signed 64-bit integer
     upper_circuit_raw: int = 275000,
     lower_circuit_raw: int = 225000,
     high_52w_raw: int = 280000,
@@ -105,10 +105,10 @@ def build_snap_quote_packet(
         day_close_raw,
     )
     lt_and_oi_part = struct.pack(
-        "<qqd",
+        "<qqq",
         last_trade_ts_ms,
         open_interest,
-        oi_change_pct,  # <d 8-byte double at offset 139..147
+        oi_change_raw,  # <q 8-byte signed int at offset 139..147
     )
 
     # 10 Best-5 records (5 buy flag=1, 5 sell flag=0) at offset 147..347 (200 bytes)

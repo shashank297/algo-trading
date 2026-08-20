@@ -10,13 +10,16 @@ import warnings
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pandas as pd
 from loguru import logger
 
 from data_platform.contracts import PriceAdjustment
+
+if TYPE_CHECKING:
+    from trading_stack.calendars import MarketCalendar
 
 
 class VolumeAdjustment(str, Enum):
@@ -451,6 +454,7 @@ class SourceSemanticsAdapter:
         corporate_actions: pd.DataFrame,
         tolerance_pct: float | None = None,
         policy: SourceSemanticsPolicy | None = None,
+        market_calendar: MarketCalendar | None = None,
     ) -> list[BasisDetectionResult]:
         """Inspect price and volume continuity across corporate action ex-dates using log-space distances.
 
@@ -463,12 +467,12 @@ class SourceSemanticsAdapter:
             corporate_actions: Corporate actions table with 'ex_date' and 'share_multiplier'.
             tolerance_pct: Optional legacy tolerance percentage (overrides policy log tolerances if provided).
             policy: Optional SourceSemanticsPolicy for threshold and validation rules.
+            market_calendar: Optional MarketCalendar instance for trading session calculation.
 
         Returns:
             list[BasisDetectionResult]: Audit-grade inspection results for each corporate action.
         """
         ca_df = (
-
             pd.DataFrame(corporate_actions)
             if isinstance(corporate_actions, (list, tuple, dict))
             else (corporate_actions if isinstance(corporate_actions, pd.DataFrame) else pd.DataFrame())
@@ -477,6 +481,11 @@ class SourceSemanticsAdapter:
             return []
 
         active_policy = policy or SourceSemanticsPolicy()
+        if market_calendar is None:
+            from trading_stack.calendars import build_nse_calendar
+            mcal = build_nse_calendar()
+        else:
+            mcal = market_calendar
         tau_adj = tolerance_pct if tolerance_pct is not None else active_policy.adjusted_log_tolerance
         tau_raw = tolerance_pct if tolerance_pct is not None else active_policy.raw_log_tolerance
 
@@ -581,10 +590,11 @@ class SourceSemanticsAdapter:
             post_session_ts = ts.iloc[first_ex_idx]
             calendar_gap_days = (post_session_ts.date() - pre_session_ts.date()).days
 
-            # Calculate missing trading sessions:
-            # Friday -> Monday (3 calendar days, 0 business days between) -> missing_trading_sessions = 0 (strictly adjacent).
-            bus_days_between = len(pd.bdate_range(pre_session_ts.date() + pd.Timedelta(days=1), post_session_ts.date() - pd.Timedelta(days=1)))
-            missing_trading_sessions = bus_days_between
+            # Calculate missing trading sessions using MarketCalendar:
+            # Friday -> Monday (3 calendar days, 0 trading sessions between) -> missing_trading_sessions = 0 (strictly adjacent).
+            start_d = pre_session_ts.date() + pd.Timedelta(days=1)
+            end_d = post_session_ts.date() - pd.Timedelta(days=1)
+            missing_trading_sessions = len(mcal.iter_trading_days(start_d, end_d)) if start_d <= end_d else 0
 
             evidence_codes: list[BasisEvidenceCode] = []
             reasons: list[str] = []
@@ -790,6 +800,7 @@ class SourceSemanticsAdapter:
         declared_adjustment: PriceAdjustment | str | None = None,
         override_reason: str | None = None,
         policy: SourceSemanticsPolicy | None = None,
+        market_calendar: MarketCalendar | None = None,
     ) -> SourceBarSemantics:
         """Infer source bar semantics using declared metadata and institutional dataset-level evidence aggregation.
 
@@ -800,6 +811,7 @@ class SourceSemanticsAdapter:
             declared_adjustment: Explicitly declared adjustment if known.
             override_reason: Optional human or system audit reason if applying an override.
             policy: Optional SourceSemanticsPolicy for threshold and validation rules.
+            market_calendar: Optional MarketCalendar instance.
 
         Returns:
             SourceBarSemantics: Inferred, validated, and provenance-tracked source semantics.
@@ -841,7 +853,7 @@ class SourceSemanticsAdapter:
         )
 
         if not ca_df.empty:
-            reports = cls.detect_corporate_action_discontinuity(bars, ca_df, policy=active_policy)
+            reports = cls.detect_corporate_action_discontinuity(bars, ca_df, policy=active_policy, market_calendar=market_calendar)
 
             if reports:
                 scores = [r.evidence_strength for r in reports]
