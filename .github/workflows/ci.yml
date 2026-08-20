@@ -27,7 +27,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - name: Install dependencies
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.lock -r requirements-dev.txt
       - name: Compile source
         run: python -m compileall -q main.py research.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
       - name: Run tests
@@ -44,7 +44,7 @@ jobs:
           python-version: "3.12"
           cache: pip
       - name: Install quality tools
-        run: python -m pip install --upgrade pip && python -m pip install -r requirements-dev.txt
+        run: python -m pip install --upgrade pip && python -m pip install -r requirements.lock -r requirements-dev.txt
       - name: Lint
         run: ruff check .
       - name: Type check (Mypy)
@@ -52,8 +52,7 @@ jobs:
       - name: Type check (Pyright)
         run: pyright
       - name: Coverage
-
-        run: coverage run -m pytest -q && coverage report
+        run: coverage run -m pytest -q && coverage report --fail-under=80
       - name: Dependency vulnerability audit
         run: pip-audit -r requirements.txt
 
@@ -79,6 +78,9 @@ jobs:
       - name: Install frontend dependencies
         working-directory: tools/dashboard/ui
         run: npm ci
+      - name: Lint frontend
+        working-directory: tools/dashboard/ui
+        run: npm run lint
       - name: Build frontend
         working-directory: tools/dashboard/ui
         run: npm run build

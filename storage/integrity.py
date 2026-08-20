@@ -90,7 +90,7 @@ class DatabaseIntegrityValidator:
                 details=f"{count} fills reference non-existent orders",
             )
         except Exception as exc:
-            return IntegrityCheckResult("orphaned_strategy_fills", True, 0, f"Skipped (table absent): {exc}")
+            return IntegrityCheckResult("orphaned_strategy_fills", False, 1, f"Table absent or query failed: {exc}")
 
     def check_orphaned_fill_costs(self) -> IntegrityCheckResult:
         """Ensure every fill_cost_component references a valid fill_id."""
@@ -111,10 +111,10 @@ class DatabaseIntegrityValidator:
                 details=f"{count} cost component rows reference non-existent fills",
             )
         except Exception as exc:
-            return IntegrityCheckResult("orphaned_fill_costs", True, 0, f"Skipped (table absent): {exc}")
+            return IntegrityCheckResult("orphaned_fill_costs", False, 1, f"Table absent or query failed: {exc}")
 
     def check_raw_to_canonical_lineage(self) -> IntegrityCheckResult:
-        """Ensure CANONICAL_PROMOTED datasets have valid raw/parent dataset references."""
+        """Ensure CANONICAL_PROMOTED datasets have valid non-null raw/parent dataset references."""
         try:
             row = self.conn.execute(
                 """
@@ -122,8 +122,7 @@ class DatabaseIntegrityValidator:
                 FROM market_datasets c
                 LEFT JOIN market_datasets p ON c.parent_dataset_id = p.dataset_id
                 WHERE c.lifecycle_status = 'CANONICAL_PROMOTED' 
-                  AND c.parent_dataset_id IS NOT NULL 
-                  AND p.dataset_id IS NULL
+                  AND (c.parent_dataset_id IS NULL OR p.dataset_id IS NULL)
                 """
             ).fetchone()
             count = int(row[0]) if row else 0
@@ -131,10 +130,10 @@ class DatabaseIntegrityValidator:
                 check_name="raw_to_canonical_lineage",
                 passed=(count == 0),
                 violation_count=count,
-                details=f"{count} canonical promoted datasets reference non-existent parent datasets",
+                details=f"{count} canonical promoted datasets lack valid parent dataset lineage",
             )
         except Exception as exc:
-            return IntegrityCheckResult("raw_to_canonical_lineage", True, 0, f"Skipped (table absent): {exc}")
+            return IntegrityCheckResult("raw_to_canonical_lineage", False, 1, f"Table absent or query failed: {exc}")
 
     def check_snapshot_membership_integrity(self) -> IntegrityCheckResult:
         """Ensure universe_snapshot_members have valid symbols."""
@@ -154,7 +153,7 @@ class DatabaseIntegrityValidator:
                 details=f"{count} invalid empty universe snapshot member symbols",
             )
         except Exception as exc:
-            return IntegrityCheckResult("snapshot_membership_integrity", True, 0, f"Skipped (table absent): {exc}")
+            return IntegrityCheckResult("snapshot_membership_integrity", False, 1, f"Table absent or query failed: {exc}")
 
     def check_quarantine_records_consistency(self) -> IntegrityCheckResult:
         """Ensure historical quarantine records have issues recorded."""
@@ -162,9 +161,9 @@ class DatabaseIntegrityValidator:
             row = self.conn.execute(
                 """
                 SELECT COUNT(*)
-                FROM historical_quarantine q
-                LEFT JOIN raw_quarantine_issues i ON q.quarantine_id = i.quarantine_id
-                WHERE i.quarantine_id IS NULL
+                FROM historical_market_data_quarantine q
+                LEFT JOIN historical_market_data_quarantine_issues i ON q.quarantine_id = i.quarantine_id
+                WHERE i.quarantine_id IS NULL AND q.malformed_row_count > 0
                 """
             ).fetchone()
             count = int(row[0]) if row else 0
@@ -175,7 +174,7 @@ class DatabaseIntegrityValidator:
                 details=f"{count} quarantine records lack detailed row-level issues",
             )
         except Exception as exc:
-            return IntegrityCheckResult("quarantine_records_consistency", True, 0, f"Skipped (table absent): {exc}")
+            return IntegrityCheckResult("quarantine_records_consistency", False, 1, f"Table absent or query failed: {exc}")
 
     def check_paper_session_runs(self) -> IntegrityCheckResult:
         """Ensure paper sessions reference valid strategy_runs."""
@@ -196,4 +195,4 @@ class DatabaseIntegrityValidator:
                 details=f"{count} paper sessions reference unapproved/non-existent backtest runs",
             )
         except Exception as exc:
-            return IntegrityCheckResult("paper_session_runs", True, 0, f"Skipped (table absent): {exc}")
+            return IntegrityCheckResult("paper_session_runs", False, 1, f"Table absent or query failed: {exc}")

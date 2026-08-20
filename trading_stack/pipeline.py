@@ -25,7 +25,7 @@ from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
 from trading_stack.promotion import PromotionEngine
 
 
-class DataQualityError(Exception):
+class DataQualityError(ValueError):
     """Raised when data fails pre-backtest quality checks."""
     pass
 
@@ -45,22 +45,25 @@ class StrategyPipeline:
 
     def __init__(
         self,
-        db: DuckDBManager,
+        db: DuckDBManager | None = None,
         feature_factory: FeatureFactory | None = None,
         risk_engine: RiskEngine | None = None,
+        strict_calendar: bool = False,
         india_calendar: MarketCalendar | None = None,
+        require_authoritative_certification: bool = False,
     ) -> None:
-        self.db = db
-        self.feature_factory = feature_factory or FeatureFactory()
-        self.vector_backtester = VectorizedBacktester()
-        self.event_backtester = EventDrivenBacktester()
-        self.paper_broker = PaperBroker()
-        self.risk_engine = risk_engine or RiskEngine()
+        self.db = db or DuckDBManager()
         self.calendars = build_default_calendars()
-        self.strict_calendar = india_calendar is not None
         if india_calendar is not None:
             self.calendars[AssetClass.INDIA_EQUITY] = india_calendar
             self.calendars[AssetClass.INDIA_INDEX] = india_calendar
+            self.strict_calendar = True
+        else:
+            self.strict_calendar = strict_calendar
+        self.feature_factory = feature_factory or FeatureFactory()
+        self.risk_engine = risk_engine or RiskEngine()
+        self.promotion_engine = PromotionEngine(self.db)
+        self.require_authoritative_certification = require_authoritative_certification
 
     def load_candles(
         self,
@@ -68,11 +71,13 @@ class StrategyPipeline:
         timeframe: str,
         *,
         bypass_quality_gate: bool = False,
+        require_authoritative_certification: bool = False,
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> pd.DataFrame:
         """Load stored candles for a symbol/timeframe from DuckDB, with optional corporate action adjustment."""
 
         if not bypass_quality_gate:
+            must_certify = require_authoritative_certification or self.require_authoritative_certification
             try:
                 # 1. Fetch exact latest dataset record from market_datasets
                 ds_record = self.db.conn.execute(
@@ -90,10 +95,13 @@ class StrategyPipeline:
                             f"DataQualityError: Dataset {dataset_id} for {symbol} {timeframe} has status={status}, "
                             f"lifecycle={lifecycle_status}; must be VERIFIED and CANONICAL_PROMOTED."
                         )
-                else:
-                    dataset_id = None
+                elif must_certify:
+                    raise DataQualityError(
+                        f"DataQualityError: No canonical dataset record found for {symbol} {timeframe}. "
+                        "Only verified, certified datasets may be used in research."
+                    )
 
-                # 2. Check quality_report records for issues
+                # 2. Check quality_report records for issues and positive verification across all required checks
                 quality_rows = self.db.conn.execute(
                     """
                     SELECT check_type, issue_count FROM quality_report 
@@ -102,11 +110,27 @@ class StrategyPipeline:
                     """,
                     [symbol, timeframe],
                 ).fetchall()
+                if must_certify and not quality_rows:
+                    raise DataQualityError(
+                        f"DataQualityError: No quality report records found for {symbol} {timeframe}. "
+                        "Positive data quality certification is required."
+                    )
+
+                observed_checks = set()
                 for q_type, count in quality_rows:
+                    observed_checks.add(q_type)
                     if count and count > 0:
                         raise DataQualityError(
                             f"DataQualityError: {symbol} {timeframe} failed {q_type} check with {count} issues. "
                             f"Resolve data quality or pass bypass_quality_gate=True."
+                        )
+
+                if must_certify:
+                    missing_checks = REQUIRED_AUTHORITATIVE_DQ_CHECKS - observed_checks
+                    if missing_checks:
+                        raise DataQualityError(
+                            f"DataQualityError: Incomplete DQ certification for {symbol} {timeframe}. "
+                            f"Missing required check categories: {sorted(missing_checks)}."
                         )
             except Exception as e:
                 if isinstance(e, DataQualityError):
@@ -173,6 +197,7 @@ class StrategyPipeline:
                 symbol=symbol,
                 timeframe=timeframe,
                 parameters=parameters,
+                calendar=calendar,
             )
         elif mode in {"event-driven", "paper"}:
             # Wire risk engine into both event-driven backtest and paper so results reflect live limits.
@@ -186,6 +211,7 @@ class StrategyPipeline:
                 parameters=parameters,
                 result_mode=mode,
                 max_abs_position=self.risk_engine.policy.max_position_pct,
+                calendar=calendar,
             )
         else:
             raise ValueError(f"Unsupported mode: {mode}")
@@ -194,7 +220,7 @@ class StrategyPipeline:
             self._apply_paper_risk(result, starting_capital)
         self._persist_result(
             result, mode=mode, strategy_name=strategy_name, asset_class=asset_class,
-            execution_model=execution_model,
+            execution_model=execution_model, starting_capital=starting_capital,
         )
         self._persist_features(feature_frame, symbol=symbol, timeframe=timeframe)
         return {
@@ -326,6 +352,7 @@ class StrategyPipeline:
         strategy_name: str,
         asset_class: AssetClass,
         execution_model: ExecutionModel,
+        starting_capital: float = 100_000.0,
     ) -> None:
         with self.db.transaction():
             self.db.clear_backtest_artifacts(result.run_id)
@@ -337,6 +364,7 @@ class StrategyPipeline:
                     "symbol": result.symbol,
                     "timeframe": result.timeframe,
                     "mode": mode,
+                    "starting_capital": starting_capital,
                     "parameters_json": json.dumps(result.parameters, default=str),
                     "data_hash": result.data_hash,
                     "status": "COMPLETED",

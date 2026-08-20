@@ -52,23 +52,20 @@ class CrossSectionalRankingStrategy(BaseStrategy):
             ranked = ranked[ranked["eligible"].astype(bool)].copy()
         if "pit_eligible" in ranked.columns:
             ranked = ranked[ranked["pit_eligible"].astype(bool)].copy()
+        elif "pit_db_conn" in self.parameters or "db_conn" in self.parameters:
+            pit_conn = self.parameters.get("pit_db_conn") or self.parameters.get("db_conn")
+            universe_name = self.parameters.get("universe_name")
+            if pit_conn is not None and universe_name:
+                from data_platform.universe import PointInTimeUniverseManager
+                filtered_rows = []
+                for dt, group in ranked.groupby("timestamp"):
+                    as_of_date = dt.date()
+                    constituents = PointInTimeUniverseManager.get_constituents(pit_conn, universe_name, as_of_date)
+                    active_members = {c.symbol for c in constituents}
+                    filtered_rows.append(group[group["symbol"].isin(active_members)])
+                ranked = pd.concat(filtered_rows, ignore_index=True) if filtered_rows else ranked.iloc[0:0]
         if ranked.empty:
             return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
-
-        universe_name = self.parameters.get("universe_name") or self.parameters.get("pit_universe_name")
-        pit_conn = self.parameters.get("pit_db_conn") or self.parameters.get("db_conn")
-        if universe_name and pit_conn is not None:
-            from data_platform.universe import PointInTimeUniverseManager
-
-            valid_rows = []
-            for ts, grp in ranked.groupby("timestamp"):
-                active_symbols = set(PointInTimeUniverseManager.get_constituent_symbols(pit_conn, str(universe_name), ts))
-                valid_grp = grp[grp["symbol"].isin(active_symbols)]
-                if not valid_grp.empty:
-                    valid_rows.append(valid_grp)
-            if not valid_rows:
-                return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
-            ranked = pd.concat(valid_rows, ignore_index=True)
 
         ranked["rank"] = ranked.groupby("timestamp")["score"].rank(method="first", ascending=False)
 

@@ -360,8 +360,11 @@ class SmartAPIWebSocketClient:
                 is_gap, is_dup, gap_size = self.metrics.sequence_tracker.inspect_sequence(event.exchange, event.token, seq_num)
                 if is_gap:
                     self.metrics.sequence_gaps_total += gap_size
+                    with self._state_lock:
+                        if self._state == ConnectionState.CONNECTED:
+                            self._state = ConnectionState.DEGRADED
                     logger.warning(
-                        "Stream sequence gap detected: exchange={} token={} gap_size={}; stream telemetry updated.",
+                        "Stream sequence gap detected: exchange={} token={} gap_size={}; transitioning connection to DEGRADED state.",
                         event.exchange, event.token, gap_size,
                     )
                 if is_dup:

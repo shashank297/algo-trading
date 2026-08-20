@@ -500,15 +500,21 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     )
 
     db_path = str(PROJECT_ROOT / bootstrap_config["database"]["path"])
+    db_writer = DuckDBStreamWriter(
+        db_path=db_path,
+        batch_size=200,
+        flush_interval_seconds=1.0,
+        capture_raw_packets=True,
+    )
+    db_writer.start()
+
     client = SmartAPIWebSocketClient(
         auth=auth,
         instrument_master=instrument_master,
         admission_validator=admission_validator,
+        raw_packet_sink=db_writer,
     )
     client.configure_quarantine_store(db_path)
-
-    db_writer = DuckDBStreamWriter(db_path=db_path, batch_size=200, flush_interval_seconds=1.0)
-    db_writer.start()
 
     aggregator = RealtimeBarAggregator(timeframe="1m", market_calendar=calendar)
 

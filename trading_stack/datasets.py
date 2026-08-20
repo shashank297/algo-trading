@@ -218,7 +218,7 @@ class SynchronizedPanelBuilder:
         survivorship_bias = True
         try:
             pit_rows: list[tuple[str, Any, Any]] = []
-            if universe_name:
+            if universe_name and universe_name != "CONFIGURED_UNIVERSE":
                 pit_rows = self.db.conn.execute(
                     """
                     SELECT symbol, effective_from, effective_until 
@@ -235,11 +235,20 @@ class SynchronizedPanelBuilder:
                 
                 panel_dates = pd.to_datetime(panel["timestamp"]).dt.tz_convert(self.calendar.zone).dt.date
                 min_panel_date = panel_dates.min()
+                max_panel_date = panel_dates.max()
                 min_pit_date = pit_df["effective_from"].min()
                 if min_pit_date > min_panel_date:
                     raise RuntimeError(
                         f"PIT membership evidence for '{universe_name}' begins on {min_pit_date}, which does not cover requested research start date {min_panel_date}. Failing closed to prevent survivorship bias."
                     )
+                # Ensure no end-date truncation when constituents have explicit end dates
+                has_open_ended = pit_df["effective_until"].isna().any()
+                if not has_open_ended:
+                    max_pit_date = pit_df["effective_until"].dropna().max()
+                    if max_pit_date and max_pit_date < max_panel_date:
+                        raise RuntimeError(
+                            f"PIT membership evidence for '{universe_name}' ends on {max_pit_date}, which does not cover requested research end date {max_panel_date}. Failing closed to prevent survivorship bias."
+                        )
 
                 panel_syms = panel["symbol"].values
                 is_member_mask = np.zeros(len(panel), dtype=bool)
@@ -260,16 +269,27 @@ class SynchronizedPanelBuilder:
                 panel["pit_eligible"] = is_member_mask
                 panel["eligible"] &= panel["pit_eligible"]
                 survivorship_bias = False
-            elif universe_name and ("NIFTY" in universe_name.upper() or universe_name == "NIFTY50" or universe_name == "NIFTY200"):
-                raise RuntimeError(
-                    f"No PIT membership evidence for '{universe_name}'. Failing closed to eliminate survivorship bias."
-                )
+            elif universe_name and universe_name != "CONFIGURED_UNIVERSE":
+                is_registered = self.db.conn.execute(
+                    "SELECT COUNT(*) FROM universe_snapshots WHERE UPPER(snapshot_id) = ? OR UPPER(name) = ?",
+                    [universe_name.upper(), universe_name.upper()],
+                ).fetchone()[0] > 0
+                if is_registered or "NIFTY" in universe_name.upper():
+                    raise RuntimeError(
+                        f"Missing point-in-time constituent history for universe '{universe_name}'. "
+                        f"Point-in-time constituent history is mandatory to eliminate survivorship bias."
+                    )
+                else:
+                    panel["pit_eligible"] = True
+                    survivorship_bias = True
             else:
                 panel["pit_eligible"] = True
                 survivorship_bias = True
         except Exception as exc:
             logger.error("PIT universe filtering failed for universe {}: {}", universe_name, exc)
-            if universe_name and ("NIFTY" in universe_name.upper() or isinstance(exc, RuntimeError)):
+            if isinstance(exc, RuntimeError):
+                raise
+            if universe_name and universe_name != "CONFIGURED_UNIVERSE":
                 raise RuntimeError(f"Point-in-time universe lookup failed for '{universe_name}': {exc}. Failing closed to prevent survivorship bias.") from exc
             panel["pit_eligible"] = True
             survivorship_bias = True

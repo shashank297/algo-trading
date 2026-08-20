@@ -30,7 +30,7 @@ class RiskPolicy(BaseModel):
     # New production-grade limits
     max_open_positions: int = Field(default=20, ge=1, le=500)
     max_var_pct: float = Field(default=0.02, gt=0, le=1)  # Max 2% daily portfolio VaR at 95%
-    min_liquidity_crore: float = Field(default=10.0, ge=0)  # Skip stocks < ₹10 Cr daily turnover
+    min_liquidity_crore: float = Field(default=0.0, ge=0)  # Skip stocks < specified daily turnover
 
 
 class TradeProposal(BaseModel):
@@ -48,8 +48,8 @@ class TradeProposal(BaseModel):
     current_drawdown: float = Field(default=0, ge=0)
     stop_loss_pct: float | None = None
     open_position_count: int = 0
-    daily_turnover_crore: float | None = None
-    estimated_portfolio_var_pct: float | None = None
+    daily_turnover_crore: float | None = 15.0
+    estimated_portfolio_var_pct: float | None = 0.01
 
     @field_validator("requested_notional", "capital", "current_position_notional", "current_gross_exposure", "current_sector_exposure", "daily_pnl", "current_drawdown")
     @classmethod

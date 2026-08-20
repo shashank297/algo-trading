@@ -55,7 +55,7 @@ class DuckDBManager:
         logger.info("🗄️ Database connected: {}", db_path)
 
     def initialize_schema(self) -> None:
-        """Create all required DuckDB tables if they do not exist."""
+        """Create all required DuckDB tables and run schema migrations."""
 
         schema_path = Path(__file__).resolve().parent.parent / "database_schema.sql"
         try:
@@ -64,12 +64,16 @@ class DuckDBManager:
                 self._migrate_equity_curve_primary_key()
                 self._migrate_corporate_actions_schema()
                 try:
+                    from storage.migrations.runner import MigrationRunner
+                    MigrationRunner(self.conn).run_migrations()
+                except Exception as m_err:
+                    logger.warning("Migration runner notification: {}", m_err)
+                try:
                     self.conn.execute("FORCE CHECKPOINT;")
                 except Exception as e:
                     logger.debug("Skipped checkpoint during initialization: {}", e)
         except Exception as exc:
             logger.exception("Failed to initialize DuckDB schema: {}", exc)
-
             raise
 
     def upsert_candles(

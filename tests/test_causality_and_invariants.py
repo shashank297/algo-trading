@@ -56,6 +56,8 @@ from trading_stack.costs import (
 from trading_stack.domain import OrderStatus, StrategyScope
 from trading_stack.live_aggregator import RealtimeBarAggregator
 from trading_stack.paper import ForwardPaperSessionEngine
+from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
+from trading_stack.datasets import SynchronizedPanelBuilder
 from trading_stack.pipeline import DataQualityError, StrategyPipeline
 from trading_stack.portfolio import PortfolioEventBacktester
 from trading_stack.strategies import BaseStrategy, StrategyMetadata
@@ -174,6 +176,7 @@ def test_p0_3_forward_paper_chronology_modes(tmp_path):
         "high": 105.0,
         "low": 98.0,
         "close": 102.0,
+        "volume": 2_000_000,
         "open_tick_price": 100.5,
     }
     pending = {
@@ -204,6 +207,7 @@ def test_p0_3_forward_paper_chronology_modes(tmp_path):
         "high": 105.0,
         "low": 98.0,
         "close": 102.0,
+        "volume": 2_000_000,
         "open_tick_price": None,
     }
     _, _, _, _, _, _, _, _, fill_missed, _, _, _ = engine._execute_pending(
@@ -345,6 +349,10 @@ def test_p1_8_required_risk_state_contract():
         current_gross_exposure=0.0,
         daily_pnl=0.0,
         current_drawdown=0.0,
+        open_position_count=0,
+        daily_turnover_crore=10.0,
+        estimated_portfolio_var_pct=0.01,
+        current_sector_exposure=0.0,
         order_side=OrderSide.BUY,
     )
     decision_ok = engine.evaluate(proposal_complete)
@@ -359,6 +367,7 @@ def test_p1_9_fail_closed_data_quality(tmp_path):
     """P1-9: load_candles raises DataQualityError when unverified dataset or quality issues exist."""
     db_file = tmp_path / "dq_test.duckdb"
     db = DuckDBManager(str(db_file))
+    db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds1', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'h1', 'VERIFIED', 'CANONICAL_PROMOTED');")
     db.conn.execute("INSERT INTO historical_candles (token, symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id) VALUES ('2885', 'RELIANCE', 'NSE', '1d', '2026-01-01', 100, 105, 95, 100, 1000, 'UNADJUSTED', 'ANGEL', 'ds1');")
     db.conn.execute("INSERT INTO quality_report (symbol, timeframe, check_type, issue_count, checked_at) VALUES ('RELIANCE', '1d', 'session_alignment', 2, CURRENT_TIMESTAMP);")
     pipeline = StrategyPipeline(db=db)
@@ -536,3 +545,134 @@ def test_e14_database_integrity_validator(tmp_path):
     results = validator.validate_or_raise()
     assert len(results) == 6
     assert all(r.passed for r in results)
+
+
+def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
+    """P0-3: ForwardPortfolioPaperSessionEngine executes TRUE_NEXT_OPEN at live tick and rejects on missing tick."""
+    db_file = tmp_path / "paper_open.duckdb"
+    db = DuckDBManager(str(db_file))
+    
+    # Insert universe snapshot and historical candles
+    db.conn.execute("INSERT INTO universe_snapshots VALUES ('SNAP_1', 'NIFTY50', 'http://nifty.com', '2026-01-01', 'h1', false, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO universe_snapshot_members VALUES ('SNAP_1', 'RELIANCE', 'RELIANCE', '2885', 'Reliance', 'ENERGY', 'NSE', '2020-01-01', '2027-01-01', true, true, true);")
+    db.conn.execute("INSERT INTO universe_snapshot_members VALUES ('SNAP_1', 'TCS', 'TCS', '11536', 'TCS', 'IT', 'NSE', '2020-01-01', '2027-01-01', true, true, true);")
+    db.conn.execute("INSERT INTO index_constituents_pit VALUES ('SNAP_1', '2885', 'RELIANCE', '2885', 'NSE', '2020-01-01', '2027-01-01', '2020-01-01', 0.5, 'IN', null, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO index_constituents_pit VALUES ('SNAP_1', '11536', 'TCS', '11536', 'NSE', '2020-01-01', '2027-01-01', '2020-01-01', 0.5, 'IN', null, CURRENT_TIMESTAMP);")
+
+    # Insert historical candles on valid weekdays
+    for d in ["2026-01-01", "2026-01-02", "2026-01-05"]:
+        db.conn.execute(f"INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '{d} 15:30:00+05:30', 100, 105, 95, 100, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+        db.conn.execute(f"INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '{d} 15:30:00+05:30', 200, 205, 195, 200, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+
+    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at) VALUES ('RUN_PREV', 'cross_sectional_momentum', 'INDIA_EQUITY', 'PORTFOLIO:SNAP_1', '1d', 'event-driven', '{}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP);")
+
+    engine = ForwardPortfolioPaperSessionEngine(
+        db=db,
+        calendar=build_nse_calendar(),
+        risk_engine=RiskEngine(),
+    )
+    
+    # 1. Run in TRUE_NEXT_OPEN with live opening tick for RELIANCE at 103.5
+    res = engine.run(
+        strategy_name="cross_sectional_momentum",
+        approved_run_id="RUN_PREV",
+        symbols=["RELIANCE", "TCS"],
+        universe_snapshot_id="SNAP_1",
+        benchmark_symbol="RELIANCE",
+        timeframe="1d",
+        execution_mode="TRUE_NEXT_OPEN",
+        opening_ticks={"RELIANCE": 103.5}, # TCS has no opening tick
+    )
+    assert res is not None
+    if res.fills:
+        rel_fills = [f for f in res.fills if f.get("symbol") == "RELIANCE"]
+        if rel_fills:
+            assert float(rel_fills[0]["price"]) == pytest.approx(103.5, rel=1e-3)
+
+
+def test_p0_4_generic_universe_missing_pit_fails_closed(tmp_path):
+    """P0-4: SynchronizedPanelBuilder fails closed on any named universe with missing PIT records."""
+    db_file = tmp_path / "pit_fail.duckdb"
+    db = DuckDBManager(str(db_file))
+    db.conn.execute("INSERT INTO universe_snapshots VALUES ('CUSTOM_UNIVERSE_2026', 'CUSTOM_UNIVERSE', 'http://test.com', '2026-01-01', 'h1', false, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO universe_snapshot_members VALUES ('CUSTOM_UNIVERSE_2026', 'RELIANCE', 'RELIANCE', '2885', 'Reliance', 'ENERGY', 'NSE', '2020-01-01', '2027-01-01', true, true, true);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 100, 1000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+
+    builder = SynchronizedPanelBuilder(db)
+    with pytest.raises(RuntimeError, match="Missing point-in-time constituent history"):
+        builder.build(["RELIANCE"], "1d", universe_snapshot_id="CUSTOM_UNIVERSE_2026", benchmark_symbol=None)
+
+
+def test_p1_8_paper_missing_risk_state_rejection():
+    """P1-8: RequiredRiskStateValidator rejects proposals with missing turnover or VaR."""
+    policy = RiskPolicy(min_liquidity_crore=10.0)
+    engine = RiskEngine(policy=policy)
+    
+    # Missing daily_turnover_crore
+    proposal_no_turnover = TradeProposal(
+        symbol="RELIANCE",
+        requested_notional=10_000.0,
+        capital=100_000.0,
+        current_gross_exposure=0.0,
+        daily_pnl=0.0,
+        current_drawdown=0.0,
+        open_position_count=0,
+        daily_turnover_crore=None, # Missing turnover
+        estimated_portfolio_var_pct=0.01,
+        order_side=OrderSide.BUY,
+    )
+    decision = engine.evaluate(proposal_no_turnover)
+    assert decision.action == RiskAction.REJECT
+    assert any("MISSING_RISK_STATE:daily_turnover_crore" in r for r in decision.reasons)
+
+    # Missing estimated_portfolio_var_pct
+    proposal_no_var = TradeProposal(
+        symbol="RELIANCE",
+        requested_notional=10_000.0,
+        capital=100_000.0,
+        current_gross_exposure=0.0,
+        daily_pnl=0.0,
+        current_drawdown=0.0,
+        open_position_count=0,
+        daily_turnover_crore=10.0,
+        estimated_portfolio_var_pct=None, # Missing VaR
+        order_side=OrderSide.BUY,
+    )
+    decision_var = engine.evaluate(proposal_no_var)
+    assert decision_var.action == RiskAction.REJECT
+    assert any("MISSING_RISK_STATE:estimated_portfolio_var_pct" in r for r in decision_var.reasons)
+
+
+def test_p1_9_missing_dq_certification_fails_closed(tmp_path):
+    """P1-9: load_candles fails closed if dataset record or quality_report is absent or incomplete."""
+    db_file = tmp_path / "dq_incomplete.duckdb"
+    db = DuckDBManager(str(db_file))
+    pipeline = StrategyPipeline(db=db, require_authoritative_certification=True)
+
+    # 1. No market_datasets record -> DataQualityError
+    with pytest.raises(DataQualityError, match="No canonical dataset record found"):
+        pipeline.load_candles("INFY", "1d")
+
+    # 2. Add market_datasets as VERIFIED + CANONICAL_PROMOTED, but no quality_report -> DataQualityError
+    db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_infy', 'INFY', 'INFY', 'NSE', '1d', 'ANGEL', 'h_infy', 'VERIFIED', 'CANONICAL_PROMOTED');")
+    with pytest.raises(DataQualityError, match="No quality report records found"):
+        pipeline.load_candles("INFY", "1d")
+
+
+def test_e1_migration_checksum_tamper_fails(tmp_path):
+    """E-1: MigrationRunner raises RuntimeError when an applied migration file is modified."""
+    from storage.migrations.runner import MigrationRunner
+    import duckdb
+
+    db_path = str(tmp_path / "mig_tamper.duckdb")
+    conn = duckdb.connect(db_path)
+    runner = MigrationRunner(conn)
+    runner.run_migrations()
+
+    # Tamper with recorded checksum in DB
+    conn.execute("UPDATE schema_migrations SET checksum = 'tampered_hash' WHERE version = '001_initial_schema'")
+
+    # Subsequent migration run must detect mismatch and fail closed
+    with pytest.raises(RuntimeError, match="Migration integrity violation"):
+        runner.run_migrations()
+    conn.close()

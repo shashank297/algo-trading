@@ -274,6 +274,10 @@ class ForwardPaperSessionEngine:
         requested_notional = max(abs(requested_delta) * price, 1e-9)
         current_position_notional = quantity * price
 
+        vol = float(bar.get("volume", 0.0) or 0.0)
+        daily_turnover_crore = (vol * price / 10_000_000.0) if (vol > 0 and price > 0) else None
+        est_var_pct = 1.65 * 0.02 * (requested_notional / max(starting_capital, 1e-9)) if starting_capital > 0 else None
+
         proposal = TradeProposal(
             symbol=symbol,
             requested_notional=requested_notional,
@@ -284,8 +288,8 @@ class ForwardPaperSessionEngine:
             daily_pnl=current_equity - daily_start_equity,
             current_drawdown=max((peak_equity - current_equity) / max(peak_equity, 1e-9), 0.0),
             open_position_count=1 if quantity > 0 else 0,
-            daily_turnover_crore=max(float(bar.get("volume", 0.0) or 0.0) * price / 10_000_000, 15.0),
-            estimated_portfolio_var_pct=0.01,
+            daily_turnover_crore=daily_turnover_crore,
+            estimated_portfolio_var_pct=est_var_pct,
             current_sector_exposure=abs(current_position_notional),
         )
         decision = self.risk_engine.evaluate(proposal)

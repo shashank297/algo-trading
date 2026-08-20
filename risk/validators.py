@@ -31,6 +31,14 @@ class RequiredRiskStateValidator(RiskValidator):
             missing_fields.append("daily_pnl")
         if proposal.current_drawdown is None:
             missing_fields.append("current_drawdown")
+        if proposal.current_sector_exposure is None:
+            missing_fields.append("current_sector_exposure")
+        if proposal.open_position_count is None:
+            missing_fields.append("open_position_count")
+        if policy.min_liquidity_crore > 0 and (proposal.daily_turnover_crore is None or proposal.daily_turnover_crore < 0):
+            missing_fields.append("daily_turnover_crore")
+        if policy.max_var_pct < 1.0 and (proposal.estimated_portfolio_var_pct is None or proposal.estimated_portfolio_var_pct < 0):
+            missing_fields.append("estimated_portfolio_var_pct")
 
         if missing_fields:
             reasons = [f"MISSING_RISK_STATE:{field}" for field in missing_fields]

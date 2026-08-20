@@ -376,7 +376,12 @@ def get_analytics_monthly(run_id: str, symbol: Optional[str] = Query(None)):
     conn = get_db()
     try:
         if symbol:
-            # Stock-level: monthly net PnL contribution relative to 100k base
+            # Stock-level: monthly net PnL contribution relative to run starting_capital
+            run_cap_row = conn.execute(
+                "SELECT starting_capital FROM strategy_runs WHERE run_id = ?", [run_id]
+            ).fetchone()
+            starting_cap = float(run_cap_row[0]) if (run_cap_row and run_cap_row[0] and float(run_cap_row[0]) > 0) else 100_000.0
+
             query = """
                 SELECT
                     EXTRACT(YEAR  FROM exit_timestamp)::INTEGER as year,
@@ -394,7 +399,7 @@ def get_analytics_monthly(run_id: str, symbol: Optional[str] = Query(None)):
                 MonthlyReturn(
                     year=int(row["year"]),
                     month=int(row["month"]),
-                    return_pct=_safe_float(row["month_pnl"]) / 100_000.0,
+                    return_pct=_safe_float(row["month_pnl"]) / starting_cap,
                 )
                 for _, row in df.iterrows()
             ]

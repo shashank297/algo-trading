@@ -41,11 +41,17 @@ class ExperimentManager:
             raise ValueError("Single-asset experiments require exactly one symbol; use the mass runner for a universe.")
         if metadata.scope == StrategyScope.CROSS_SECTIONAL and spec.universe_snapshot_id:
             snap_row = self.db.conn.execute(
-                "SELECT snapshot_id FROM universe_snapshots WHERE snapshot_id = ?",
+                "SELECT snapshot_id, name, content_hash FROM universe_snapshots WHERE snapshot_id = ?",
                 [spec.universe_snapshot_id],
             ).fetchone()
             if not snap_row:
                 raise ValueError(f"Universe snapshot '{spec.universe_snapshot_id}' not found in database. Failing closed.")
+            member_count = self.db.conn.execute(
+                "SELECT COUNT(*) FROM universe_snapshot_members WHERE snapshot_id = ?",
+                [spec.universe_snapshot_id],
+            ).fetchone()
+            if not member_count or int(member_count[0]) == 0:
+                raise ValueError(f"Universe snapshot '{spec.universe_snapshot_id}' has 0 members in universe_snapshot_members. Failing closed.")
         started_at = datetime.now(timezone.utc)
         self.db.log_experiment(
             {

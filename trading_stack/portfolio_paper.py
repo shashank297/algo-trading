@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -72,6 +73,8 @@ class ForwardPortfolioPaperSessionEngine:
         starting_capital: float = 100_000.0,
         as_of: datetime | None = None,
         execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
+        opening_ticks: dict[str, float] | None = None,
+        open_tick_timestamps: dict[str, datetime] | None = None,
     ) -> ForwardPortfolioPaperResult:
         if timeframe != "1d":
             raise ValueError("Cross-sectional forward paper sessions currently require daily bars.")
@@ -172,7 +175,11 @@ class ForwardPortfolioPaperSessionEngine:
         position_rows: list[dict[str, Any]] = []
 
         for session_timestamp in dates:
-            day = panel[panel["timestamp"] == session_timestamp].set_index("symbol", drop=False)
+            day = panel[panel["timestamp"] == session_timestamp].copy().set_index("symbol", drop=False)
+            if opening_ticks:
+                day["open_tick_price"] = day["symbol"].map(opening_ticks)
+            if open_tick_timestamps:
+                day["open_tick_timestamp"] = day["symbol"].map(open_tick_timestamps)
             session_date = session_timestamp.tz_convert(self.calendar.zone).date()
             if session_date != daily_start_date:
                 daily_start_equity = cash + sum(
@@ -323,6 +330,11 @@ class ForwardPortfolioPaperSessionEngine:
             requested_delta = max(float(row["target_weight"]) * equity - current_notional, 0.0)
             if requested_delta <= 0:
                 continue
+            sym_vol = float(day.loc[symbol, "volume"]) if (symbol in day.index and "volume" in day.columns and pd.notna(day.loc[symbol, "volume"])) else 0.0
+            lagged_val = float(day.loc[symbol, "lagged_traded_value"]) if ("lagged_traded_value" in day.columns and symbol in day.index and pd.notna(day.loc[symbol, "lagged_traded_value"])) else sym_vol * price
+            turnover_crore = (lagged_val / 10_000_000.0) if lagged_val > 0 else None
+            est_port_var = 1.65 * 0.015 * math.sqrt(max(len(quantities) + 1, 1)) * (current_gross / max(capital, 1e-9)) if capital > 0 else None
+
             decision = self.risk_engine.evaluate(TradeProposal(
                 symbol=symbol,
                 requested_notional=requested_delta,
@@ -330,8 +342,10 @@ class ForwardPortfolioPaperSessionEngine:
                 current_position_notional=current_notional,
                 current_gross_exposure=current_gross,
                 daily_pnl=equity - daily_start_equity,
-                daily_turnover_crore=max(float(day.loc[symbol, "volume"] if (symbol in day.index and "volume" in day.columns) else 0.0) * price / 10_000_000, 15.0),
-                estimated_portfolio_var_pct=0.01,
+                current_drawdown=max((peak_equity - equity) / max(peak_equity, 1e-12), 0.0),
+                open_position_count=len([q for q in quantities.values() if abs(q) > 0]),
+                daily_turnover_crore=turnover_crore,
+                estimated_portfolio_var_pct=est_port_var,
                 current_sector_exposure=sum(
                     abs(quantities.get(s, 0.0) * prices.get(s, 0.0))
                     for s in quantities

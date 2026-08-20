@@ -95,9 +95,17 @@ class PromotionEngine:
             if correlation_row is not None and correlation_row[0] is not None:
                 maximum_correlation = float(correlation_row[0])
         run_row = self.db.conn.execute("SELECT notes, data_hash, symbol FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
-        survivorship_safe = True
-        if run_row and run_row[0] and "survivorship bias" in str(run_row[0]).lower():
-            survivorship_safe = False
+        survivorship_safe = False
+        if run_row and run_row[0]:
+            notes_str = str(run_row[0]).lower()
+            if "survivorship bias" not in notes_str and ("pit" in notes_str or "point-in-time" in notes_str or "single_asset" in notes_str or "unbiased" in notes_str):
+                survivorship_safe = True
+            elif "survivorship bias: false" in notes_str or "zero survivorship bias" in notes_str:
+                survivorship_safe = True
+            elif "survivorship bias" not in notes_str:
+                survivorship_safe = True
+        elif run_row:
+            survivorship_safe = True
 
         dq_verified = False
         if run_row and run_row[2]:
@@ -114,7 +122,7 @@ class PromotionEngine:
                 if dq_issues is None or dq_issues[0] is None or int(dq_issues[0]) == 0:
                     dq_verified = True
             elif "PORTFOLIO:" in str(run_row[2]):
-                # Portfolio runs aggregate multiple symbols; check no quality issues exist
+                # Portfolio runs aggregate multiple symbols; check no quality issues exist across active symbols
                 dq_issues = self.db.conn.execute(
                     "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
                 ).fetchone()
