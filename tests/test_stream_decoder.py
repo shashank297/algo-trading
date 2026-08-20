@@ -125,6 +125,37 @@ class TestSmartStreamDecoder(unittest.TestCase):
             self.assertGreater(level.price, 0)
             self.assertGreater(level.quantity, 0)
 
+    def test_snap_quote_golden_byte_offsets(self) -> None:
+        """Verify exact byte offsets: Best-5 at bytes 147..347, Circuits at bytes 347..379."""
+        packet = build_snap_quote_packet(
+            mode=3,
+            exchange_type=1,
+            token="2885",
+            upper_circuit_raw=275000,
+            lower_circuit_raw=225000,
+            high_52w_raw=280000,
+            low_52w_raw=210000,
+        )
+        # Byte 147: first depth level flag (uint16 = 1)
+        import struct
+        first_depth_flag = struct.unpack_from("<h", packet, 147)[0]
+        self.assertEqual(first_depth_flag, 1)
+
+        # Byte 347: upper circuit (int64 = 275000)
+        upper_c = struct.unpack_from("<q", packet, 347)[0]
+        self.assertEqual(upper_c, 275000)
+
+        # Byte 371: low 52w (int64 = 210000)
+        low_52w = struct.unpack_from("<q", packet, 371)[0]
+        self.assertEqual(low_52w, 210000)
+
+        event = SmartStreamDecoder.decode(packet, self.recv_utc, self.recv_ns)
+        self.assertEqual(event.upper_circuit, 2750.0)
+        self.assertEqual(event.lower_circuit, 2250.0)
+        self.assertEqual(event.high_52w, 2800.0)
+        self.assertEqual(event.low_52w, 2100.0)
+
+
     def test_snap_quote_invalid_oi_change_sanitization(self) -> None:
         """Non-finite or extreme OI change (>10,000%) returns None."""
         packet_nan = build_snap_quote_packet(oi_change_pct=float("nan"))

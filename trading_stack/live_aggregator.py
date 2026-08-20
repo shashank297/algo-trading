@@ -112,17 +112,31 @@ class RealtimeBarAggregator:
             if isinstance(tick, (QuoteTick, SnapQuoteTick)):
                 cum_vol = tick.cumulative_volume
                 last_vol = self._last_day_volumes.get(sym)
-                if last_vol is not None:
+                current_date = event_time.date() if hasattr(event_time, "date") else None
+                last_date = getattr(self, "_session_dates", {}).get(sym)
+
+                if not hasattr(self, "_session_dates"):
+                    self._session_dates = {}
+
+                if last_date is not None and current_date != last_date:
+                    # Legitimate overnight session rollover
+                    self._session_dates[sym] = current_date
+                    self._last_day_volumes[sym] = cum_vol
+                    tick_volume = float(tick.last_traded_qty) if tick.last_traded_qty > 0 else 0.0
+                elif last_vol is not None:
                     if cum_vol >= last_vol:
                         tick_volume = float(cum_vol - last_vol)
+                        self._last_day_volumes[sym] = cum_vol
                     else:
-                        # Session reset / rollover
-                        tick_volume = float(cum_vol)
+                        # Out-of-order / late earlier tick: DO NOT regress baseline
+                        tick_volume = 0.0
                 else:
+                    self._session_dates[sym] = current_date
+                    self._last_day_volumes[sym] = cum_vol
                     tick_volume = float(tick.last_traded_qty) if tick.last_traded_qty > 0 else 0.0
-                self._last_day_volumes[sym] = cum_vol
             elif isinstance(tick, LtpTick):
                 tick_volume = None
+
 
             # If tick belongs to a strictly NEWER window, finalize the open older bar
             if open_bar is not None and window_start > open_bar["window_start"]:

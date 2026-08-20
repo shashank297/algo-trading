@@ -529,11 +529,15 @@ def _run_event_replay(
         execution_drag = filled_quantity * abs(fill_price - fill_price_hint)
         cumulative_cost += float(cost_components["total_cost"]) if cost_components else fee + execution_drag
 
+    last_known_close = float(frame.iloc[0].get("close", 1.0))
+    last_known_volume = float(frame.iloc[0].get("volume", 1.0))
+
     for index, row in frame.iterrows():
         timestamp = pd.Timestamp(row["timestamp"])
         fill_time = timestamp.to_pydatetime()
         if pending_target is not None and pending_time is not None:
-            execute(pending_target, float(row["open"]), float(row["close"]), float(row["volume"]), fill_time, pending_time)
+            # Capacity and liquidity use close and volume known at bar t (signal bar), NOT bar t+1's future volume
+            execute(pending_target, float(row["open"]), last_known_close, last_known_volume, fill_time, pending_time)
 
         is_last = index == len(frame) - 1
         next_session = False
@@ -557,6 +561,9 @@ def _run_event_replay(
         previous_gross_equity = gross_equity
         pending_target = 0.0 if next_session else float(positions.iloc[index])
         pending_time = fill_time
+        last_known_close = float(row["close"])
+        last_known_volume = float(row["volume"])
+
 
     equity_curve = pd.DataFrame(curve)
     equity_curve["drawdown"] = equity_curve["equity"] / equity_curve["equity"].cummax() - 1.0

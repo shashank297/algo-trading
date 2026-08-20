@@ -53,12 +53,26 @@ def main(argv: list[str] | None = None) -> int:
         bars=frame[list(required)],
         adjustment=PriceAdjustment(args.adjustment),
         timezone_name="Asia/Kolkata",
+
         metadata={"source": args.source, "relationship": args.relationship},
     )
     db = DuckDBManager(str(PROJECT_ROOT / config["database"]["path"]))
     try:
+
         db.record_dataset(snapshot.storage_metadata(), snapshot.bars)
-        db.upsert_candles(snapshot.bars, args.provider_symbol, args.provider_symbol, "NSE", args.timeframe)
+
+
+        db.upsert_candles(
+            snapshot.bars,
+            args.provider_symbol,
+            args.provider_symbol,
+            "NSE",
+            args.timeframe,
+            adjustment=snapshot.provenance.adjustment.value,
+            provider_name=snapshot.provenance.provider_name,
+            dataset_id=snapshot.dataset_id,
+        )
+
         UniverseResearchService(db).register_benchmark(
             args.canonical_symbol, args.provider_symbol,
             relationship=args.relationship, source=args.source,

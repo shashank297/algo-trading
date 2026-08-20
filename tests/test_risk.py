@@ -335,4 +335,40 @@ def test_rejected_execution_zero_accounting_mutation():
     assert fees == 0.0
 
 
+def test_turnover_liquidity_validator_allows_pure_reduction():
+    """Illiquid stock must be allowed to liquidate if order is pure risk reduction."""
+    from risk.validators import TurnoverLiquidityValidator
+
+    validator = TurnoverLiquidityValidator()
+    policy = RiskPolicy(min_liquidity_crore=5.0)
+
+    # 1. New BUY order in illiquid stock (turnover 1 Cr < 5 Cr) -> REJECTED
+    buy_proposal = TradeProposal(
+        symbol="ILLIQUID",
+        requested_notional=50_000.0,
+        capital=100_000.0,
+        order_side=OrderSide.BUY,
+        current_position_notional=0.0,
+        daily_turnover_crore=1.0,
+    )
+    approved, reasons = validator.evaluate(buy_proposal, policy)
+    assert approved == 0.0
+    assert "insufficient_daily_liquidity" in reasons
+
+    # 2. Pure SELL liquidation of existing 50k long in illiquid stock -> ACCEPTED
+    sell_proposal = TradeProposal(
+        symbol="ILLIQUID",
+        requested_notional=50_000.0,
+        capital=100_000.0,
+        order_side=OrderSide.SELL,
+        current_position_notional=50_000.0,
+        daily_turnover_crore=1.0,
+    )
+    assert sell_proposal.is_pure_risk_reduction is True
+    approved_sell, reasons_sell = validator.evaluate(sell_proposal, policy)
+    assert approved_sell == 50_000.0
+    assert reasons_sell == []
+
+
+
 

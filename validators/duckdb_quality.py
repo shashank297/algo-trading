@@ -118,7 +118,7 @@ class DuckDBValidator:
             ).df()
         except Exception as exc:
             logger.error("Error checking missing candles: {}", exc)
-            return {"count": 0, "gaps": []}
+            return {"count": 1, "gaps": [f"CHECK_FAILED: {exc}"], "status": "CHECK_FAILED"}
             
         if df.empty:
             return {"count": 0, "gaps": []}
@@ -154,18 +154,23 @@ class DuckDBValidator:
     def check_session_alignment(self, db: DuckDBManager, symbol: str) -> dict[str, Any]:
         """Classify bars outside the versioned exchange calendar."""
 
-        timestamps = db.conn.execute(
-            "SELECT timestamp FROM historical_candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp",
-            [symbol, self.timeframe],
-        ).df()["timestamp"]
-        result = self.calendar.validate_bars(timestamps, self.timeframe)
-        return {
-            "count": result.out_of_session_count,
-            "out_of_session": list(result.out_of_session),
-            "missing_sessions": list(result.missing_sessions),
-            "expected_interruptions": list(result.expected_interruptions),
-            "calendar_version": self.calendar.version,
-        }
+        try:
+            timestamps = db.conn.execute(
+                "SELECT timestamp FROM historical_candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp",
+                [symbol, self.timeframe],
+            ).df()["timestamp"]
+            result = self.calendar.validate_bars(timestamps, self.timeframe)
+            return {
+                "count": result.out_of_session_count,
+                "out_of_session": list(result.out_of_session),
+                "missing_sessions": list(result.missing_sessions),
+                "expected_interruptions": list(result.expected_interruptions),
+                "calendar_version": self.calendar.version,
+            }
+        except Exception as exc:
+            logger.error("Error checking session alignment: {}", exc)
+            return {"count": 1, "out_of_session": [f"CHECK_FAILED: {exc}"], "status": "CHECK_FAILED"}
+
 
     def check_duplicates(self, db: DuckDBManager, symbol: str) -> dict[str, Any]:
         """Find duplicate timestamps in DuckDB (should be 0 since primary key prevents it)."""
@@ -203,7 +208,7 @@ class DuckDBValidator:
             }
         except Exception as exc:
             logger.error("Error checking duplicates: {}", exc)
-            return {"count": 0, "timestamps": []}
+            return {"count": 1, "timestamps": [f"CHECK_FAILED: {exc}"], "status": "CHECK_FAILED"}
 
     def check_future_timestamps(self, db: DuckDBManager, symbol: str) -> dict[str, Any]:
         """Detect candles whose timestamps are in the future."""
@@ -240,7 +245,7 @@ class DuckDBValidator:
             }
         except Exception as exc:
             logger.error("Error checking future timestamps: {}", exc)
-            return {"count": 0, "timestamps": []}
+            return {"count": 1, "timestamps": [f"CHECK_FAILED: {exc}"], "status": "CHECK_FAILED"}
 
     def check_null_values(self, db: DuckDBManager, symbol: str) -> dict[str, Any]:
         """Count null values across OHLCV columns."""
@@ -271,7 +276,8 @@ class DuckDBValidator:
             return {"count": sum(column_counts.values()), "columns": column_counts}
         except Exception as exc:
             logger.error("Error checking null values: {}", exc)
-            return {"count": 0, "columns": {}}
+            return {"count": 1, "columns": {"error": 1}, "status": "CHECK_FAILED"}
+
 
     def check_ohlc_integrity(self, db: DuckDBManager, symbol: str) -> dict[str, Any]:
         """Validate core OHLCV integrity rules via SQL."""
@@ -336,7 +342,7 @@ class DuckDBValidator:
             return {"count": int(violations_count), "details": failed_rows}
         except Exception as exc:
             logger.error("Error checking OHLC integrity: {}", exc)
-            return {"count": 0, "details": []}
+            return {"count": 1, "details": [{"error": f"CHECK_FAILED: {exc}"}], "status": "CHECK_FAILED"}
 
     def check_anomalies(self, db: DuckDBManager, symbol: str) -> dict[str, Any]:
         """Detect statistical anomalies like volume spikes or price jumps via SQL Window Functions."""
@@ -397,7 +403,8 @@ class DuckDBValidator:
             return {"count": len(anomalies), "details": details}
         except Exception as exc:
             logger.error("Error checking anomalies: {}", exc)
-            return {"count": 0, "details": []}
+            return {"count": 1, "details": [{"error": f"CHECK_FAILED: {exc}"}], "status": "CHECK_FAILED"}
+
 
     def _build_expected_minute_index(
         self,

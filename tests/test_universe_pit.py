@@ -170,6 +170,29 @@ class TestPointInTimeUniverse(unittest.TestCase):
         sig_jul = signals[signals["timestamp"] == pd.Timestamp("2021-07-31", tz="UTC")]
         self.assertEqual(sig_jul["symbol"].tolist(), ["INFY"])
 
+    def test_cross_sectional_strategy_pit_empty_membership_fails_closed(self) -> None:
+        """When PIT universe is configured but returns 0 active members, strategy must fail closed (0 stocks selected)."""
+        # Universe EMPTY_UNIVERSE has no constituents inserted in self.con
+        panel = pd.DataFrame(
+            {
+                "timestamp": [pd.Timestamp("2021-01-31", tz="UTC"), pd.Timestamp("2021-01-31", tz="UTC")],
+                "symbol": ["INFY", "TCS"],
+                "close": [100.0, 200.0],
+            }
+        )
+
+        strat = DummyMomentumStrategy(
+            name="TEST_MOMENTUM",
+            top_fraction=1.0,
+            universe_name="EMPTY_UNIVERSE",
+            pit_db_conn=self.con,
+        )
+
+        signals = strat.generate_signals(panel)
+        # Must return empty DataFrame fail-closed rather than selecting all stocks
+        self.assertTrue(signals.empty)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -98,7 +98,12 @@ class MaxPositionsValidator(RiskValidator):
 
 class TurnoverLiquidityValidator(RiskValidator):
     def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
+        if proposal.is_pure_risk_reduction:
+            return proposal.requested_notional, []
         if proposal.daily_turnover_crore is not None and proposal.daily_turnover_crore < policy.min_liquidity_crore:
+            if proposal.risk_reducing_notional > 0:
+                return proposal.risk_reducing_notional, ["insufficient_daily_liquidity", "RISK_INCREASING_PORTION_REJECTED"]
             return 0.0, ["insufficient_daily_liquidity"]
         return proposal.requested_notional, []
+
 

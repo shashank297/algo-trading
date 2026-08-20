@@ -316,9 +316,14 @@ class SourceBarSemantics:
             )
         object.__setattr__(self, "semantics_hash", resolved_hash)
 
+    @property
+    def is_admitted(self) -> bool:
+        """Return True if dataset is admitted (VERIFIED or OVERRIDDEN)."""
+        return self.validation_status in (SourceValidationStatus.VERIFIED, SourceValidationStatus.OVERRIDDEN)
+
     def require_admitted(self) -> None:
         """Enforce ground-truth admission invariant: data must be VERIFIED or OVERRIDDEN."""
-        if self.validation_status not in (SourceValidationStatus.VERIFIED, SourceValidationStatus.OVERRIDDEN):
+        if not self.is_admitted:
             raise AmbiguousSourceBasisError(
                 f"Ground-truth admission gateway rejected dataset: validation status is '{self.validation_status.value}' "
                 f"(pre_override_status={self.pre_override_status.value if self.pre_override_status else None}). "
@@ -327,6 +332,7 @@ class SourceBarSemantics:
 
     @property
     def dividends_included(self) -> bool:
+
         """Backward-compatible alias for price_includes_dividend_adjustment."""
         return self.price_includes_dividend_adjustment
 
@@ -460,18 +466,22 @@ class SourceSemanticsAdapter:
 
         Returns:
             list[BasisDetectionResult]: Audit-grade inspection results for each corporate action.
-
-        Raises:
-            InvalidCorporateActionError: If corporate action multiplier is non-positive or non-finite.
         """
-        if bars.empty or corporate_actions.empty:
+        ca_df = (
+
+            pd.DataFrame(corporate_actions)
+            if isinstance(corporate_actions, (list, tuple, dict))
+            else (corporate_actions if isinstance(corporate_actions, pd.DataFrame) else pd.DataFrame())
+        )
+        if bars.empty or ca_df.empty:
             return []
 
         active_policy = policy or SourceSemanticsPolicy()
         tau_adj = tolerance_pct if tolerance_pct is not None else active_policy.adjusted_log_tolerance
         tau_raw = tolerance_pct if tolerance_pct is not None else active_policy.raw_log_tolerance
 
-        composed_actions = compose_same_day_share_actions(corporate_actions)
+        composed_actions = compose_same_day_share_actions(ca_df)
+
         mult_col = "share_multiplier" if "share_multiplier" in composed_actions.columns else "split_factor"
 
         splits = composed_actions[
@@ -824,8 +834,15 @@ class SourceSemanticsAdapter:
         empirical_status = SourceValidationStatus.VERIFIED
 
         # 2. If corporate actions exist, collect complete forensic evidence
-        if corporate_actions is not None and not corporate_actions.empty:
-            reports = cls.detect_corporate_action_discontinuity(bars, corporate_actions, policy=active_policy)
+        ca_df = (
+            pd.DataFrame(corporate_actions)
+            if isinstance(corporate_actions, (list, tuple, dict))
+            else (corporate_actions if isinstance(corporate_actions, pd.DataFrame) else pd.DataFrame())
+        )
+
+        if not ca_df.empty:
+            reports = cls.detect_corporate_action_discontinuity(bars, ca_df, policy=active_policy)
+
             if reports:
                 scores = [r.evidence_strength for r in reports]
                 conclusive_basis = {

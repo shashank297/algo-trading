@@ -104,18 +104,14 @@ def build_snap_quote_packet(
         day_low_raw,
         day_close_raw,
     )
-    snap_part = struct.pack(
-        "<qqdqqqq",
+    lt_and_oi_part = struct.pack(
+        "<qqd",
         last_trade_ts_ms,
         open_interest,
-        oi_change_pct,  # <d 8-byte double at offset 139
-        upper_circuit_raw,
-        lower_circuit_raw,
-        high_52w_raw,
-        low_52w_raw,
+        oi_change_pct,  # <d 8-byte double at offset 139..147
     )
 
-    # 10 Best-5 records (5 buy flag=1, 5 sell flag=0)
+    # 10 Best-5 records (5 buy flag=1, 5 sell flag=0) at offset 147..347 (200 bytes)
     best_5_records = bytearray()
     for i in range(5):
         # Buy: flag=1, qty=100*(i+1), price=250000 - i*10, orders=i+1
@@ -126,9 +122,19 @@ def build_snap_quote_packet(
         rec = struct.pack("<hqqh", 0, 150 * (i + 1), 250100 + (i * 10), i + 1)
         best_5_records.extend(rec)
 
-    packet = header + quote_part + snap_part + bytes(best_5_records)
+    # Circuits and 52-week levels at offset 347..379 (32 bytes)
+    circuit_part = struct.pack(
+        "<qqqq",
+        upper_circuit_raw,
+        lower_circuit_raw,
+        high_52w_raw,
+        low_52w_raw,
+    )
+
+    packet = header + quote_part + lt_and_oi_part + bytes(best_5_records) + circuit_part
     assert len(packet) == 379, f"Expected 379 bytes, got {len(packet)}"
     return packet
+
 
 
 def build_depth20_packet(

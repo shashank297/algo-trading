@@ -360,7 +360,79 @@ class TestLiveFaultInjection(unittest.TestCase):
         self.assertEqual(client.state, ConnectionState.CONNECTED)
         client._state = ConnectionState.STOPPED
 
+    def test_late_cumulative_volume_does_not_regress_baseline(self) -> None:
+        """Late quote tick from older window must not regress cumulative volume baseline for subsequent bars."""
+        aggregator = RealtimeBarAggregator(timeframe="1m")
+
+        # 1. 09:15:30 bar with cumulative volume 10,100
+        t1 = QuoteTick(
+            exchange="NSE", token="2885", symbol="RELIANCE", mode=LiveTickerMode.QUOTE,
+            exchange_timestamp=datetime(2023, 1, 18, 9, 15, 30, tzinfo=timezone.utc),
+            received_at_utc=datetime(2023, 1, 18, 9, 15, 30, tzinfo=timezone.utc),
+            received_monotonic_ns=1, raw_packet_size=123, ltp=2500.0, cumulative_volume=10_100, last_traded_qty=100,
+        )
+        aggregator.process_tick(t1)
+
+        # 2. Out-of-order late tick from 09:15:10 with older cumulative volume 10,000
+        t_late = QuoteTick(
+            exchange="NSE", token="2885", symbol="RELIANCE", mode=LiveTickerMode.QUOTE,
+            exchange_timestamp=datetime(2023, 1, 18, 9, 15, 10, tzinfo=timezone.utc),
+            received_at_utc=datetime(2023, 1, 18, 9, 15, 35, tzinfo=timezone.utc),
+            received_monotonic_ns=2, raw_packet_size=123, ltp=2499.0, cumulative_volume=10_000, last_traded_qty=50,
+        )
+        aggregator.process_tick(t_late)
+
+        # 3. Next forward tick at 09:16:05 with cumulative volume 10,120
+        t2 = QuoteTick(
+            exchange="NSE", token="2885", symbol="RELIANCE", mode=LiveTickerMode.QUOTE,
+            exchange_timestamp=datetime(2023, 1, 18, 9, 16, 5, tzinfo=timezone.utc),
+            received_at_utc=datetime(2023, 1, 18, 9, 16, 5, tzinfo=timezone.utc),
+            received_monotonic_ns=3, raw_packet_size=123, ltp=2502.0, cumulative_volume=10_120, last_traded_qty=20,
+        )
+        closed_bars = aggregator.process_tick(t2)
+        # Closed bar for 09:15 has volume = 100.0 (from initial tick)
+        self.assertEqual(len(closed_bars), 1)
+        self.assertEqual(closed_bars[0].volume, 100.0)
+
+        # Open bar for 09:16 must have delta = 10,120 - 10,100 = 20 (NOT 120!)
+        open_bar_volume = aggregator._open_bars["RELIANCE"]["volume"]
+        self.assertEqual(open_bar_volume, 20.0)
+
+
+    def test_stream_writer_retains_batch_on_db_failure(self) -> None:
+        """DuckDBStreamWriter retains batch and increments dropped_records when database insert fails."""
+        from trading_stack.stream_persistence import DuckDBStreamWriter
+        writer = DuckDBStreamWriter(db_path=":memory:", batch_size=1, flush_interval_seconds=0.01)
+        writer._conn = None  # Force database failure
+
+        tick_batch = [{"exchange": "NSE", "token": "2885", "ltp": 2500.0}]
+        bar_batch: list[dict[str, Any]] = []
+        ticks_ok, bars_ok = writer._flush_batches(tick_batch, bar_batch)
+        self.assertFalse(ticks_ok)
+
+    def test_duckdb_validator_fails_closed_on_db_error(self) -> None:
+        """DuckDBValidator marks report as non-passing (passed=False) when database queries fail."""
+        from validators.duckdb_quality import DuckDBValidator
+
+        validator = DuckDBValidator(timeframe="1d")
+
+        class BrokenDBManager:
+            @property
+            def conn(self) -> Any:
+                class BrokenConn:
+                    def execute(self, *args: Any, **kwargs: Any) -> Any:
+                        raise RuntimeError("Disk Failure / Locked DuckDB")
+                return BrokenConn()
+
+            def get_candle_count(self, symbol: str, timeframe: str) -> int:
+                return 100
+
+        report = validator.run_all_checks(BrokenDBManager(), "RELIANCE")  # type: ignore[arg-type]
+        self.assertFalse(report["passed"])
+        self.assertGreater(report["blocking_issue_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

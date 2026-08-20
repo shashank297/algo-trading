@@ -179,20 +179,34 @@ class DuckDBStreamWriter:
             )
 
             if should_flush:
-                self._flush_batches(tick_batch, bar_batch)
-                tick_batch.clear()
-                bar_batch.clear()
+                success_ticks, success_bars = self._flush_batches(tick_batch, bar_batch)
+                if success_ticks:
+                    tick_batch.clear()
+                else:
+                    self._dropped_records += len(tick_batch)
+                    if len(tick_batch) > 10_000:
+                        # Drop oldest to avoid unbounded memory growth under permanent DB outage
+                        del tick_batch[: len(tick_batch) - 5_000]
+
+                if success_bars:
+                    bar_batch.clear()
+                else:
+                    self._dropped_records += len(bar_batch)
+                    if len(bar_batch) > 10_000:
+                        del bar_batch[: len(bar_batch) - 5_000]
+
                 last_flush_time = now
 
         # Final drain
         if tick_batch or bar_batch:
             self._flush_batches(tick_batch, bar_batch)
 
-    def _flush_batches(self, tick_batch: list[dict[str, Any]], bar_batch: list[dict[str, Any]]) -> None:
-        """Batch insert ticks and bars into DuckDB."""
+    def _flush_batches(self, tick_batch: list[dict[str, Any]], bar_batch: list[dict[str, Any]]) -> tuple[bool, bool]:
+        """Batch insert ticks and bars into DuckDB. Returns (ticks_ok, bars_ok)."""
         if self._conn is None:
-            return
+            return False, False
 
+        ticks_ok = True
         if tick_batch:
             try:
                 df_ticks = pd.DataFrame(tick_batch)
@@ -202,8 +216,10 @@ class DuckDBStreamWriter:
                 self._conn.execute(f"INSERT OR REPLACE INTO market_ticks ({cols}) SELECT {cols} FROM {temp_name}")
                 self._conn.unregister(temp_name)
             except Exception as exc:
-                logger.error("Failed to batch insert market ticks: {}", exc)
+                ticks_ok = False
+                logger.error("Failed to batch insert market ticks into DuckDB: {}", exc)
 
+        bars_ok = True
         if bar_batch:
             try:
                 df_bars = pd.DataFrame(bar_batch)
@@ -213,7 +229,10 @@ class DuckDBStreamWriter:
                 self._conn.execute(f"INSERT OR REPLACE INTO market_bars ({cols}) SELECT {cols} FROM {temp_name}")
                 self._conn.unregister(temp_name)
             except Exception as exc:
-                logger.error("Failed to batch insert market bars: {}", exc)
+                bars_ok = False
+                logger.error("Failed to batch insert market bars into DuckDB: {}", exc)
+
+        return ticks_ok, bars_ok
 
     def stop(self) -> None:
         """Gracefully drain the persistence queue, flush to DuckDB, and close connection."""
@@ -221,7 +240,9 @@ class DuckDBStreamWriter:
             return
         self._running = False
         if self._thread and self._thread.is_alive():
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=10.0)
+            if self._thread.is_alive():
+                logger.error("⚠️ DuckDBStreamWriter worker thread did not terminate within 10s timeout.")
 
         if self._conn is not None:
             try:
@@ -229,4 +250,5 @@ class DuckDBStreamWriter:
             except Exception as exc:
                 logger.debug("Error closing DuckDB stream connection: {}", exc)
             self._conn = None
-        logger.info("💾 DuckDBStreamWriter stopped gracefully.")
+        logger.info("💾 DuckDBStreamWriter stopped.")
+

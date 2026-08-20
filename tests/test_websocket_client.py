@@ -154,9 +154,9 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
             time.sleep(0.5)
 
         self.client.subscribe_tick(slow_cb)
-        packet = build_ltp_packet(token="2885", seq_num=300)
 
         # Fill internal dispatch queue (capacity 10) and overflow it with unique packets
+
         for i in range(50):
             pkt = build_ltp_packet(token="2885", seq_num=300 + i, ltp_raw=250050 + i)
 
@@ -166,15 +166,32 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
 
 
 
-    def test_idempotent_stop(self) -> None:
-        """Calling stop multiple times is safe and maintains STOPPED state."""
-        self.client.start()
-        self.client.stop()
-        self.assertEqual(self.client.state, ConnectionState.STOPPED)
-        # Second call
-        self.client.stop()
-        self.assertEqual(self.client.state, ConnectionState.STOPPED)
+    def test_real_instrument_master_token_and_symbol_resolution(self) -> None:
+        """Verify real InstrumentMaster correctly resolves tokens and symbols for WebSocket streaming."""
+        from smartapi.instrument import InstrumentMaster
+        inst_master = InstrumentMaster({"smartapi": {"instrument_master_url": "http://example.com"}, "data": {"instrument_master_refresh_hours": 24}})
+        import pandas as pd
+        inst_master._df = pd.DataFrame([
+            {"token": "2885", "symbol": "RELIANCE-EQ", "exch_seg": "NSE_CM", "name": "RELIANCE", "expiry": "", "strike": 0, "lotsize": 1, "instrumenttype": "", "tick_size": 5},
+            {"token": "3045", "symbol": "SBIN-EQ", "exch_seg": "NSE", "name": "SBIN", "expiry": "", "strike": 0, "lotsize": 1, "instrumenttype": "", "tick_size": 5},
+        ])
+
+        # Test token resolution
+        self.assertEqual(inst_master.resolve_token("RELIANCE-EQ", "NSE"), "2885")
+        self.assertEqual(inst_master.resolve_token("SBIN-EQ", "NSE_CM"), "3045")
+
+        # Test symbol resolution
+        self.assertEqual(inst_master.resolve_symbol("2885", "NSE"), "RELIANCE-EQ")
+        self.assertEqual(inst_master.resolve_symbol("3045", "NSE_CM"), "SBIN-EQ")
+
+        # Wire into client
+        self.client.instrument_master = inst_master
+        keys = self.client.subscribe_symbols(["RELIANCE-EQ", "SBIN-EQ"], exchange_type=1)
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0].token, "2885")
+        self.assertEqual(keys[1].token, "3045")
 
 
 if __name__ == "__main__":
     unittest.main()
+

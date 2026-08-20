@@ -113,6 +113,29 @@ class InstrumentMaster:
             logger.exception("Symbol lookup failed for {} {}: {}", token, exchange, exc)
             return None
 
+    def resolve_token(self, symbol: str, exchange: str = "NSE") -> str | None:
+        """Resolve token for a trading symbol (supports segment aliases NSE/NSE_CM)."""
+        token = self.get_token(symbol, exchange)
+        if token:
+            return token
+        norm_map = {"NSE": "NSE_CM", "BSE": "BSE_CM", "NSE_CM": "NSE", "BSE_CM": "BSE"}
+        alt = norm_map.get(exchange)
+        if alt:
+            return self.get_token(symbol, alt)
+        return None
+
+    def resolve_symbol(self, token: str, exchange: str = "NSE") -> str | None:
+        """Resolve trading symbol for an instrument token."""
+        sym = self.get_symbol(token, exchange)
+        if sym:
+            return sym
+        norm_map = {"NSE": "NSE_CM", "BSE": "BSE_CM", "NSE_CM": "NSE", "BSE_CM": "BSE"}
+        alt = norm_map.get(exchange)
+        if alt:
+            return self.get_symbol(token, alt)
+        return None
+
+
     def get_instrument_info(self, token: str, exchange: str) -> dict[str, Any] | None:
         """Return the full instrument row for a token and exchange pair."""
 

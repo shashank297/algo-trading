@@ -57,9 +57,9 @@ class CrossSectionalRankingStrategy(BaseStrategy):
                 active_symbols = set(PointInTimeUniverseManager.get_constituent_symbols(pit_conn, str(universe_name), rebal_ts))
                 if active_symbols:
                     valid_mask |= (ts_mask & ranked["symbol"].isin(active_symbols))
-                else:
-                    valid_mask |= ts_mask
+
             ranked = ranked[valid_mask].copy()
+
             if ranked.empty:
                 return pd.DataFrame(columns=["timestamp", "symbol", "target_weight", "target_position", "signal", "reason", "score", "rank", "feature_snapshot"])
 

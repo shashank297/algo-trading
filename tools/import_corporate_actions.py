@@ -30,15 +30,16 @@ def build_parser() -> argparse.ArgumentParser:
 def normalize_record(rec: dict[str, Any]) -> dict[str, Any]:
     """Validate and compute canonical share_multiplier for corporate action record."""
     action_type = str(rec.get("action_type", "")).upper()
-    
-    # Auto-compute bonus multiplier if new/existing shares are specified
     if action_type == "BONUS":
+
         new_sh = rec.get("bonus_new_shares")
         exist_sh = rec.get("bonus_existing_shares")
         if new_sh is not None and exist_sh is not None and float(exist_sh) > 0:
             rec["share_multiplier"] = float(exist_sh + new_sh) / float(exist_sh)
         elif "share_multiplier" not in rec:
-            rec["share_multiplier"] = 2.0  # Default 1:1
+            raise ValueError(f"Missing bonus terms (bonus_new_shares, bonus_existing_shares, or share_multiplier) in corporate action record: {rec}")
+
+
 
     elif action_type == "SPLIT":
         old_fv = rec.get("old_face_value")
