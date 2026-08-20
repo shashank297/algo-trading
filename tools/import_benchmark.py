@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
+from data_platform.service import ingest_raw_provider_dataset
 from main import apply_env_overrides, load_yaml
 from storage import DuckDBManager
 from trading_stack.universe import UniverseResearchService
@@ -58,32 +59,38 @@ def main(argv: list[str] | None = None) -> int:
     )
     db = DuckDBManager(str(PROJECT_ROOT / config["database"]["path"]))
     try:
-
-        db.record_dataset(snapshot.storage_metadata(), snapshot.bars)
-
-
-        db.upsert_candles(
-            snapshot.bars,
-            args.provider_symbol,
-            args.provider_symbol,
-            "NSE",
-            args.timeframe,
-            adjustment=snapshot.provenance.adjustment.value,
-            provider_name=snapshot.provenance.provider_name,
-            dataset_id=snapshot.dataset_id,
+        res = ingest_raw_provider_dataset(
+            bars=frame[list(required)],
+            symbol=args.provider_symbol,
+            exchange="NSE",
+            timeframe=args.timeframe,
+            provider_name=args.provider_name,
+            provider_symbol=args.provider_symbol,
+            declared_adjustment=PriceAdjustment(args.adjustment),
+            timezone_name="Asia/Kolkata",
+            db=db,
+            target_adjustment=PriceAdjustment(args.adjustment),
         )
 
+        if res.raw_status == "QUARANTINED" or res.bars is None:
+            raise ValueError(f"Benchmark dataset quarantined: {res.quarantine_reasons}")
+
         UniverseResearchService(db).register_benchmark(
-            args.canonical_symbol, args.provider_symbol,
-            relationship=args.relationship, source=args.source,
+            args.canonical_symbol,
+            args.provider_symbol,
+            relationship=args.relationship,
+            source=args.source,
             approved_for_research=args.approve_for_research,
-            notes=f"Imported dataset {snapshot.dataset_id}; adjustment={args.adjustment}",
+            notes=f"Imported dataset {res.canonical_dataset_id}; adjustment={args.adjustment}",
         )
         logger.info(
             "benchmark_imported dataset_id={} rows={} relationship={} approved={}",
-            snapshot.dataset_id, len(snapshot.bars), args.relationship, args.approve_for_research,
+            res.canonical_dataset_id,
+            len(res.bars),
+            args.relationship,
+            args.approve_for_research,
         )
-        print(f"Imported {len(snapshot.bars)} rows as dataset {snapshot.dataset_id}.")
+        print(f"Imported {len(res.bars)} rows as dataset {res.canonical_dataset_id}.")
         return 0
     finally:
         db.close()

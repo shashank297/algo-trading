@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
+from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -26,7 +27,7 @@ from main import (
     validate_config,
 )
 from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
-from data_platform.service import admit_and_promote_dataset
+from data_platform.service import ingest_raw_provider_dataset
 from smartapi import HistoricalDataClient, InstrumentMaster, RateLimiter, SmartAPIAuth
 from storage import DuckDBManager
 from utils import LoggerSetup, get_ist_now
@@ -104,16 +105,24 @@ def _backfill_timeframe(
     inserted_total = 0
     stopped_at_source_boundary = False
     failed = False
+    quarantined = False
     consecutive_empty_windows = 0
     pending_frames: list[tuple[Any, date, date]] = []
 
     def flush_pending() -> None:
-        nonlocal inserted_total
+        nonlocal inserted_total, quarantined
         if not pending_frames:
             return
-        inserted_total += _persist_backfill_batch(
+        res = _persist_backfill_batch(
             db, pending_frames, symbol, token, exchange, timeframe,
         )
+        if isinstance(res, tuple):
+            count, batch_status = res
+        else:
+            count, batch_status = int(res), "SUCCESS"
+        inserted_total += count
+        if batch_status == "QUARANTINED":
+            quarantined = True
         pending_frames.clear()
 
     if earliest is None or full_backward:
@@ -165,6 +174,7 @@ def _backfill_timeframe(
     flush_pending()
 
     final_earliest, final_latest = _stored_bounds(db, symbol, timeframe)
+    status_label = "QUARANTINED" if quarantined else "FAILED" if failed else "SUCCESS"
     return {
         "symbol": symbol,
         "timeframe": timeframe,
@@ -173,8 +183,70 @@ def _backfill_timeframe(
         "earliest": final_earliest,
         "latest": final_latest,
         "source_boundary": stopped_at_source_boundary,
-        "status": "FAILED" if failed else "SUCCESS",
+        "status": status_label,
     }
+
+
+def _persist_backfill_batch(
+    db: DuckDBManager,
+    windows: list[tuple[pd.DataFrame, date, date]],
+    symbol: str,
+    token: str,
+    exchange: str,
+    timeframe: str,
+) -> tuple[int, str]:
+    if not windows:
+        return 0, "SUCCESS"
+    frame = pd.concat([item[0] for item in windows], ignore_index=True)
+    window_start = min(item[1] for item in windows)
+    window_end = max(item[2] for item in windows)
+
+    result = ingest_raw_provider_dataset(
+        bars=frame,
+        symbol=symbol,
+        exchange=exchange,
+        timeframe=timeframe,
+        provider_name="angel_one",
+        provider_symbol=symbol,
+        provider_token=token,
+        declared_adjustment=PriceAdjustment.UNADJUSTED,
+        timezone_name="Asia/Kolkata",
+        db=db,
+        target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
+    )
+
+    with db.transaction():
+        attempt_status = "SUCCEEDED" if result.raw_status == "STRUCTURALLY_VALID" and result.canonical_status == "VERIFIED" else "QUARANTINED"
+        for _, requested_start, requested_end in windows:
+            _record_backfill_attempt(
+                db,
+                symbol,
+                timeframe,
+                requested_start,
+                requested_end,
+                attempt_status,
+                "; ".join(result.quarantine_reasons) if result.quarantine_reasons else None,
+                result.canonical_dataset_id or result.raw_dataset_id,
+            )
+
+    if result.raw_status == "QUARANTINED":
+        logger.warning(
+            "Backfill dataset for {} {} quarantined: {}",
+            symbol,
+            timeframe,
+            result.quarantine_reasons,
+        )
+        return 0, "QUARANTINED"
+    elif result.canonical_status != "VERIFIED" and (result.bars is None or result.bars.empty):
+        logger.warning(
+            "Backfill dataset for {} {} unadmitted: {}",
+            symbol,
+            timeframe,
+            result.canonical_status,
+        )
+        return 0, "UNADMITTED"
+
+    return (len(result.bars) if result.bars is not None else 0), "SUCCESS"
 
 
 def _persist_backfill_frame(
@@ -187,57 +259,11 @@ def _persist_backfill_frame(
     window_start: date,
     window_end: date,
 ) -> int:
-    return _persist_backfill_batch(
+    count, _ = _persist_backfill_batch(
         db, [(frame, window_start, window_end)], symbol, token, exchange, timeframe,
     )
+    return count
 
-
-def _persist_backfill_batch(
-    db: DuckDBManager,
-    windows: list[tuple[Any, date, date]],
-    symbol: str,
-    token: str,
-    exchange: str,
-    timeframe: str,
-) -> int:
-    if not windows:
-        return 0
-    frame = pd.concat([item[0] for item in windows], ignore_index=True)
-    frame = frame.sort_values("timestamp").drop_duplicates(subset=["timestamp"], keep="last")
-    window_start = min(item[1] for item in windows)
-    window_end = max(item[2] for item in windows)
-    snapshot = DatasetSnapshot.from_bars(
-        instrument=Instrument(
-            canonical_symbol=symbol,
-            exchange=exchange,
-            provider_name="angel_one",
-            provider_symbol=symbol,
-            currency="INR",
-            timezone="Asia/Kolkata",
-        ),
-        timeframe=timeframe,
-        bars=frame,
-        adjustment=PriceAdjustment.UNADJUSTED,
-        timezone_name="Asia/Kolkata",
-        metadata={
-            "source": "SmartAPI historical backfill",
-            "requested_start": window_start.isoformat(),
-            "requested_end": window_end.isoformat(),
-            "request_windows": len(windows),
-        },
-    )
-    with db.transaction():
-        for _, requested_start, requested_end in windows:
-            _record_backfill_attempt(
-                db, symbol, timeframe, requested_start, requested_end,
-                "SUCCEEDED", None, snapshot.dataset_id,
-            )
-        result = admit_and_promote_dataset(
-            snapshot=snapshot,
-            db=db,
-            target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
-        )
-    return len(result.bars) if result.bars is not None else 0
 
 
 def _record_backfill_attempt(
@@ -330,7 +356,9 @@ def main(argv: list[str] | None = None) -> int:
                     result["earliest"], result["latest"], result["source_boundary"], result["status"],
                 )
 
-        failures = [result for result in results if result["status"] == "FAILED"]
+        failures = [
+            result for result in results if result["status"] in ("FAILED", "QUARANTINED", "PARTIAL")
+        ]
         logger.info(
             "backfill_finished jobs={} failures={} duration_seconds={:.1f}",
             len(results), len(failures), time.perf_counter() - started,

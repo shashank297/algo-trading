@@ -955,16 +955,28 @@ class DuckDBManager:
         if missing_bar_columns:
             raise ValueError(f"Dataset bars are missing columns: {sorted(missing_bar_columns)}")
         observations["timestamp"] = pd.to_datetime(observations["timestamp"], utc=True, errors="coerce")
-        observations = observations.dropna(subset=["timestamp", *required_bar_columns.difference({"timestamp"})])
         observations["dataset_id"] = metadata["dataset_id"]
+        observations["raw_dataset_id"] = metadata["dataset_id"]
         observations["symbol"] = metadata["canonical_symbol"]
         observations["exchange"] = metadata["exchange"]
         observations["timeframe"] = metadata["timeframe"]
-        observations = observations[
-            ["dataset_id", "symbol", "exchange", "timeframe", "timestamp", "open", "high", "low", "close", "volume"]
-        ]
+        observations["provider_name"] = metadata.get("provider_name", "unknown")
+        observations["source_row_number"] = list(range(len(observations)))
+        observations["timestamp_raw"] = observations["timestamp"].astype(str)
+        observations["open_raw"] = observations["open"].astype(str)
+        observations["high_raw"] = observations["high"].astype(str)
+        observations["low_raw"] = observations["low"].astype(str)
+        observations["close_raw"] = observations["close"].astype(str)
+        observations["volume_raw"] = observations["volume"].astype(str)
+        observations["raw_row_json"] = "{}"
+        observations["retrieved_at"] = metadata.get("retrieved_at", datetime.now(timezone.utc))
         self._replace_rows("market_datasets", [metadata])
-        self._replace_frame("raw_bar_observations", observations)
+        raw_cols = [
+            "raw_dataset_id", "source_row_number", "symbol", "exchange", "timeframe",
+            "provider_name", "timestamp_raw", "open_raw", "high_raw", "low_raw",
+            "close_raw", "volume_raw", "raw_row_json", "retrieved_at",
+        ]
+        self._replace_frame("raw_bar_observations", observations[raw_cols])
 
     def record_provider_attempt(self, payload: dict[str, Any]) -> None:
         """Store every provider fetch attempt for fallback and audit visibility."""
@@ -1467,6 +1479,160 @@ class DuckDBManager:
                 symbol=symbol,
                 instrument_id=instrument_id,
             )
+
+    def persist_raw_dataset(self, raw: Any) -> None:
+        """Durably persist verbatim raw provider dataset before domain validation."""
+        with self._write_lock:
+            self.conn.execute("BEGIN TRANSACTION;")
+            try:
+                # 1. Insert into market_datasets with RAW_RECORDED
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO market_datasets (
+                        dataset_id, dataset_stage, symbol, exchange, timeframe,
+                        provider_name, provider_symbol, provider_token, declared_adjustment,
+                        lifecycle_status, raw_hash, hash_algorithm, hash_version, row_count,
+                        created_at, updated_at
+                    ) VALUES (?, 'RAW', ?, ?, ?, ?, ?, ?, ?, 'RAW_RECORDED', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    [
+                        raw.raw_dataset_id,
+                        raw.symbol,
+                        raw.exchange,
+                        raw.timeframe,
+                        raw.provider_name,
+                        raw.provider_symbol,
+                        raw.provider_token,
+                        raw.declared_adjustment.value if raw.declared_adjustment else None,
+                        raw.raw_hash,
+                        raw.hash_algorithm,
+                        raw.hash_version,
+                        len(raw.parsed_rows),
+                    ],
+                )
+                # 2. Insert into raw_bar_observations
+                for row in raw.parsed_rows:
+                    row_num = int(row.get("source_row_number", 0))
+                    ts_raw = str(row.get("timestamp_raw", row.get("timestamp", "")))
+                    o_raw = str(row.get("open_raw", row.get("open", "")))
+                    h_raw = str(row.get("high_raw", row.get("high", "")))
+                    l_raw = str(row.get("low_raw", row.get("low", "")))
+                    c_raw = str(row.get("close_raw", row.get("close", "")))
+                    v_raw = str(row.get("volume_raw", row.get("volume", "")))
+                    row_json = json.dumps(row, default=str)
+                    self.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO raw_bar_observations (
+                            raw_dataset_id, source_row_number, symbol, exchange, timeframe,
+                            provider_name, timestamp_raw, open_raw, high_raw, low_raw,
+                            close_raw, volume_raw, raw_row_json, retrieved_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            raw.raw_dataset_id,
+                            row_num,
+                            raw.symbol,
+                            raw.exchange,
+                            raw.timeframe,
+                            raw.provider_name,
+                            ts_raw,
+                            o_raw,
+                            h_raw,
+                            l_raw,
+                            c_raw,
+                            v_raw,
+                            row_json,
+                            raw.retrieved_at,
+                        ],
+                    )
+                self.conn.execute("COMMIT;")
+            except Exception as exc:
+                self.conn.execute("ROLLBACK;")
+                logger.exception("Failed to persist raw dataset {}: {}", raw.raw_dataset_id, exc)
+                raise
+
+    def record_historical_quarantine(
+        self,
+        *,
+        quarantine_id: str,
+        raw_dataset_id: str,
+        symbol: str,
+        exchange: str,
+        timeframe: str,
+        provider_name: str,
+        raw_hash: str,
+        malformed_row_count: int,
+        issues: list[Any] | tuple[Any, ...],
+    ) -> None:
+        """Atomically persist historical quarantine, row-level issues, and update lifecycle status."""
+        with self._write_lock:
+            self.conn.execute("BEGIN TRANSACTION;")
+            try:
+                self.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO historical_market_data_quarantine (
+                        quarantine_id, raw_dataset_id, symbol, exchange, timeframe,
+                        provider_name, raw_hash, malformed_row_count, quarantined_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    """,
+                    [
+                        quarantine_id,
+                        raw_dataset_id,
+                        symbol,
+                        exchange,
+                        timeframe,
+                        provider_name,
+                        raw_hash,
+                        malformed_row_count,
+                    ],
+                )
+                for issue in issues:
+                    ts_val = issue.event_timestamp
+                    self.conn.execute(
+                        """
+                        INSERT OR REPLACE INTO historical_market_data_quarantine_issues (
+                            quarantine_id, source_row_number, event_timestamp, reason_code, detected_at
+                        ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """,
+                        [
+                            quarantine_id,
+                            issue.source_row_number,
+                            ts_val,
+                            issue.reason_code,
+                        ],
+                    )
+                self.conn.execute(
+                    "UPDATE market_datasets SET lifecycle_status = 'QUARANTINED', updated_at = CURRENT_TIMESTAMP WHERE dataset_id = ?",
+                    [raw_dataset_id],
+                )
+                self.conn.execute("COMMIT;")
+            except Exception as exc:
+                self.conn.execute("ROLLBACK;")
+                logger.exception("Failed to record historical quarantine for {}: {}", raw_dataset_id, exc)
+                raise
+
+    def update_dataset_lifecycle_status(
+        self,
+        dataset_id: str,
+        status: str,
+        parent_dataset_id: str | None = None,
+    ) -> None:
+        """Update dataset lifecycle status in market_datasets."""
+        with self._write_lock:
+            if parent_dataset_id:
+                self.conn.execute(
+                    """
+                    UPDATE market_datasets 
+                    SET lifecycle_status = ?, parent_dataset_id = ?, updated_at = CURRENT_TIMESTAMP 
+                    WHERE dataset_id = ?
+                    """,
+                    [status, parent_dataset_id, dataset_id],
+                )
+            else:
+                self.conn.execute(
+                    "UPDATE market_datasets SET lifecycle_status = ?, updated_at = CURRENT_TIMESTAMP WHERE dataset_id = ?",
+                    [status, dataset_id],
+                )
 
     def close(self) -> None:
         """Close the DuckDB connection."""

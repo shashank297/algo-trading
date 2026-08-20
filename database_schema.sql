@@ -174,36 +174,73 @@ CREATE TABLE IF NOT EXISTS paper_reconciliation (
 -- Immutable provenance for normalized market-data snapshots. Historical candles
 -- remain the compatibility cache used by the original ingestion pipeline.
 CREATE TABLE IF NOT EXISTS market_datasets (
-    dataset_id VARCHAR NOT NULL,
-    provider_name VARCHAR NOT NULL,
-    provider_symbol VARCHAR NOT NULL,
-    canonical_symbol VARCHAR NOT NULL,
+    dataset_id VARCHAR NOT NULL PRIMARY KEY,
+    parent_dataset_id VARCHAR,
+    dataset_stage VARCHAR NOT NULL DEFAULT 'RAW', -- 'RAW', 'CANONICAL'
+    symbol VARCHAR,
+    canonical_symbol VARCHAR,
     exchange VARCHAR NOT NULL,
     timeframe VARCHAR NOT NULL,
-    adjustment VARCHAR NOT NULL,
-    timezone VARCHAR NOT NULL,
-    retrieved_at TIMESTAMPTZ NOT NULL,
+    provider_name VARCHAR NOT NULL,
+    provider_symbol VARCHAR,
+    provider_token VARCHAR,
+    declared_adjustment VARCHAR,
+    adjustment VARCHAR DEFAULT 'UNADJUSTED',
+    timezone VARCHAR DEFAULT 'Asia/Kolkata',
+    retrieved_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    lifecycle_status VARCHAR NOT NULL DEFAULT 'RAW_RECORDED',
+    status VARCHAR DEFAULT 'VALID',
     raw_hash VARCHAR NOT NULL,
-    transformation_hash VARCHAR NOT NULL,
-    status VARCHAR NOT NULL,
-    metadata_json VARCHAR NOT NULL,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (dataset_id)
+    transformation_hash VARCHAR,
+    hash_algorithm VARCHAR NOT NULL DEFAULT 'SHA256',
+    hash_version VARCHAR NOT NULL DEFAULT 'raw-provider-v1',
+    row_count INTEGER NOT NULL DEFAULT 0,
+    metadata_json VARCHAR DEFAULT '{}',
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS parent_dataset_id VARCHAR;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS dataset_stage VARCHAR DEFAULT 'RAW';
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS symbol VARCHAR;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS canonical_symbol VARCHAR;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS provider_token VARCHAR;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS declared_adjustment VARCHAR;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS lifecycle_status VARCHAR DEFAULT 'RAW_RECORDED';
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS hash_algorithm VARCHAR DEFAULT 'SHA256';
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS hash_version VARCHAR DEFAULT 'raw-provider-v1';
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS row_count INTEGER DEFAULT 0;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
+
 CREATE TABLE IF NOT EXISTS raw_bar_observations (
-    dataset_id VARCHAR NOT NULL,
+    raw_dataset_id VARCHAR NOT NULL,
+    source_row_number BIGINT NOT NULL,
     symbol VARCHAR NOT NULL,
     exchange VARCHAR NOT NULL,
     timeframe VARCHAR NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
-    open DOUBLE NOT NULL,
-    high DOUBLE NOT NULL,
-    low DOUBLE NOT NULL,
-    close DOUBLE NOT NULL,
-    volume DOUBLE NOT NULL,
-    PRIMARY KEY (dataset_id, symbol, timeframe, timestamp)
+    provider_name VARCHAR NOT NULL,
+    timestamp_raw VARCHAR,
+    open_raw VARCHAR,
+    high_raw VARCHAR,
+    low_raw VARCHAR,
+    close_raw VARCHAR,
+    volume_raw VARCHAR,
+    raw_row_json VARCHAR NOT NULL,
+    retrieved_at TIMESTAMPTZ NOT NULL,
+    PRIMARY KEY (raw_dataset_id, source_row_number)
 );
+
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS raw_dataset_id VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS dataset_id VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS source_row_number BIGINT DEFAULT 0;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS timestamp_raw VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS open_raw VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS high_raw VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS low_raw VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS close_raw VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS volume_raw VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS raw_row_json VARCHAR;
+ALTER TABLE raw_bar_observations ADD COLUMN IF NOT EXISTS retrieved_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
 
 CREATE TABLE IF NOT EXISTS provider_attempts (
     attempt_id VARCHAR NOT NULL,
@@ -887,5 +924,23 @@ CREATE TABLE IF NOT EXISTS live_market_data_quarantine (
     quarantined_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS historical_market_data_quarantine (
+    quarantine_id VARCHAR NOT NULL PRIMARY KEY,
+    raw_dataset_id VARCHAR NOT NULL,
+    symbol VARCHAR NOT NULL,
+    exchange VARCHAR NOT NULL,
+    timeframe VARCHAR NOT NULL,
+    provider_name VARCHAR NOT NULL,
+    raw_hash VARCHAR NOT NULL,
+    malformed_row_count INTEGER NOT NULL,
+    quarantined_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
 
-
+CREATE TABLE IF NOT EXISTS historical_market_data_quarantine_issues (
+    quarantine_id VARCHAR NOT NULL,
+    source_row_number BIGINT NOT NULL,
+    event_timestamp TIMESTAMPTZ,
+    reason_code VARCHAR NOT NULL,
+    detected_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (quarantine_id, source_row_number, reason_code)
+);

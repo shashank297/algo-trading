@@ -57,7 +57,7 @@ class StrategyPipeline:
         timeframe: str,
         *,
         bypass_quality_gate: bool = False,
-        adjustment: PriceAdjustment | str = PriceAdjustment.UNADJUSTED,
+        adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> pd.DataFrame:
         """Load stored candles for a symbol/timeframe from DuckDB, with optional corporate action adjustment."""
 
@@ -112,7 +112,7 @@ class StrategyPipeline:
         parameters: dict[str, Any] | None = None,
         starting_capital: float = 100_000.0,
         cost_model: dict[str, Any] | None = None,
-        adjustment: PriceAdjustment | str = PriceAdjustment.UNADJUSTED,
+        adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> dict[str, Any]:
         """Run a strategy and persist the result bundle."""
 
@@ -183,6 +183,7 @@ class StrategyPipeline:
         starting_capital: float = 100_000.0,
         cost_model: dict[str, Any] | None = None,
         as_of: datetime | None = None,
+        adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> dict[str, Any]:
         """Advance a persisted forward-only paper session by newly observed bars."""
 
@@ -208,7 +209,7 @@ class StrategyPipeline:
                 "forward_portfolio_result": portfolio_result,
                 "paper_summary": portfolio_result.paper_summary,
             }
-        raw_bars = self.load_candles(symbol, timeframe)
+        raw_bars = self.load_candles(symbol, timeframe, adjustment=adjustment)
         asset_class = self._lookup_asset_class(symbol=symbol, exchange=str(raw_bars["exchange"].iloc[0]))
         if self.strict_calendar:
             validation = self.calendars[asset_class].validate_bars(raw_bars["timestamp"], timeframe)

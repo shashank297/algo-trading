@@ -32,6 +32,94 @@ class PriceAdjustment(str, Enum):
     TOTAL_RETURN = "TOTAL_RETURN"
 
 
+class DatasetLifecycleStatus(str, Enum):
+    """Lifecycle progression states for market datasets."""
+
+    RAW_RECORDED = "RAW_RECORDED"
+    STRUCTURALLY_VALID = "STRUCTURALLY_VALID"
+    QUARANTINED = "QUARANTINED"
+    SEMANTICS_ADMITTED = "SEMANTICS_ADMITTED"
+    AMBIGUOUS = "AMBIGUOUS"
+    BLOCKED = "BLOCKED"
+    CANONICAL_PROMOTED = "CANONICAL_PROMOTED"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True)
+class RawMarketDataset:
+    """Immutable verbatim provider dataset before domain validation."""
+
+    raw_dataset_id: str
+    symbol: str
+    exchange: str
+    timeframe: str
+    provider_name: str
+    provider_symbol: str | None
+    provider_token: str | None
+    declared_adjustment: PriceAdjustment | None
+    timezone_name: str
+    retrieved_at: datetime
+    raw_payload: str
+    raw_hash: str
+    hash_algorithm: str = "SHA256"
+    hash_version: str = "raw-provider-v1"
+    parsed_rows: tuple[dict[str, Any], ...] = ()
+
+    @property
+    def bars_df(self) -> pd.DataFrame:
+        """Defensive copy DataFrame of parsed provider rows."""
+        if not self.parsed_rows:
+            return pd.DataFrame(columns=["source_row_number", "timestamp", "open", "high", "low", "close", "volume"])
+        return pd.DataFrame(list(self.parsed_rows)).copy(deep=True)
+
+
+@dataclass(frozen=True)
+class RawValidationIssue:
+    """A specific structural defect identified on a specific provider row."""
+
+    source_row_number: int
+    event_timestamp: datetime | None
+    reason_code: str
+
+
+@dataclass(frozen=True)
+class RawValidationResult:
+    """Outcome of exhaustive raw structural validation."""
+
+    is_valid: bool
+    issues: tuple[RawValidationIssue, ...]
+    malformed_row_count: int
+
+
+@dataclass(frozen=True)
+class RawIntakeResult:
+    """Full lifecycle result of raw provider intake."""
+
+    raw_dataset_id: str
+    raw_hash: str
+    raw_status: str
+    canonical_dataset_id: str | None
+    canonical_status: str | None
+    quarantine_reasons: tuple[str, ...]
+    bars: pd.DataFrame | None = None
+
+
+def compute_raw_provider_hash(rows: list[dict[str, Any]] | list[list[Any]] | str | bytes | pd.DataFrame) -> str:
+    """Deterministic canonical provider-row hash (raw-provider-v1)."""
+    if isinstance(rows, bytes):
+        payload_bytes = rows
+    elif isinstance(rows, str):
+        payload_bytes = rows.encode("utf-8")
+    elif isinstance(rows, pd.DataFrame):
+        clean_df = rows[[c for c in rows.columns if c not in ("source_row_number", "raw_dataset_id", "retrieved_at")]].copy()
+        clean_rows = clean_df.to_dict(orient="records")
+        payload_bytes = json.dumps(clean_rows, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    else:
+        payload_bytes = json.dumps(rows, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload_bytes).hexdigest()
+
+
+
 
 class Instrument(BaseModel):
     """Canonical identity plus a provider-specific symbol alias."""

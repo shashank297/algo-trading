@@ -31,7 +31,7 @@ from storage import DuckDBManager
 from utils import LoggerSetup, ReportGenerator, get_ist_now
 from data_platform.contracts import DatasetSnapshot, Instrument, PriceAdjustment
 from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
-from data_platform.service import admit_and_promote_dataset
+from data_platform.service import admit_and_promote_dataset, ingest_raw_provider_dataset
 from trading_stack.calendars import MarketCalendar, SessionOverride, build_nse_calendar
 from trading_stack.domain import Bar, infer_market_spec
 from trading_stack.live_aggregator import RealtimeBarAggregator
@@ -809,31 +809,20 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         continue
 
-                    snapshot = DatasetSnapshot.from_bars(
-                        instrument=Instrument(
-                            canonical_symbol=symbol,
-                            exchange=exchange,
-                            provider_name="angel_one",
-                            provider_symbol=symbol,
-                            currency="INR",
-                            timezone="Asia/Kolkata",
-                        ),
-                        timeframe=label,
+                    res = ingest_raw_provider_dataset(
                         bars=candle_df,
-                        adjustment=PriceAdjustment.UNADJUSTED,
+                        symbol=symbol,
+                        exchange=exchange,
+                        timeframe=label,
+                        provider_name="angel_one",
+                        provider_symbol=symbol,
+                        provider_token=token,
+                        declared_adjustment=PriceAdjustment.UNADJUSTED,
                         timezone_name="Asia/Kolkata",
-                        metadata={
-                            "source": "SmartAPI historical main ingestion",
-                            "from_datetime": from_datetime.isoformat(),
-                            "to_datetime": to_datetime.isoformat(),
-                        },
-                    )
-                    promo_res = admit_and_promote_dataset(
-                        snapshot=snapshot,
                         db=db,
                         target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
                     )
-                    inserted = len(promo_res.bars) if promo_res.bars is not None else 0
+                    inserted = len(res.bars) if res.bars is not None else 0
                     duration = time.perf_counter() - task_started
                     db.log_download(
                         symbol=symbol,
