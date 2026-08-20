@@ -94,39 +94,46 @@ class PromotionEngine:
             ).fetchone()
             if correlation_row is not None and correlation_row[0] is not None:
                 maximum_correlation = float(correlation_row[0])
-        run_row = self.db.conn.execute("SELECT notes, data_hash, symbol FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
+        run_row = self.db.conn.execute("SELECT notes, data_hash, symbol, mode FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
         survivorship_safe = False
-        if run_row and run_row[0]:
-            notes_str = str(run_row[0]).lower()
-            if "survivorship bias" not in notes_str and ("pit" in notes_str or "point-in-time" in notes_str or "single_asset" in notes_str or "unbiased" in notes_str):
-                survivorship_safe = True
-            elif "survivorship bias: false" in notes_str or "zero survivorship bias" in notes_str:
-                survivorship_safe = True
-            elif "survivorship bias" not in notes_str:
-                survivorship_safe = True
-        elif run_row:
-            survivorship_safe = True
+        if run_row and run_row[2]:
+            sym = str(run_row[2])
+            if "PORTFOLIO:" in sym:
+                # Require positive PIT constituent evidence in database
+                pit_count = self.db.conn.execute("SELECT COUNT(*) FROM index_constituents_pit").fetchone()
+                if pit_count and int(pit_count[0]) > 0:
+                    survivorship_safe = True
+            else:
+                # Single-asset run: verified if canonical dataset is VERIFIED
+                ds = self.db.conn.execute(
+                    "SELECT status FROM market_datasets WHERE canonical_symbol = ? ORDER BY retrieved_at DESC LIMIT 1",
+                    [sym],
+                ).fetchone()
+                if ds and ds[0] == "VERIFIED":
+                    survivorship_safe = True
 
         dq_verified = False
         if run_row and run_row[2]:
             sym = str(run_row[2]).replace("PORTFOLIO:", "")
             ds_status = self.db.conn.execute(
-                """SELECT status, lifecycle_status FROM market_datasets
+                """SELECT status, lifecycle_status, dataset_id FROM market_datasets
                    WHERE canonical_symbol = ? ORDER BY retrieved_at DESC LIMIT 1""",
                 [sym],
             ).fetchone()
             if ds_status and ds_status[0] == "VERIFIED" and ds_status[1] == "CANONICAL_PROMOTED":
-                dq_issues = self.db.conn.execute(
-                    "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
+                dataset_id = ds_status[2]
+                dq_stats = self.db.conn.execute(
+                    """SELECT COUNT(*), SUM(issue_count) FROM quality_report 
+                       WHERE dataset_id = ? OR (dataset_id IS NULL AND symbol = ?)""",
+                    [dataset_id, sym],
                 ).fetchone()
-                if dq_issues is None or dq_issues[0] is None or int(dq_issues[0]) == 0:
+                if dq_stats and dq_stats[0] and int(dq_stats[0]) > 0 and dq_stats[1] is not None and int(dq_stats[1]) == 0:
                     dq_verified = True
             elif "PORTFOLIO:" in str(run_row[2]):
-                # Portfolio runs aggregate multiple symbols; check no quality issues exist across active symbols
-                dq_issues = self.db.conn.execute(
-                    "SELECT SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
+                dq_stats = self.db.conn.execute(
+                    "SELECT COUNT(*), SUM(issue_count) FROM quality_report WHERE symbol = ?", [sym]
                 ).fetchone()
-                if dq_issues is None or dq_issues[0] is None or int(dq_issues[0]) == 0:
+                if dq_stats and dq_stats[0] and int(dq_stats[0]) > 0 and dq_stats[1] is not None and int(dq_stats[1]) == 0:
                     dq_verified = True
 
         checks = {

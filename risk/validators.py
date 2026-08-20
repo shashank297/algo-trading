@@ -25,19 +25,19 @@ class RequiredRiskStateValidator(RiskValidator):
         missing_fields: list[str] = []
         if proposal.capital is None or proposal.capital <= 0:
             missing_fields.append("capital")
-        if proposal.current_gross_exposure is None:
+        if proposal.current_gross_exposure is None or proposal.current_gross_exposure < 0:
             missing_fields.append("current_gross_exposure")
         if proposal.daily_pnl is None:
             missing_fields.append("daily_pnl")
-        if proposal.current_drawdown is None:
+        if proposal.current_drawdown is None or proposal.current_drawdown < 0:
             missing_fields.append("current_drawdown")
-        if proposal.current_sector_exposure is None:
+        if proposal.current_sector_exposure is None or proposal.current_sector_exposure < 0:
             missing_fields.append("current_sector_exposure")
-        if proposal.open_position_count is None:
+        if proposal.open_position_count is None or proposal.open_position_count < 0:
             missing_fields.append("open_position_count")
-        if policy.min_liquidity_crore > 0 and (proposal.daily_turnover_crore is None or proposal.daily_turnover_crore < 0):
+        if proposal.daily_turnover_crore is None or proposal.daily_turnover_crore < 0:
             missing_fields.append("daily_turnover_crore")
-        if policy.max_var_pct < 1.0 and (proposal.estimated_portfolio_var_pct is None or proposal.estimated_portfolio_var_pct < 0):
+        if proposal.estimated_portfolio_var_pct is None or proposal.estimated_portfolio_var_pct < 0:
             missing_fields.append("estimated_portfolio_var_pct")
 
         if missing_fields:
@@ -68,7 +68,8 @@ class PortfolioExposureValidator(RiskValidator):
         if proposal.is_pure_risk_reduction:
             return proposal.requested_notional, []
         gross_limit = proposal.capital * policy.max_gross_exposure_pct
-        available_gross = max(gross_limit - proposal.current_gross_exposure, 0.0)
+        current_gross = proposal.current_gross_exposure if proposal.current_gross_exposure is not None else 0.0
+        available_gross = max(gross_limit - current_gross, 0.0)
 
         if available_gross <= 0:
             if proposal.risk_reducing_notional > 0:
@@ -85,7 +86,8 @@ class SectorExposureValidator(RiskValidator):
         if proposal.is_pure_risk_reduction:
             return proposal.requested_notional, []
         sector_limit = proposal.capital * policy.max_sector_exposure_pct
-        available_sector = max(sector_limit - proposal.current_sector_exposure, 0.0)
+        current_sector = proposal.current_sector_exposure if proposal.current_sector_exposure is not None else 0.0
+        available_sector = max(sector_limit - current_sector, 0.0)
 
         if available_sector <= 0:
             if proposal.risk_reducing_notional > 0:
@@ -100,7 +102,8 @@ class SectorExposureValidator(RiskValidator):
 class DailyLossValidator(RiskValidator):
     def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
         max_daily_loss = proposal.capital * policy.max_daily_loss_pct
-        if proposal.daily_pnl <= -max_daily_loss:
+        daily_pnl = proposal.daily_pnl if proposal.daily_pnl is not None else 0.0
+        if daily_pnl <= -max_daily_loss:
             if proposal.risk_reducing_notional > 0:
                 if proposal.risk_increasing_notional == 0:
                     return proposal.requested_notional, []
@@ -112,7 +115,8 @@ class DailyLossValidator(RiskValidator):
 class DrawdownValidator(RiskValidator):
     def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
         max_drawdown = policy.max_drawdown_pct
-        if proposal.current_drawdown >= max_drawdown:
+        current_drawdown = proposal.current_drawdown if proposal.current_drawdown is not None else 0.0
+        if current_drawdown >= max_drawdown:
             if proposal.risk_reducing_notional > 0:
                 if proposal.risk_increasing_notional == 0:
                     return proposal.requested_notional, []
@@ -123,7 +127,8 @@ class DrawdownValidator(RiskValidator):
 
 class MaxPositionsValidator(RiskValidator):
     def evaluate(self, proposal: TradeProposal, policy: RiskPolicy) -> tuple[float, list[str]]:
-        if not proposal.is_pure_risk_reduction and proposal.open_position_count >= policy.max_open_positions and proposal.current_position_notional == 0:
+        open_count = proposal.open_position_count if proposal.open_position_count is not None else 0
+        if not proposal.is_pure_risk_reduction and open_count >= policy.max_open_positions and proposal.current_position_notional == 0:
             return 0.0, ["max_open_positions_limit_reached"]
         return proposal.requested_notional, []
 

@@ -63,11 +63,8 @@ class DuckDBManager:
                 self.conn.execute(schema_path.read_text(encoding="utf-8"))
                 self._migrate_equity_curve_primary_key()
                 self._migrate_corporate_actions_schema()
-                try:
-                    from storage.migrations.runner import MigrationRunner
-                    MigrationRunner(self.conn).run_migrations()
-                except Exception as m_err:
-                    logger.warning("Migration runner notification: {}", m_err)
+                from storage.migrations.runner import MigrationRunner
+                MigrationRunner(self.conn).run_migrations()
                 try:
                     self.conn.execute("FORCE CHECKPOINT;")
                 except Exception as e:
@@ -506,12 +503,14 @@ class DuckDBManager:
 
         rows: list[dict[str, Any]] = []
         for report in reports:
+            dataset_id = report.get("dataset_id")
             for check_type, details in report["checks"].items():
                 rows.append(
                     {
                         "id": None,
                         "symbol": report["symbol"],
                         "timeframe": report["timeframe"],
+                        "dataset_id": dataset_id,
                         "check_type": check_type,
                         "issue_count": int(details["count"]),
                         "details": json.dumps(details, default=str),
@@ -533,6 +532,7 @@ class DuckDBManager:
                     id,
                     symbol,
                     timeframe,
+                    dataset_id,
                     check_type,
                     issue_count,
                     details,
@@ -542,6 +542,7 @@ class DuckDBManager:
                     id,
                     symbol,
                     timeframe,
+                    dataset_id,
                     check_type,
                     issue_count,
                     details,

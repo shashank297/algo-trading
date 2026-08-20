@@ -266,7 +266,10 @@ class PortfolioEventBacktester:
         execution_mode: str = "EOD_BATCH",
     ) -> tuple[float, dict[str, Any]]:
         target_frame = targets.copy()
-        target_frame["target_weight"] = target_frame["target_weight"].clip(lower=0, upper=self.max_position_weight)
+        if "target_weight" in target_frame.columns:
+            target_frame["target_weight"] = pd.to_numeric(target_frame["target_weight"], errors="coerce").fillna(0.0).clip(lower=0, upper=self.max_position_weight)
+        else:
+            target_frame["target_weight"] = 0.0
         target_frame["sector"] = target_frame["symbol"].astype(str).map(
             day["sector"].to_dict() if "sector" in day.columns else {},
         ).fillna("UNKNOWN")
@@ -274,7 +277,7 @@ class PortfolioEventBacktester:
             sector_weight = float(target_frame.loc[indexes, "target_weight"].sum())
             if sector_weight > self.max_sector_exposure:
                 target_frame.loc[indexes, "target_weight"] *= self.max_sector_exposure / sector_weight
-        total_weight = target_frame["target_weight"].sum()
+        total_weight = float(target_frame["target_weight"].sum())
         if total_weight > self.max_gross_exposure:
             target_frame["target_weight"] *= self.max_gross_exposure / total_weight
         equity = cash + sum(quantity * last_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
@@ -285,7 +288,10 @@ class PortfolioEventBacktester:
         round_trips: list[dict[str, Any]] = []
         buy_turnover = 0.0
         sell_turnover = 0.0
-        target_by_symbol = dict(zip(target_frame["symbol"].astype(str), target_frame["target_weight"].astype(float)))
+        target_by_symbol = {
+            str(k): (0.0 if pd.isna(v) else float(v))
+            for k, v in zip(target_frame["symbol"].astype(str), target_frame["target_weight"])
+        }
         all_symbols = sorted(set(quantities) | set(target_by_symbol))
         # Sells free cash before buys consume it.
         all_symbols.sort(key=lambda symbol: target_by_symbol.get(symbol, 0.0) - quantities.get(symbol, 0.0) * last_prices.get(symbol, 0.0) / max(equity, 1e-12))
@@ -306,13 +312,14 @@ class PortfolioEventBacktester:
             else:
                 base_price = float(row.get("open") or row.get("close") or 0.0)
 
-            target_quantity = np.floor(equity * target_by_symbol.get(symbol, 0.0) / max(base_price, 1e-12))
-            current_quantity = quantities.get(symbol, 0.0)
+            tw = float(target_by_symbol.get(symbol, 0.0)) if pd.notna(target_by_symbol.get(symbol, 0.0)) else 0.0
+            target_quantity = float(np.floor(equity * tw / max(base_price, 1e-12))) if not pd.isna(base_price) and base_price > 0 else 0.0
+            current_quantity = float(quantities.get(symbol, 0.0))
             requested_quantity = target_quantity - current_quantity
-            if abs(requested_quantity) < 1:
+            if pd.isna(requested_quantity) or abs(requested_quantity) < 1:
                 continue
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
-            requested_abs = abs(requested_quantity)
+            requested_abs = float(abs(requested_quantity))
             effective_schedule = get_cost_schedule(date)
             lagged_adv_raw = row.get("lagged_adv20")
             lagged_adv = float(lagged_adv_raw) if pd.notna(lagged_adv_raw) and float(lagged_adv_raw) > 0 else np.nan
@@ -323,7 +330,7 @@ class PortfolioEventBacktester:
             reason_row = targets[targets["symbol"].astype(str) == symbol]
             reason = str(reason_row["reason"].iloc[0]) if (not reason_row.empty and "reason" in reason_row.columns) else "rank_removal"
             status = OrderStatus.FILLED
-            filled_quantity = requested_abs
+            filled_quantity = float(requested_abs)
             rejection_reason = None
 
             if open_tick_missing:
@@ -340,9 +347,9 @@ class PortfolioEventBacktester:
                 rejection_reason = "LIQUIDITY_REJECTION"
             else:
                 volume_cap = np.floor(lagged_adv * effective_schedule.max_volume_participation)
-                filled_quantity = min(filled_quantity, volume_cap)
+                filled_quantity = float(min(filled_quantity, volume_cap))
                 if side == OrderSide.SELL:
-                    filled_quantity = min(filled_quantity, current_quantity)
+                    filled_quantity = float(min(filled_quantity, current_quantity))
                 if filled_quantity <= 0:
                     status = OrderStatus.REJECTED
                     rejection_reason = "VOLUME_CAP_REJECTION"
@@ -370,7 +377,8 @@ class PortfolioEventBacktester:
                 "requested_at": date, "filled_at": date if filled_quantity > 0 else None,
                 "limit_price": None, "stop_price": None,
                 "average_fill_price": execution_price if filled_quantity > 0 else None,
-                "slippage_bps": self.cost_schedule.slippage_bps, "fees": breakdown.statutory_and_broker_fees if filled_quantity > 0 else 0.0,
+                "slippage_bps": self.cost_schedule.slippage_bps,
+                "fees": breakdown.statutory_and_broker_fees if breakdown is not None else 0.0,
                 "metadata_json": json.dumps({"reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason}),
             })
             if filled_quantity <= 0:
@@ -382,23 +390,26 @@ class PortfolioEventBacktester:
             holding_days: float | None = None
             gross_pnl = 0.0
             exit_classification = "ENTRY"
+            stat_fees = breakdown.statutory_and_broker_fees if breakdown is not None else 0.0
+            total_costs = breakdown.total if breakdown is not None else 0.0
+            drag_costs = breakdown.execution_drag if breakdown is not None else 0.0
             if side == OrderSide.BUY:
                 if current_quantity <= 0:
                     entry_timestamps[symbol] = date
                     entry_reasons[symbol] = reason
                 old_value = current_quantity * previous_average
                 new_quantity = current_quantity + filled_quantity
-                cash -= notional + breakdown.statutory_and_broker_fees
+                cash -= notional + stat_fees
                 quantities[symbol] = new_quantity
                 average_cost[symbol] = (old_value + notional) / max(new_quantity, 1e-12)
-                entry_cost_pools[symbol] = entry_cost_pools.get(symbol, 0.0) + breakdown.total
+                entry_cost_pools[symbol] = entry_cost_pools.get(symbol, 0.0) + total_costs
                 entry_execution_cost_pools[symbol] = (
-                    entry_execution_cost_pools.get(symbol, 0.0) + breakdown.execution_drag
+                    entry_execution_cost_pools.get(symbol, 0.0) + drag_costs
                 )
                 realized_pnl = 0.0
                 buy_turnover += notional
             else:
-                cash += notional - breakdown.statutory_and_broker_fees
+                cash += notional - stat_fees
                 quantities[symbol] = max(current_quantity - filled_quantity, 0.0)
                 executed_pnl = (execution_price - previous_average) * filled_quantity
                 allocated_entry_cost = entry_cost_pools.get(symbol, 0.0) * filled_quantity / max(
@@ -415,8 +426,8 @@ class PortfolioEventBacktester:
                     entry_execution_cost_pools.get(symbol, 0.0) - allocated_entry_execution_cost,
                     0.0,
                 )
-                gross_pnl = executed_pnl + allocated_entry_execution_cost + breakdown.execution_drag
-                realized_pnl = gross_pnl - allocated_entry_cost - breakdown.total
+                gross_pnl = executed_pnl + allocated_entry_execution_cost + drag_costs
+                realized_pnl = gross_pnl - allocated_entry_cost - total_costs
                 exit_classification = "RANK_REMOVAL" if target_by_symbol.get(symbol, 0.0) <= 0 else "REBALANCE_REDUCTION"
                 if previous_entry is not None:
                     holding_days = (date - previous_entry).total_seconds() / 86_400.0
@@ -430,7 +441,7 @@ class PortfolioEventBacktester:
                         "entry_price": previous_average,
                         "exit_price": execution_price,
                         "entry_cost": allocated_entry_cost,
-                        "exit_cost": breakdown.total,
+                        "exit_cost": total_costs,
                         "gross_pnl": gross_pnl,
                         "net_pnl": realized_pnl,
                         "holding_period_days": holding_days,
@@ -439,24 +450,24 @@ class PortfolioEventBacktester:
                         "exit_classification": exit_classification,
                     })
                 sell_turnover += notional
-                if quantities[symbol] == 0:
-                    quantities.pop(symbol, None)
-                    average_cost.pop(symbol, None)
-                    entry_timestamps.pop(symbol, None)
-                    entry_reasons.pop(symbol, None)
-                    entry_cost_pools.pop(symbol, None)
-                    entry_execution_cost_pools.pop(symbol, None)
+            if quantities.get(symbol, 0.0) <= 0:
+                quantities.pop(symbol, None)
+                average_cost.pop(symbol, None)
+                entry_timestamps.pop(symbol, None)
+                entry_reasons.pop(symbol, None)
+                entry_cost_pools.pop(symbol, None)
+                entry_execution_cost_pools.pop(symbol, None)
             fills.append({
                 "fill_id": fill_id, "order_id": order_id, "run_id": run_id, "symbol": symbol,
                 "timestamp": date, "quantity": float(filled_quantity), "price": execution_price,
                 "side": side.value, "fill_type": "PAPER" if mode == "paper" else "BACKTEST",
-                "fees": breakdown.statutory_and_broker_fees, "slippage_bps": self.cost_schedule.slippage_bps,
+                "fees": stat_fees, "slippage_bps": self.cost_schedule.slippage_bps,
                 "metadata_json": json.dumps({"reason": reason, "participation": participation}),
             })
-            costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": date, **breakdown.__dict__, "total_cost": breakdown.total})
+            costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": date, **(breakdown.__dict__ if breakdown else {}), "total_cost": total_costs})
             attribution.append({
                 "run_id": run_id, "timestamp": date, "symbol": symbol, "side": side.value,
-                "reason": reason, "realized_pnl": realized_pnl, "cost": breakdown.total,
+                "reason": reason, "realized_pnl": realized_pnl, "cost": total_costs,
                 "target_weight": target_by_symbol.get(symbol, 0.0),
                 "quantity": float(filled_quantity), "price": execution_price,
                 "average_cost": previous_average if side == OrderSide.SELL else average_cost[symbol],

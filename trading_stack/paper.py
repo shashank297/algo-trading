@@ -67,6 +67,8 @@ class ForwardPaperSessionEngine:
         starting_capital: float = 100_000.0,
         as_of: datetime | None = None,
         execution_mode: str = "EOD_BATCH",
+        open_tick_price: float | None = None,
+        open_tick_timestamp: datetime | None = None,
     ) -> ForwardPaperResult:
         parameters = parameters or {}
         as_of = as_of or datetime.now(timezone.utc)
@@ -151,6 +153,10 @@ class ForwardPaperSessionEngine:
         round_trips: list[dict[str, Any]] = []
         risk_decisions: list[RiskDecision] = []
         for bar in new_bars.sort_values(by=["timestamp"]).to_dict(orient="records"):
+            if open_tick_price is not None:
+                bar["open_tick_price"] = open_tick_price
+            if open_tick_timestamp is not None:
+                bar["open_tick_timestamp"] = open_tick_timestamp
             bar_timestamp = pd.Timestamp(bar["timestamp"]).tz_convert("UTC")
             bar_session_date = bar_timestamp.tz_convert(self.calendar.zone).date()
             if daily_start_date != bar_session_date:

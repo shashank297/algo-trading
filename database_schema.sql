@@ -62,11 +62,14 @@ CREATE TABLE IF NOT EXISTS quality_report (
     id INTEGER, -- Optional local identifier for future use
     symbol VARCHAR NOT NULL, -- Validated symbol
     timeframe VARCHAR NOT NULL, -- Validated timeframe label
+    dataset_id VARCHAR, -- Canonical promoted dataset identifier
     check_type VARCHAR NOT NULL, -- Quality check name
     issue_count INTEGER, -- Number of issues found for this check
     details VARCHAR, -- JSON-serialized check details
     checked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP -- Validation timestamp
 );
+
+ALTER TABLE quality_report ADD COLUMN IF NOT EXISTS dataset_id VARCHAR;
 
 CREATE TABLE IF NOT EXISTS market_universe (
     symbol VARCHAR NOT NULL, -- Canonical trading symbol

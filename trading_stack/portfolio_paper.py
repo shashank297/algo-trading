@@ -81,23 +81,24 @@ class ForwardPortfolioPaperSessionEngine:
         parameters = parameters or {}
         as_of = as_of or datetime.now(timezone.utc)
         strategy = StrategyRegistry.create(strategy_name, **parameters)
+        req_lookback = int(parameters.get("long_lookback", strategy.metadata.required_lookback))
         dataset = SynchronizedPanelBuilder(
             self.db, calendar=self.calendar, strict_calendar=True,
         ).build(
             symbols, timeframe, universe_snapshot_id=universe_snapshot_id,
-            benchmark_symbol=benchmark_symbol, minimum_lookback=strategy.metadata.required_lookback,
+            benchmark_symbol=benchmark_symbol, minimum_lookback=req_lookback,
         )
         panel = self._completed_panel(dataset.panel, as_of)
         if panel.empty:
             raise ValueError("No completed synchronized sessions are available for portfolio paper trading.")
         panel = panel.copy().sort_values(["symbol", "timestamp"]).reset_index(drop=True)
         panel["lagged_adv20"] = (
-            panel.groupby("symbol", group_keys=False)["volume"]
-            .apply(lambda s: s.shift(1).rolling(20, min_periods=1).mean())
+            panel.groupby("symbol")["volume"]
+            .transform(lambda s: s.shift(1).rolling(20, min_periods=1).mean())
         )
         panel["lagged_close"] = (
-            panel.groupby("symbol", group_keys=False)["close"]
-            .shift(1)
+            panel.groupby("symbol")["close"]
+            .transform(lambda s: s.shift(1))
         )
         panel["lagged_traded_value"] = panel["lagged_close"] * panel["lagged_adv20"]
         signals = strategy.generate_signals(panel).copy()
@@ -112,18 +113,24 @@ class ForwardPortfolioPaperSessionEngine:
         if state is None:
             pending = self._targets_at_or_before(signals, latest_timestamp)
             with self.db.transaction():
-                self.db._replace_rows("paper_portfolio_sessions", [{
-                    "session_id": session_id, "approved_run_id": approved_run_id,
-                    "strategy_name": strategy_name, "strategy_version": strategy.metadata.version,
-                    "universe_snapshot_id": universe_snapshot_id, "benchmark_symbol": benchmark_symbol,
-                    "timeframe": timeframe, "parameters_json": json.dumps(parameters, sort_keys=True),
-                    "starting_capital": starting_capital, "cash": starting_capital,
-                    "peak_equity": starting_capital,
-                    "daily_start_date": latest_timestamp.tz_convert(self.calendar.zone).date(),
-                    "daily_start_equity": starting_capital,
-                    "last_processed_timestamp": latest_timestamp, "status": "ACTIVE",
-                    "created_at": now, "updated_at": now,
-                }])
+                self.db.conn.execute(
+                    """
+                    INSERT OR REPLACE INTO paper_portfolio_sessions (
+                        session_id, approved_run_id, strategy_name, strategy_version,
+                        universe_snapshot_id, benchmark_symbol, timeframe, parameters_json,
+                        starting_capital, cash, peak_equity, daily_start_date, daily_start_equity,
+                        last_processed_timestamp, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        session_id, approved_run_id, strategy_name, strategy.metadata.version,
+                        universe_snapshot_id, benchmark_symbol, timeframe,
+                        json.dumps(parameters, sort_keys=True), float(starting_capital),
+                        float(starting_capital), float(starting_capital),
+                        latest_timestamp.tz_convert(self.calendar.zone).date(),
+                        float(starting_capital), latest_timestamp.to_pydatetime(), "ACTIVE", now, now,
+                    ],
+                )
                 self._save_pending(session_id, pending, now)
                 self._persist_run_state(
                     session_id, strategy_name, universe_snapshot_id, timeframe, parameters,
@@ -246,13 +253,28 @@ class ForwardPortfolioPaperSessionEngine:
             )
 
         final_timestamp = dates[-1]
-        equity = cash + sum(quantity * latest_prices[symbol] for symbol, quantity in quantities.items())
+        equity = cash + sum(quantity * latest_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
+        created_at_val = pd.Timestamp(state["created_at"]).tz_convert("UTC").to_pydatetime()
+        final_ts_val = pd.Timestamp(final_timestamp).tz_convert("UTC").to_pydatetime()
         with self.db.transaction():
-            self.db._replace_rows("paper_portfolio_sessions", [{
-                **state, "cash": cash, "peak_equity": peak_equity,
-                "daily_start_date": daily_start_date, "daily_start_equity": daily_start_equity,
-                "last_processed_timestamp": final_timestamp, "status": "ACTIVE", "updated_at": now,
-            }])
+            self.db.conn.execute(
+                """
+                INSERT OR REPLACE INTO paper_portfolio_sessions (
+                    session_id, approved_run_id, strategy_name, strategy_version,
+                    universe_snapshot_id, benchmark_symbol, timeframe, parameters_json,
+                    starting_capital, cash, peak_equity, daily_start_date, daily_start_equity,
+                    last_processed_timestamp, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    session_id, str(state["approved_run_id"]), str(state["strategy_name"]),
+                    str(state["strategy_version"]), str(state["universe_snapshot_id"]),
+                    str(state.get("benchmark_symbol") or ""), str(state["timeframe"]),
+                    str(state.get("parameters_json") or "{}"), float(state["starting_capital"]),
+                    float(cash), float(peak_equity), daily_start_date, float(daily_start_equity),
+                    final_ts_val, "ACTIVE", created_at_val, now,
+                ],
+            )
             self._replace_holdings(
                 session_id, quantities, average_cost, entry_timestamps, entry_reasons,
                 entry_cost_pools, entry_execution_cost_pools, now,
@@ -303,8 +325,15 @@ class ForwardPortfolioPaperSessionEngine:
         peak_equity: float,
     ) -> tuple[pd.DataFrame, list[RiskDecision]]:
         adjusted = targets.copy()
+        if "target_weight" in adjusted.columns:
+            adjusted["target_weight"] = pd.to_numeric(adjusted["target_weight"], errors="coerce").fillna(0.0)
+        else:
+            adjusted["target_weight"] = 0.0
         equity = cash + sum(quantity * prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
-        target_weights = dict(zip(adjusted["symbol"].astype(str), adjusted["target_weight"].astype(float)))
+        target_weights = {
+            str(k): (0.0 if pd.isna(v) else float(v))
+            for k, v in zip(adjusted["symbol"].astype(str), adjusted["target_weight"])
+        }
         current_gross = sum(
             min(abs(quantity * prices.get(symbol, 0.0)), target_weights.get(symbol, 0.0) * equity)
             for symbol, quantity in quantities.items()
@@ -327,7 +356,9 @@ class ForwardPortfolioPaperSessionEngine:
                 continue
             price = float(day.loc[symbol, "open"])
             current_notional = quantities.get(symbol, 0.0) * price
-            requested_delta = max(float(row["target_weight"]) * equity - current_notional, 0.0)
+            raw_weight = row.get("target_weight", 0.0)
+            weight = 0.0 if pd.isna(raw_weight) else float(raw_weight)
+            requested_delta = max(weight * equity - current_notional, 0.0)
             if requested_delta <= 0:
                 continue
             sym_vol = float(day.loc[symbol, "volume"]) if (symbol in day.index and "volume" in day.columns and pd.notna(day.loc[symbol, "volume"])) else 0.0
@@ -409,13 +440,19 @@ class ForwardPortfolioPaperSessionEngine:
         now: datetime,
     ) -> None:
         self.db.conn.execute("DELETE FROM paper_portfolio_holdings WHERE session_id = ?", [session_id])
-        self.db._replace_rows("paper_portfolio_holdings", [{
-            "session_id": session_id, "symbol": symbol, "quantity": quantity,
-            "average_cost": average_cost[symbol], "entry_timestamp": entry_timestamps.get(symbol),
-            "entry_reason": entry_reasons.get(symbol), "entry_cost_pool": entry_cost_pools.get(symbol, 0.0),
-            "entry_execution_cost_pool": entry_execution_cost_pools.get(symbol, 0.0),
-            "updated_at": now,
-        } for symbol, quantity in quantities.items()])
+        valid_holdings = [
+            {
+                "session_id": session_id, "symbol": symbol, "quantity": float(quantity),
+                "average_cost": float(average_cost.get(symbol, 0.0)), "entry_timestamp": entry_timestamps.get(symbol),
+                "entry_reason": entry_reasons.get(symbol), "entry_cost_pool": float(entry_cost_pools.get(symbol, 0.0)),
+                "entry_execution_cost_pool": float(entry_execution_cost_pools.get(symbol, 0.0)),
+                "updated_at": now,
+            }
+            for symbol, quantity in quantities.items()
+            if quantity is not None and not pd.isna(quantity) and float(quantity) > 0
+        ]
+        if valid_holdings:
+            self.db._replace_rows("paper_portfolio_holdings", valid_holdings)
 
     @staticmethod
     def _targets_at_or_before(signals: pd.DataFrame, timestamp: pd.Timestamp) -> pd.DataFrame:

@@ -8,9 +8,27 @@ from risk.models import RiskAction, RiskPolicy, TradeProposal
 
 
 
+def make_proposal(**kwargs) -> TradeProposal:
+    defaults = {
+        "symbol": "RELIANCE",
+        "requested_notional": 1000.0,
+        "capital": 100000.0,
+        "current_gross_exposure": 0.0,
+        "current_sector_exposure": 0.0,
+        "daily_pnl": 0.0,
+        "current_drawdown": 0.0,
+        "open_position_count": 0,
+        "daily_turnover_crore": 15.0,
+        "estimated_portfolio_var_pct": 0.01,
+        "order_side": OrderSide.BUY,
+    }
+    defaults.update(kwargs)
+    return TradeProposal(**defaults)
+
+
 def test_baseline_engine_interception():
     engine = RiskEngine()
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="RELIANCE",
         requested_notional=1000.0,
         capital=100000.0,
@@ -26,7 +44,7 @@ def test_position_limit_rejected():
     policy = RiskPolicy(max_position_pct=0.05)
     engine = RiskEngine(policy=policy)
     # Requested notional is 6000, max position limit is 5% of 100000 = 5000.
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="RELIANCE",
         requested_notional=6000.0,
         capital=100000.0,
@@ -43,7 +61,7 @@ def test_portfolio_limit_rejected():
     engine = RiskEngine(policy=policy)
     # Portfolio already has 18k exposure, we want 3k more -> total 21k
     # Max gross is 20k (20% of 100k). Available gross is 2k.
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="RELIANCE",
         requested_notional=3000.0,
         capital=100000.0,
@@ -59,7 +77,7 @@ def test_portfolio_limit_rejected():
 def test_drawdown_limit_rejected_for_new_risk():
     policy = RiskPolicy(max_drawdown_pct=0.10)
     engine = RiskEngine(policy=policy)
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="RELIANCE",
         requested_notional=1000.0,
         capital=100000.0,
@@ -113,13 +131,14 @@ def test_reversal_order_split_under_daily_loss_breach():
     """Oversized reversal order (Long +100k + SELL 150k) allows 100k liquidation while rejecting 50k new short."""
     policy = RiskPolicy(max_daily_loss_pct=0.01)
     engine = RiskEngine(policy=policy)
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="TATASTEEL",
         requested_notional=150000.0,
         capital=1000000.0,
         current_position_notional=100000.0,  # Long 100k
         order_side=OrderSide.SELL,  # Reversal: SELL 150k
         daily_pnl=-15000.0,  # Breaching 10k daily loss limit
+        current_gross_exposure=100000.0,
     )
     assert proposal.is_reversal is True
     assert proposal.risk_reducing_notional == 100000.0
@@ -212,7 +231,7 @@ def test_malformed_financial_state_rejected():
 def test_max_open_positions_limit():
     policy = RiskPolicy(max_open_positions=10)
     engine = RiskEngine(policy=policy)
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="INFY",
         requested_notional=1000.0,
         capital=100000.0,
@@ -227,7 +246,7 @@ def test_min_liquidity_crore_limit():
     policy = RiskPolicy(min_liquidity_crore=10.0)
     engine = RiskEngine(policy=policy)
     # Stock has only ₹2 Cr daily turnover
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="PENNYSTOCK",
         requested_notional=1000.0,
         capital=100000.0,
@@ -254,13 +273,14 @@ def test_end_to_end_oversized_reversal_position_flattening():
     requested_notional = abs(requested_delta) * price
     side = OrderSide.SELL
 
-    proposal = TradeProposal(
+    proposal = make_proposal(
         symbol="RELIANCE",
         requested_notional=requested_notional,
         capital=starting_capital,
         current_position_notional=current_notional,
         order_side=side,
         daily_pnl=-15000.0,  # Daily loss limit breached
+        current_gross_exposure=current_notional,
     )
     decision = engine.evaluate(proposal)
     assert decision.action == RiskAction.MODIFY

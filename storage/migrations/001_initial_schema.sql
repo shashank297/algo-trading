@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS quality_report (
     id INTEGER,
     symbol VARCHAR NOT NULL,
     timeframe VARCHAR NOT NULL,
+    dataset_id VARCHAR,
     check_type VARCHAR NOT NULL,
     issue_count INTEGER,
     details VARCHAR,

@@ -33,6 +33,7 @@ class ConnectionState(str, Enum):
     STOPPED = "STOPPED"
     CONNECTING = "CONNECTING"
     CONNECTED = "CONNECTED"
+    DEGRADED = "DEGRADED"
     RECONNECTING = "RECONNECTING"
     STOPPING = "STOPPING"
 
@@ -203,7 +204,7 @@ class SmartAPIWebSocketClient:
         if not new_keys:
             return
 
-        if self.state == ConnectionState.CONNECTED and self._ws is not None:
+        if self.state in (ConnectionState.CONNECTED, ConnectionState.DEGRADED) and self._ws is not None:
             payloads = self.registry.build_action_payloads(new_keys, action=1)
             for p in payloads:
                 self._send_json(p)
@@ -215,7 +216,7 @@ class SmartAPIWebSocketClient:
         if not removed_keys:
             return
 
-        if self.state == ConnectionState.CONNECTED and self._ws is not None:
+        if self.state in (ConnectionState.CONNECTED, ConnectionState.DEGRADED) and self._ws is not None:
             payloads = self.registry.build_action_payloads(removed_keys, action=0)
             for p in payloads:
                 self._send_json(p)
@@ -335,7 +336,10 @@ class SmartAPIWebSocketClient:
 
         if self.raw_packet_sink is not None:
             try:
-                self.raw_packet_sink.enqueue_raw_packet(raw_bytes, received_at=recv_utc)
+                enqueued = self.raw_packet_sink.enqueue_raw_packet(raw_bytes, received_at=recv_utc)
+                if enqueued is False:
+                    self.metrics.dispatch_queue_drops += 1
+                    logger.warning("Raw packet sink queue saturated; packet dropped.")
             except Exception as exc:
                 logger.debug("Error forwarding raw packet to sink: {}", exc)
 
@@ -354,7 +358,7 @@ class SmartAPIWebSocketClient:
             )
             self.metrics.packets_decoded_total += 1
 
-            # Sequence tracking
+            # Sequence tracking & Resynchronization
             seq_num = getattr(event, "sequence_number", 0)
             if seq_num > 0:
                 is_gap, is_dup, gap_size = self.metrics.sequence_tracker.inspect_sequence(event.exchange, event.token, seq_num)
@@ -364,11 +368,17 @@ class SmartAPIWebSocketClient:
                         if self._state == ConnectionState.CONNECTED:
                             self._state = ConnectionState.DEGRADED
                     logger.warning(
-                        "Stream sequence gap detected: exchange={} token={} gap_size={}; transitioning connection to DEGRADED state.",
+                        "Stream sequence gap detected: exchange={} token={} gap_size={}; transitioning connection to DEGRADED state and triggering resynchronization.",
                         event.exchange, event.token, gap_size,
                     )
-                if is_dup:
+                    self._trigger_stream_resync(getattr(event, "exchange", "NSE"), getattr(event, "token", ""))
+                elif is_dup:
                     self.metrics.duplicate_packets_total += 1
+                else:
+                    with self._state_lock:
+                        if self._state == ConnectionState.DEGRADED:
+                            self._state = ConnectionState.CONNECTED
+                            logger.info("Stream synchronized: restored connection state to CONNECTED.")
 
             # Admission validation gate (mandatory fail-closed)
             admission = self.admission_validator.validate(event, received_at_utc=recv_utc)
@@ -545,8 +555,23 @@ class SmartAPIWebSocketClient:
     def _send_json(self, payload: dict[str, Any]) -> None:
         """Send JSON string across active WebSocket."""
         ws = self._ws
-        if ws is not None and self.state == ConnectionState.CONNECTED:
+        if ws is not None and self.state in (ConnectionState.CONNECTED, ConnectionState.DEGRADED):
             try:
                 ws.send(json.dumps(payload))
             except Exception as exc:
                 logger.error("Failed to send WebSocket payload: {}", exc)
+
+    def _trigger_stream_resync(self, exchange: str, token: str) -> None:
+        """Initiate sequence resynchronization by replaying subscription for stream re-anchoring."""
+        try:
+            active_keys = [
+                key for key in self.registry.desired_subscriptions
+                if str(key.token) == str(token)
+            ]
+            if active_keys and self._ws is not None:
+                payloads = self.registry.build_action_payloads(active_keys, action=1)
+                for p in payloads:
+                    self._send_json(p)
+                logger.info("Re-synced subscription for exchange={} token={}", exchange, token)
+        except Exception as exc:
+            logger.warning("Stream resync warning for {}:{}: {}", exchange, token, exc)

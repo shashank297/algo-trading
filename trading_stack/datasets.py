@@ -195,8 +195,11 @@ class SynchronizedPanelBuilder:
             featured["symbol"] = symbol
             featured["sector"] = sectors.get(symbol, "UNKNOWN")
             featured["eligible"] = featured.groupby("symbol").cumcount() + 1 >= minimum_lookback
-            if not benchmark_close.empty and symbol != benchmark_symbol:
-                featured = featured.merge(benchmark_close, on="timestamp", how="left")
+            if not benchmark_close.empty:
+                if symbol == benchmark_symbol:
+                    featured["benchmark_close"] = featured["close"]
+                else:
+                    featured = featured.merge(benchmark_close, on="timestamp", how="left")
             panels.append(featured)
             dataset_ids[symbol] = self._latest_dataset_id(symbol, timeframe)
             if index % 25 == 0 or index == len(symbols):
@@ -412,12 +415,27 @@ class SynchronizedPanelBuilder:
             requested = set(symbols)
             mapping: dict[str, str] = {}
             for symbol, provider_symbol, sector in rows:
+                sector_str = str(sector).strip() if sector else ""
                 for candidate in (symbol, provider_symbol):
-                    if candidate is not None and str(candidate) in requested:
-                        mapping[str(candidate)] = str(sector)
+                    if candidate is not None and str(candidate) in requested and sector_str and sector_str != "UNKNOWN":
+                        mapping[str(candidate)] = sector_str
+            if snapshot_id and snapshot_id != "CONFIGURED_UNIVERSE":
+                is_registered = self.db.conn.execute(
+                    "SELECT COUNT(*) FROM universe_snapshots WHERE snapshot_id = ?",
+                    [snapshot_id],
+                ).fetchone()[0] > 0
+                if is_registered or snapshot_id.startswith("NIFTY"):
+                    missing = [s for s in symbols if s not in mapping]
+                    if missing:
+                        raise ValueError(
+                            f"Missing authoritative sector mapping for symbol(s): {missing} in snapshot '{snapshot_id}'. "
+                            "Sector evidence is mandatory to enforce portfolio sector risk limits."
+                        )
             return mapping
         except Exception as exc:
             logger.error("Failed to load sector mapping for snapshot {}: {}", snapshot_id, exc)
+            if isinstance(exc, ValueError):
+                raise
             if snapshot_id:
                 raise RuntimeError(
                     f"Failed to load sector mapping for universe snapshot '{snapshot_id}': {exc}. "

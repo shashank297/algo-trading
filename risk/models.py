@@ -42,16 +42,16 @@ class TradeProposal(BaseModel):
     capital: float = Field(gt=0)
     current_position_notional: float = 0.0  # Signed: >0 long, <0 short
     order_side: OrderSide = OrderSide.BUY
-    current_gross_exposure: float = Field(default=0, ge=0)
-    current_sector_exposure: float = Field(default=0, ge=0)
-    daily_pnl: float = 0.0
-    current_drawdown: float = Field(default=0, ge=0)
+    current_gross_exposure: float | None = None
+    current_sector_exposure: float | None = None
+    daily_pnl: float | None = None
+    current_drawdown: float | None = None
     stop_loss_pct: float | None = None
-    open_position_count: int = 0
-    daily_turnover_crore: float | None = 15.0
-    estimated_portfolio_var_pct: float | None = 0.01
+    open_position_count: int | None = None
+    daily_turnover_crore: float | None = None
+    estimated_portfolio_var_pct: float | None = None
 
-    @field_validator("requested_notional", "capital", "current_position_notional", "current_gross_exposure", "current_sector_exposure", "daily_pnl", "current_drawdown")
+    @field_validator("requested_notional", "capital", "current_position_notional")
     @classmethod
     def validate_finite_floats(cls, value: float) -> float:
         if not math.isfinite(value):

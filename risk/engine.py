@@ -46,6 +46,8 @@ class RiskEngine:
             if cap < approved_notional:
                 approved_notional = cap
             reasons.extend(validator_reasons)
+            if approved_notional <= 0 and any("MISSING_RISK_STATE" in r for r in validator_reasons):
+                break
             
         # Deduplicate reasons while preserving order
         unique_reasons = []

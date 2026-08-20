@@ -46,12 +46,24 @@ class ExperimentManager:
             ).fetchone()
             if not snap_row:
                 raise ValueError(f"Universe snapshot '{spec.universe_snapshot_id}' not found in database. Failing closed.")
-            member_count = self.db.conn.execute(
-                "SELECT COUNT(*) FROM universe_snapshot_members WHERE snapshot_id = ?",
+            member_rows = self.db.conn.execute(
+                "SELECT symbol, provider_symbol FROM universe_snapshot_members WHERE snapshot_id = ?",
                 [spec.universe_snapshot_id],
-            ).fetchone()
-            if not member_count or int(member_count[0]) == 0:
+            ).fetchall()
+            if not member_rows:
                 raise ValueError(f"Universe snapshot '{spec.universe_snapshot_id}' has 0 members in universe_snapshot_members. Failing closed.")
+            valid_symbols = set()
+            for r in member_rows:
+                if r[0]:
+                    valid_symbols.add(str(r[0]))
+                if r[1]:
+                    valid_symbols.add(str(r[1]))
+            if spec.universe:
+                invalid_members = [s for s in spec.universe if s not in valid_symbols]
+                if invalid_members:
+                    raise ValueError(
+                        f"Experiment universe specification contains symbols {invalid_members} not present in snapshot '{spec.universe_snapshot_id}'."
+                    )
         started_at = datetime.now(timezone.utc)
         self.db.log_experiment(
             {

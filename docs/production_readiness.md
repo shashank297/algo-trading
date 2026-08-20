@@ -37,7 +37,7 @@ The deterministic research and paper execution stack is operational with compreh
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-257+ passed in test suite
+266 passed in test suite
 
 .\venv\Scripts\python.exe -m compileall -q main.py research.py trading_stack tests storage tools data_platform orchestration experiments risk
 Exit code 0

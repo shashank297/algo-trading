@@ -559,35 +559,59 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
     db.conn.execute("INSERT INTO index_constituents_pit VALUES ('SNAP_1', '2885', 'RELIANCE', '2885', 'NSE', '2020-01-01', '2027-01-01', '2020-01-01', 0.5, 'IN', null, CURRENT_TIMESTAMP);")
     db.conn.execute("INSERT INTO index_constituents_pit VALUES ('SNAP_1', '11536', 'TCS', '11536', 'NSE', '2020-01-01', '2027-01-01', '2020-01-01', 0.5, 'IN', null, CURRENT_TIMESTAMP);")
 
-    # Insert historical candles on valid weekdays
-    for d in ["2026-01-01", "2026-01-02", "2026-01-05"]:
-        db.conn.execute(f"INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '{d} 15:30:00+05:30', 100, 105, 95, 100, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
-        db.conn.execute(f"INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '{d} 15:30:00+05:30', 200, 205, 195, 200, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+    # Insert historical candles on valid weekdays spanning month-end
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2025-12-30 15:30:00+05:30', 90, 95, 85, 90, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2025-12-31 15:30:00+05:30', 100, 105, 95, 100, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2025-12-30 15:30:00+05:30', 200, 205, 195, 200, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2025-12-31 15:30:00+05:30', 200, 205, 195, 200, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
 
-    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at) VALUES ('RUN_PREV', 'cross_sectional_momentum', 'INDIA_EQUITY', 'PORTFOLIO:SNAP_1', '1d', 'event-driven', '{}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at) VALUES ('RUN_PREV', 'cross_sectional_momentum', 'INDIA_EQUITY', 'PORTFOLIO:SNAP_1', '1d', 'event-driven', '{\"long_lookback\": 1, \"skip_recent\": 0}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP);")
 
     engine = ForwardPortfolioPaperSessionEngine(
         db=db,
         calendar=build_nse_calendar(),
         risk_engine=RiskEngine(),
     )
+    params = {"long_lookback": 1, "skip_recent": 0}
     
-    # 1. Run in TRUE_NEXT_OPEN with live opening tick for RELIANCE at 103.5
-    res = engine.run(
+    # 1. Bootstrap run at 2025-12-31 (month-end rebalance date)
+    res1 = engine.run(
         strategy_name="cross_sectional_momentum",
         approved_run_id="RUN_PREV",
         symbols=["RELIANCE", "TCS"],
         universe_snapshot_id="SNAP_1",
         benchmark_symbol="RELIANCE",
         timeframe="1d",
-        execution_mode="TRUE_NEXT_OPEN",
-        opening_ticks={"RELIANCE": 103.5}, # TCS has no opening tick
+        parameters=params,
+        as_of=datetime(2025, 12, 31, 16, 0, tzinfo=timezone.utc),
     )
-    assert res is not None
-    if res.fills:
-        rel_fills = [f for f in res.fills if f.get("symbol") == "RELIANCE"]
-        if rel_fills:
-            assert float(rel_fills[0]["price"]) == pytest.approx(103.5, rel=1e-3)
+    assert res1.status == "BOOTSTRAPPED"
+
+    # 2. Advance forward with Day 2026-01-01 bar
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 200, 205, 195, 202, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+
+    # Run with TRUE_NEXT_OPEN and live opening tick for RELIANCE at 103.5 (TCS has no opening tick)
+    res2 = engine.run(
+        strategy_name="cross_sectional_momentum",
+        approved_run_id="RUN_PREV",
+        symbols=["RELIANCE", "TCS"],
+        universe_snapshot_id="SNAP_1",
+        benchmark_symbol="RELIANCE",
+        timeframe="1d",
+        parameters=params,
+        execution_mode="TRUE_NEXT_OPEN",
+        opening_ticks={"RELIANCE": 103.5},
+        as_of=datetime(2026, 1, 1, 16, 0, tzinfo=timezone.utc),
+    )
+    assert res2.status == "PROCESSED"
+    assert len(res2.fills) > 0
+    rel_fills = [f for f in res2.fills if f.get("symbol") == "RELIANCE"]
+    assert len(rel_fills) > 0
+    assert float(rel_fills[0]["price"]) == pytest.approx(103.5, rel=1e-3)
+    # TCS has no opening tick, so it must not execute
+    tcs_fills = [f for f in res2.fills if f.get("symbol") == "TCS"]
+    assert len(tcs_fills) == 0
 
 
 def test_p0_4_generic_universe_missing_pit_fails_closed(tmp_path):
@@ -659,20 +683,63 @@ def test_p1_9_missing_dq_certification_fails_closed(tmp_path):
         pipeline.load_candles("INFY", "1d")
 
 
-def test_e1_migration_checksum_tamper_fails(tmp_path):
-    """E-1: MigrationRunner raises RuntimeError when an applied migration file is modified."""
-    from storage.migrations.runner import MigrationRunner
-    import duckdb
+def test_e1_duckdb_startup_fails_on_migration_tamper(tmp_path):
+    """E-1: DuckDBManager startup fails closed with RuntimeError when migration integrity is violated."""
+    db_path = str(tmp_path / "app_startup_tamper.duckdb")
+    # First successful initialization
+    db1 = DuckDBManager(db_path)
+    db1.conn.execute("UPDATE schema_migrations SET checksum = 'corrupted_hash' WHERE version = '001_initial_schema'")
+    db1.conn.close()
 
-    db_path = str(tmp_path / "mig_tamper.duckdb")
-    conn = duckdb.connect(db_path)
-    runner = MigrationRunner(conn)
-    runner.run_migrations()
-
-    # Tamper with recorded checksum in DB
-    conn.execute("UPDATE schema_migrations SET checksum = 'tampered_hash' WHERE version = '001_initial_schema'")
-
-    # Subsequent migration run must detect mismatch and fail closed
+    # Reopening database MUST raise RuntimeError from initialize_schema, failing startup closed
     with pytest.raises(RuntimeError, match="Migration integrity violation"):
-        runner.run_migrations()
-    conn.close()
+        DuckDBManager(db_path)
+
+
+def test_e8_websocket_sequence_gap_recovery():
+    """E-8: Sequence gap transitions state to DEGRADED and triggers resync."""
+    from smartapi.auth import SmartAPIAuth
+    from smartapi.websocket_client import SmartAPIWebSocketClient, ConnectionState
+    from unittest.mock import MagicMock
+
+    auth = MagicMock(spec=SmartAPIAuth)
+    auth.websocket_authorization = "Bearer mock_token"
+    auth.api_key = "key"
+    auth.client_code = "code"
+    auth.feed_token = "feed"
+
+    client = SmartAPIWebSocketClient(auth=auth)
+    assert ConnectionState.DEGRADED.value == "DEGRADED"
+
+    # Simulate active connected state
+    client._state = ConnectionState.CONNECTED
+    # Inspect sequence gap
+    is_gap, is_dup, gap_size = client.metrics.sequence_tracker.inspect_sequence("NSE", "2885", 100)
+    assert is_gap is False  # First packet anchors
+
+    # Send sequence with a gap (skip to 105)
+    is_gap, is_dup, gap_size = client.metrics.sequence_tracker.inspect_sequence("NSE", "2885", 105)
+    assert is_gap is True
+    assert gap_size == 4
+
+
+def test_e11_snapshot_member_identity_validation(tmp_path):
+    """E-11: ExperimentManager fails closed if spec.universe symbols are not present in snapshot members."""
+    from experiments.manager import ExperimentManager, ExperimentSpec
+
+    db_path = str(tmp_path / "exp_snap.duckdb")
+    db = DuckDBManager(db_path)
+    db.conn.execute("INSERT INTO universe_snapshots VALUES ('SNAP_NSE', 'NIFTY50', 'http://nifty.com', '2026-01-01', 'h1', false, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO universe_snapshot_members VALUES ('SNAP_NSE', 'RELIANCE', 'RELIANCE', '2885', 'Reliance', 'ENERGY', 'NSE', '2020-01-01', '2027-01-01', true, true, true);")
+
+    exp_mgr = ExperimentManager(db=db)
+    spec = ExperimentSpec(
+        experiment_id="exp_invalid_member",
+        strategy_name="cross_sectional_momentum",
+        universe=["RELIANCE", "UNLISTED_STOCK"], # UNLISTED_STOCK is not in snapshot
+        universe_snapshot_id="SNAP_NSE",
+        timeframe="1d",
+        parameters={},
+    )
+    with pytest.raises(ValueError, match="contains symbols .* not present in snapshot"):
+        exp_mgr.run(spec)

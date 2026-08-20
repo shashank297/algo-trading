@@ -142,9 +142,18 @@ class ResearchPlatformTests(unittest.TestCase):
 
     def test_risk_policy_returns_pass_modify_and_reject(self) -> None:
         engine = RiskEngine(RiskPolicy())
-        passed = engine.evaluate(TradeProposal(symbol="NIFTY", requested_notional=1_000, capital=100_000))
-        modified = engine.evaluate(TradeProposal(symbol="NIFTY", requested_notional=10_000, capital=100_000))
-        rejected = engine.evaluate(TradeProposal(symbol="NIFTY", requested_notional=1_000, capital=100_000, daily_pnl=-1_000))
+        base_state = {
+            "current_gross_exposure": 0.0,
+            "current_sector_exposure": 0.0,
+            "daily_pnl": 0.0,
+            "current_drawdown": 0.0,
+            "open_position_count": 0,
+            "daily_turnover_crore": 10.0,
+            "estimated_portfolio_var_pct": 0.01,
+        }
+        passed = engine.evaluate(TradeProposal(symbol="NIFTY", requested_notional=1_000, capital=100_000, **base_state))
+        modified = engine.evaluate(TradeProposal(symbol="NIFTY", requested_notional=10_000, capital=100_000, **base_state))
+        rejected = engine.evaluate(TradeProposal(symbol="NIFTY", requested_notional=1_000, capital=100_000, **{**base_state, "daily_pnl": -1_000}))
 
         self.assertEqual(passed.action.value, "PASS")
         self.assertEqual(modified.action.value, "MODIFY")
