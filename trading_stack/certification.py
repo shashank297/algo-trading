@@ -112,12 +112,6 @@ class RunCertificationService:
             lineage_status = "FAIL"
             lineage_details["error"] = str(exc)
 
-        evidence_records.append({
-            "category": "DATA_LINEAGE",
-            "status": lineage_status,
-            "evidence": lineage_details,
-        })
-
         # A run must point to the exact transformed frame it consumed.
         frame_status = "PASS"
         frame_details: dict[str, Any] = {}
@@ -142,6 +136,11 @@ class RunCertificationService:
         if lineage_status == "PASS" and frame_status == "FAIL":
             lineage_status = "FAIL"
             lineage_details["frame_certification"] = frame_details
+        evidence_records.append({
+            "category": "DATA_LINEAGE",
+            "status": lineage_status,
+            "evidence": lineage_details,
+        })
 
         # 2. DATA_QUALITY
         dq_status = "PASS"
