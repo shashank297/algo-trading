@@ -20,6 +20,7 @@ logs/
 backups/
 reports/*.html
 reports/*.png
+reports/*.csv
 *.log
 
 # Caches & Test Artifacts
