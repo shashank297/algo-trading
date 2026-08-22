@@ -129,6 +129,7 @@ def test_p0_2_anti_lookahead_future_volume_mutation():
         panel = pd.DataFrame(rows_a)
         universe_snapshot_id = "TEST"
         survivorship_bias = False
+        frame_certification_id = None
 
     result_a = backtester.run(strategy, MockDatasetA(), starting_capital=100_000.0)
 
@@ -145,6 +146,7 @@ def test_p0_2_anti_lookahead_future_volume_mutation():
         panel = pd.DataFrame(rows_b)
         universe_snapshot_id = "TEST"
         survivorship_bias = False
+        frame_certification_id = None
 
     result_b = backtester.run(strategy, MockDatasetB(), starting_capital=100_000.0)
 

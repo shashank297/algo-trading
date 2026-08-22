@@ -37,12 +37,12 @@ The deterministic research and paper execution stack is operational with compreh
 
 - **Verified Commit A SHA**: `4af6964d977d128661dd7ce5697fac95c5c2fc67`
 - **Audit Completion**: All 25 architectural findings (P0-1 to P2-25) and 15 operational invariants (E-1 to E-15) verified and signed off.
-- **Deterministic Test Suite**: 269 passed tests across the repository.
+- **Deterministic Test Suite**: 290 passed tests across the repository.
 - **Global Test Coverage**: 80% repository-wide line coverage meeting CI gating criteria.
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-269 passed in test suite
+290 passed in test suite
 
 .\venv\Scripts\coverage.exe report
 TOTAL: 80% line coverage

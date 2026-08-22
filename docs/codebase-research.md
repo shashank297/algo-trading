@@ -45,9 +45,9 @@ This document provides a comprehensive analysis of the algorithmic trading platf
   - `OPENAI_API_KEY`.
 
 ## 8. Tests
-- Extensive suite located in `tests/` with **101 tests** passing locally. 
+- Extensive suite located in `tests/` with **290 tests** passing locally.
 - Fully deterministic: external broker and LLM calls are heavily mocked.
-- Strong coverage (78% branch coverage) enforced by Pytest and CI workflows.
+- 80% line coverage enforced by Pytest and CI workflows (see `docs/production_readiness.md` for the authoritative figure).
 
 ## 9. Deployment Setup
 - The system is designed for **local-first** execution. There is no distributed infrastructure, no Kubernetes, and no cloud-hosted deployment.
@@ -69,7 +69,7 @@ This document provides a comprehensive analysis of the algorithmic trading platf
 - **Truncated Data**: Angel One minute data explicitly cuts off at 15:28 instead of 15:30.
 
 ## 13. Technical Debt
-- Prices are completely **unadjusted** for corporate actions (splits, dividends), skewing long-term backtest reality.
+- Corporate-actions adjustment (splits/dividends) is now implemented in `data_platform/adjustments.py` per `specs/007-corporate-actions-engine/`; this note previously said prices were completely unadjusted, which is stale — confirm end-to-end wiring into the live backtest path before relying on it for older strategies.
 - Missing immutable lineage (hashes) for legacy candles ingested before the latest data platform upgrade.
 - Lack of independent broker sandbox/streaming data for the paper trading engine to reconcile against.
 
@@ -87,8 +87,10 @@ This document provides a comprehensive analysis of the algorithmic trading platf
 - **Mass Research Engine**: Multi-strategy event-driven pipelines work but lack thorough compute profiling for massive walk-forward matrices.
 
 ### Incomplete
-- **Corporate Actions**: Complete lack of split/dividend adjustment capability.
 - **Paper Trading Reconciliation**: `paper.py` works mathematically against the DuckDB cache, but lacks independent live-broker sandbox reconciliation.
+
+### Stable (moved from Incomplete)
+- **Corporate Actions**: `data_platform/adjustments.py` plus `specs/007-corporate-actions-engine/` now provide split/dividend adjustment; re-verify full wiring into every backtest path before treating it as fully authoritative for pre-adjustment-era strategies.
 
 ### Unused
 - **Live Trading Capabilities**: Intentionally unused/disabled. The platform cannot execute real trades and has no live routing integrations by design.

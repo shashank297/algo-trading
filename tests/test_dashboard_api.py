@@ -13,8 +13,35 @@ def client():
     return TestClient(app)
 
 
-def test_dashboard_api_routes(client):
+def test_dashboard_api_routes(client, monkeypatch, tmp_path):
     """Test standard dashboard endpoints."""
+    import duckdb
+    from tools.dashboard.api import main as api_main
+
+    # These endpoints require a real DuckDB file with the dashboard schema present;
+    # point DB_PATH at a fresh, empty-but-schema-valid database for this test instead
+    # of depending on a market_data.duckdb that may not exist in a clean checkout/CI run.
+    db_path = tmp_path / "dashboard_routes_test.duckdb"
+    conn = duckdb.connect(str(db_path))
+    conn.execute("""
+        CREATE TABLE strategy_runs (
+            run_id VARCHAR PRIMARY KEY,
+            strategy_name VARCHAR,
+            symbol VARCHAR,
+            mode VARCHAR,
+            started_at TIMESTAMPTZ,
+            status VARCHAR,
+            starting_capital DOUBLE
+        );
+        CREATE TABLE strategy_metrics (
+            run_id VARCHAR,
+            metric_name VARCHAR,
+            metric_value DOUBLE
+        );
+    """)
+    conn.close()
+    monkeypatch.setattr(api_main, "DB_PATH", db_path)
+
     # Test runs endpoint
     resp = client.get("/api/runs")
     assert resp.status_code == 200

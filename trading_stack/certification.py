@@ -180,14 +180,14 @@ class RunCertificationService:
                 else:
                     target_dataset_ids = frame_dataset_ids
                     if not target_dataset_ids:
-                        target_dataset_ids = [
-                            str(row[0]) for row in (
-                                self.db.conn.execute(
-                                    "SELECT dataset_id FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
-                                    [sym, sym, timeframe],
-                                ).fetchone(),
-                            ) if row
-                        ]
+                        target_dataset_ids = []
+                        for sym in symbols:
+                            row = self.db.conn.execute(
+                                "SELECT dataset_id FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
+                                [sym, sym, timeframe],
+                            ).fetchone()
+                            if row:
+                                target_dataset_ids.append(str(row[0]))
                     for dataset_id in target_dataset_ids:
                         ds = self.db.conn.execute(
                             "SELECT dataset_id FROM market_datasets WHERE dataset_id = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED'",
