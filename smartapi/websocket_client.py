@@ -123,11 +123,12 @@ class SmartAPIWebSocketClient:
 
     def reanchor_stream(self, exchange: str, token: str, baseline_seq: int | None = None) -> None:
         """Authoritatively re-anchor stream baseline following snapshot resync."""
-        if baseline_seq is not None:
-            self.metrics.sequence_tracker.reanchor(exchange, token, baseline_seq)
-            # Also reanchor under prefix variants
-            for ex in ["NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"]:
-                self.metrics.sequence_tracker.reanchor(ex, token, baseline_seq)
+        if baseline_seq is None or baseline_seq < 0:
+            raise ValueError("Authoritative stream re-anchor requires a non-negative sequence baseline.")
+        self.metrics.sequence_tracker.reanchor(exchange, token, baseline_seq)
+        # Also reanchor under prefix variants
+        for ex in ["NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"]:
+            self.metrics.sequence_tracker.reanchor(ex, token, baseline_seq)
 
         keys_to_remove = [
             k for k in self._degraded_tokens

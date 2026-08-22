@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import uuid
 from dataclasses import dataclass, field, fields
 from threading import Lock
 from typing import Any, ClassVar
@@ -52,6 +53,7 @@ class ResearchDataset:
     canonical_basis: str = "SPLIT_ADJUSTED"
     research_basis: str = "SPLIT_ADJUSTED"
     corporate_action_version: str = "v1"
+    frame_certification_id: str | None = None
 
     @property
     def data_hash(self) -> str:
@@ -359,7 +361,7 @@ class SynchronizedPanelBuilder:
             timeframe=timeframe,
             survivorship_bias=survivorship_bias,
         ).info("panel_build_finished")
-        return ResearchDataset(
+        result = ResearchDataset(
             universe_snapshot_id=universe_snapshot_id,
             dataset_snapshot_ids=dataset_ids,
             panel=panel,
@@ -374,6 +376,33 @@ class SynchronizedPanelBuilder:
             research_basis=resolved_adjustment,
             corporate_action_version="v1",
         )
+        if self.require_authoritative_certification:
+            contributing_ids = [value for value in dataset_ids.values() if value]
+            if resolved_benchmark:
+                benchmark_dataset_id = self._latest_dataset_id(resolved_benchmark, timeframe)
+                if benchmark_dataset_id:
+                    contributing_ids.append(benchmark_dataset_id)
+            frame_certification_id = str(uuid.uuid4())
+            self.db.conn.execute(
+                """INSERT INTO research_frame_certifications (
+                       frame_certification_id, research_frame_hash, contributing_dataset_ids_json,
+                       symbol, timeframe, row_count, basis, validator_version, status, verified_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CERTIFIED', CURRENT_TIMESTAMP)""",
+                [
+                    frame_certification_id,
+                    result.data_hash,
+                    json.dumps(sorted(set(contributing_ids))),
+                    f"PORTFOLIO:{universe_snapshot_id}",
+                    timeframe,
+                    len(panel),
+                    resolved_adjustment,
+                    "validator-v1",
+                ],
+            )
+            result = ResearchDataset(
+                **{**result.__dict__, "frame_certification_id": frame_certification_id}
+            )
+        return result
 
     def _resolve_benchmark(self, symbol: str | None, timeframe: str) -> tuple[str | None, str | None]:
         if not symbol:

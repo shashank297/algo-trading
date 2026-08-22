@@ -9,6 +9,7 @@ import concurrent.futures
 import argparse
 import hashlib
 import json
+import uuid
 from collections import Counter
 from datetime import date, datetime, time as time_value, timedelta
 from pathlib import Path
@@ -507,6 +508,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         capture_raw_packets=True,
     )
     db_writer.start()
+    stream_db = DuckDBManager(db_path)
 
     client = SmartAPIWebSocketClient(
         auth=auth,
@@ -517,6 +519,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     client.configure_quarantine_store(db_path)
 
     aggregator = RealtimeBarAggregator(timeframe="1m", market_calendar=calendar)
+    aggregator.load_unresolved_gaps(stream_db)
 
     latest_ticks: dict[str, Any] = {}
     ticks_lock = threading.Lock()
@@ -541,6 +544,40 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
             bar.timestamp.strftime("%H:%M:%S"),
         )
 
+    def on_stream_degraded(
+        exchange: str,
+        token: str,
+        symbol: str,
+        gap: tuple[datetime, datetime | None],
+        epoch: int,
+    ) -> None:
+        start_time, end_time = gap
+        aggregator.mark_untrusted(symbol, start_time, end_time)
+        stream_db.conn.execute(
+            """INSERT INTO stream_gap_events
+               (gap_id, exchange, token, symbol, start_time, end_time, gap_size, epoch, status)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNREPAIRED')""",
+            [str(uuid.uuid4()), exchange, token, symbol, start_time, end_time, 1, epoch],
+        )
+
+    def on_gap_repaired(exchange: str, token: str, symbol: str, gap_id: str) -> None:
+        stream_db.conn.execute(
+            "UPDATE stream_gap_events SET status = 'REPAIRED' WHERE gap_id = ? AND exchange = ? AND token = ?",
+            [gap_id, exchange, token],
+        )
+
+    def on_stream_reanchored(exchange: str, token: str, symbol: str, epoch: int) -> None:
+        logger.info(
+            "Stream re-anchored for exchange={} token={} symbol={} epoch={}",
+            exchange,
+            token,
+            symbol,
+            epoch,
+        )
+
+    client.on_stream_degraded = on_stream_degraded
+    client.on_stream_reanchored = on_stream_reanchored
+    client.on_gap_repaired = on_gap_repaired
     client.subscribe_tick(on_tick)
     aggregator.subscribe_bar(on_bar)
 
@@ -567,7 +604,12 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     try:
         start_time = time.time()
         last_render_time = time.time()
-        while client.state in (ConnectionState.CONNECTED, ConnectionState.CONNECTING, ConnectionState.RECONNECTING):
+        while client.state in (
+            ConnectionState.CONNECTED,
+            ConnectionState.CONNECTING,
+            ConnectionState.DEGRADED,
+            ConnectionState.RECONNECTING,
+        ):
             if args.duration_seconds and (time.time() - start_time) >= args.duration_seconds:
                 logger.info("Duration reached ({}s). Stopping stream.", args.duration_seconds)
                 break
@@ -602,6 +644,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         client.stop()
         aggregator.close_elapsed_windows()
         db_writer.stop()
+        stream_db.close()
 
     return 0
 

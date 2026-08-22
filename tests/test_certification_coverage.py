@@ -51,7 +51,7 @@ def test_portfolio_certification_fails_without_snapshot_evidence(tmp_path):
 def test_portfolio_certification_checks_members_dq_and_pit(tmp_path):
     db = DuckDBManager(str(tmp_path / "portfolio-cert-checks.duckdb"))
     try:
-        seed_run(db, "portfolio-run", "PORTFOLIO:SNAP")
+        seed_run(db, "portfolio-run", "PORTFOLIO:SNAP", '{"frame_certification_id":"frame"}')
         db.conn.execute(
             "INSERT INTO universe_snapshots VALUES ('SNAP', 'TEST', 'source', '2026-01-01', 'hash', false, CURRENT_TIMESTAMP)"
         )
@@ -67,11 +67,14 @@ def test_portfolio_certification_checks_members_dq_and_pit(tmp_path):
         db.conn.execute(
             "INSERT INTO data_quality_certifications VALUES ('cert', 'ds', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
+        db.conn.execute(
+            "INSERT INTO research_frame_certifications (frame_certification_id, research_frame_hash, contributing_dataset_ids_json, symbol, timeframe, row_count, basis, validator_version, status, verified_at) VALUES ('frame', 'hash', '[\"ds\"]', 'PORTFOLIO:SNAP', '1d', 1, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP)"
+        )
         bundle_id = RunCertificationService(db).certify("portfolio-run")
         statuses = dict(db.conn.execute(
             "SELECT category, status FROM run_certifications WHERE bundle_id = ?", [bundle_id]
         ).fetchall())
-        assert statuses["DATA_LINEAGE"] == "FAIL"
+        assert statuses["DATA_LINEAGE"] == "PASS"
         assert statuses["DATA_QUALITY"] == "PASS"
         assert statuses["PIT_SURVIVORSHIP"] == "PASS"
     finally:

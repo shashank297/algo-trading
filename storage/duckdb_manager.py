@@ -581,7 +581,7 @@ class DuckDBManager:
         if dataset_row and dataset_row[0]:
             checks_payload["dataset_content_hash"] = str(dataset_row[0])
             checks_json = json.dumps(checks_payload, sort_keys=True)
-        with self._write_lock:
+        with self.transaction():
             with self.conn.cursor() as cur:
                 cur.execute(
                     """

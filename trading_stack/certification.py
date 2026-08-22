@@ -51,6 +51,17 @@ class RunCertificationService:
         except json.JSONDecodeError:
             run_metadata = {}
         frame_certification_id = run_metadata.get("frame_certification_id")
+        frame_dataset_ids: list[str] = []
+        if frame_certification_id:
+            frame_dataset_row = self.db.conn.execute(
+                "SELECT contributing_dataset_ids_json FROM research_frame_certifications WHERE frame_certification_id = ?",
+                [frame_certification_id],
+            ).fetchone()
+            if frame_dataset_row and frame_dataset_row[0]:
+                try:
+                    frame_dataset_ids = [str(value) for value in json.loads(frame_dataset_row[0]) if value]
+                except (TypeError, json.JSONDecodeError):
+                    frame_dataset_ids = []
 
         bundle_id = str(uuid.uuid4())
         now_utc = datetime.now(timezone.utc)
@@ -72,14 +83,25 @@ class RunCertificationService:
                 else:
                     symbols = [str(r[0]) for r in member_rows if r[0]]
                     lineage_details["constituent_count"] = len(symbols)
-                    for sym in symbols:
-                        ds = self.db.conn.execute(
-                            "SELECT dataset_id, status, lifecycle_status FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
+                    dataset_rows = [
+                        (dataset_id,)
+                        for dataset_id in frame_dataset_ids
+                    ] if frame_dataset_ids else [
+                        self.db.conn.execute(
+                            "SELECT dataset_id FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
                             [sym, sym, timeframe],
                         ).fetchone()
-                        if not ds:
+                        for sym in symbols
+                    ]
+                    for dataset_row in dataset_rows:
+                        ds_id = str(dataset_row[0]) if dataset_row else ""
+                        ds = self.db.conn.execute(
+                            "SELECT dataset_id, status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
+                            [ds_id],
+                        ).fetchone() if ds_id else None
+                        if not ds or ds[1] != "VERIFIED" or ds[2] != "CANONICAL_PROMOTED":
                             lineage_status = "FAIL"
-                            lineage_details["missing_canonical_dataset"] = sym
+                            lineage_details["unverified_dataset"] = ds_id
                             break
             else:
                 ds_rows = self.db.conn.execute(
@@ -156,14 +178,24 @@ class RunCertificationService:
                     dq_status = "FAIL"
                     dq_details["reason"] = f"No members for snapshot {snap_id}"
                 else:
-                    for sym in symbols:
+                    target_dataset_ids = frame_dataset_ids
+                    if not target_dataset_ids:
+                        target_dataset_ids = [
+                            str(row[0]) for row in (
+                                self.db.conn.execute(
+                                    "SELECT dataset_id FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
+                                    [sym, sym, timeframe],
+                                ).fetchone(),
+                            ) if row
+                        ]
+                    for dataset_id in target_dataset_ids:
                         ds = self.db.conn.execute(
-                            "SELECT dataset_id FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
-                            [sym, sym, timeframe],
+                            "SELECT dataset_id FROM market_datasets WHERE dataset_id = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED'",
+                            [dataset_id],
                         ).fetchone()
                         if not ds:
                             dq_status = "FAIL"
-                            dq_details["missing_dataset"] = sym
+                            dq_details["missing_dataset"] = dataset_id
                             break
                         cert = self.db.conn.execute(
                             "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",

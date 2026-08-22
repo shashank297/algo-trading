@@ -228,7 +228,10 @@ class PortfolioEventBacktester:
             symbol=f"PORTFOLIO:{dataset.universe_snapshot_id}", timeframe=timeframe, mode=mode,
             parameters=effective_parameters, data_hash=dataset.data_hash, metrics=metrics,
             signals=signals, orders=orders_frame, fills=fills_frame, equity_curve=curve,
-            notes="Current-constituent universe may contain survivorship bias." if dataset.survivorship_bias else None,
+            notes=json.dumps({
+                "frame_certification_id": dataset.frame_certification_id,
+                "survivorship_bias": dataset.survivorship_bias,
+            }, sort_keys=True),
         )
         logger.bind(
             event="portfolio_replay_finished",
@@ -305,7 +308,7 @@ class PortfolioEventBacktester:
             if observation is not None and hasattr(observation, "price"):
                 if getattr(observation, "quality_state", "TRUSTED") == "TRUSTED" and float(observation.price) > 0:
                     base_price = float(observation.price)
-                    execution_timestamp = pd.Timestamp(observation.timestamp)
+                    execution_timestamp = pd.Timestamp(observation.received_at_utc)
                     source_seq = getattr(observation, "sequence_number", None)
                     execution_source = "OBSERVED_TICK"
                 else:
