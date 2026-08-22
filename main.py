@@ -550,7 +550,9 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         symbols_to_stream = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     elif args.universe_snapshot:
         db = DuckDBManager(db_path)
-        symbols_to_stream = load_universe_snapshot_symbols(db, args.universe_snapshot)
+        symbols_to_stream = [
+            entry["symbol"] for entry in load_universe_snapshot_symbols(db, args.universe_snapshot)
+        ]
         if not symbols_to_stream:
             raise ValueError(f"Universe snapshot '{args.universe_snapshot}' could not be resolved from database.")
     if not symbols_to_stream:

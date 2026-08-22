@@ -18,12 +18,8 @@ from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.datasets import SynchronizedPanelBuilder
 from trading_stack.domain import (
-    AssetClass,
-    ExecutionMode,
     OpeningTickObservation,
     PaperExecutionMode,
-    StrategyMetadata,
-    StrategyScope,
 )
 from trading_stack.portfolio import PortfolioEventBacktester
 from trading_stack.strategies import StrategyRegistry
@@ -56,11 +52,13 @@ class ForwardPortfolioPaperSessionEngine:
         calendar: MarketCalendar,
         risk_engine: RiskEngine,
         cost_schedule: IndianDeliveryCostSchedule | None = None,
+        require_authoritative_certification: bool = True,
     ) -> None:
         self.db = db
         self.calendar = calendar
         self.risk_engine = risk_engine
         self.cost_schedule = cost_schedule or IndianDeliveryCostSchedule()
+        self.require_authoritative_certification = require_authoritative_certification
         self.backtester = PortfolioEventBacktester(
             self.cost_schedule,
             max_position_weight=risk_engine.policy.max_position_pct,
@@ -91,7 +89,10 @@ class ForwardPortfolioPaperSessionEngine:
         strategy = StrategyRegistry.create(strategy_name, **parameters)
         req_lookback = int(parameters.get("long_lookback", strategy.metadata.required_lookback))
         dataset = SynchronizedPanelBuilder(
-            self.db, calendar=self.calendar, strict_calendar=True,
+            self.db,
+            calendar=self.calendar,
+            strict_calendar=True,
+            require_authoritative_certification=self.require_authoritative_certification,
         ).build(
             symbols, timeframe, universe_snapshot_id=universe_snapshot_id,
             benchmark_symbol=benchmark_symbol, minimum_lookback=req_lookback,

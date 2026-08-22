@@ -274,17 +274,17 @@ class ForwardPaperSessionEngine:
             if obs is not None and hasattr(obs, "price"):
                 if getattr(obs, "quality_state", "TRUSTED") == "TRUSTED" and float(obs.price) > 0:
                     price = float(obs.price)
-                    execution_timestamp = pd.Timestamp(obs.timestamp).to_pydatetime()
+                    execution_timestamp = pd.Timestamp(
+                        getattr(obs, "received_at_utc", None) or getattr(obs, "timestamp", None)
+                    ).to_pydatetime()
                     source_seq = getattr(obs, "sequence_number", None)
                     execution_source = "OBSERVED_TICK"
                 else:
-                    price = float(bar.get("open") or bar.get("close") or 1.0)
-                    execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
                     rejected_order = {
                         "order_id": str(uuid.uuid4()), "run_id": session_id, "symbol": symbol,
                         "side": (OrderSide.BUY if float(pending.get("target_position", 0.0)) > 0 else OrderSide.SELL).value,
                         "quantity": 0.0, "order_type": "MARKET", "time_in_force": "DAY",
-                        "status": "REJECTED", "requested_at": execution_timestamp, "filled_at": None,
+                        "status": "REJECTED", "requested_at": pd.Timestamp(bar["timestamp"]).to_pydatetime(), "filled_at": None,
                         "limit_price": None, "stop_price": None, "average_fill_price": None,
                         "slippage_bps": 0.0, "fees": 0.0,
                         "metadata_json": json.dumps({"reason": pending.get("reason", "signal"), "rejection_reason": "MISSED_LIVE_OPEN_PRICE", "execution_mode": execution_mode, "execution_source": "UNAVAILABLE"}),
@@ -292,17 +292,17 @@ class ForwardPaperSessionEngine:
                     return (cash, quantity, average_cost, entry_timestamp, entry_reason, entry_cost_pool, entry_execution_cost_pool, rejected_order, None, None, None, None)
             elif bar.get("open_tick_price") is not None and float(bar["open_tick_price"]) > 0:
                 price = float(bar["open_tick_price"])
-                execution_timestamp = pd.Timestamp(bar.get("open_tick_timestamp") or bar["timestamp"]).to_pydatetime()
+                execution_timestamp = pd.Timestamp(
+                    bar.get("open_tick_timestamp") or bar["timestamp"]
+                ).to_pydatetime()
                 source_seq = bar.get("source_sequence_number")
                 execution_source = "OBSERVED_TICK"
             else:
-                price = float(bar.get("open") or bar.get("close") or 1.0)
-                execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
                 rejected_order = {
                     "order_id": str(uuid.uuid4()), "run_id": session_id, "symbol": symbol,
                     "side": (OrderSide.BUY if float(pending.get("target_position", 0.0)) > 0 else OrderSide.SELL).value,
                     "quantity": 0.0, "order_type": "MARKET", "time_in_force": "DAY",
-                    "status": "REJECTED", "requested_at": execution_timestamp, "filled_at": None,
+                    "status": "REJECTED", "requested_at": pd.Timestamp(bar["timestamp"]).to_pydatetime(), "filled_at": None,
                     "limit_price": None, "stop_price": None, "average_fill_price": None,
                     "slippage_bps": 0.0, "fees": 0.0,
                     "metadata_json": json.dumps({"reason": pending.get("reason", "signal"), "rejection_reason": "MISSED_LIVE_OPEN_PRICE", "execution_mode": execution_mode, "execution_source": "UNAVAILABLE"}),
@@ -362,7 +362,12 @@ class ForwardPaperSessionEngine:
         execution = broker.execute_order(
             run_id=session_id, symbol=symbol, side=side, quantity=abs(delta) if abs(delta) >= 1 else abs(requested_delta),
             price=price, timestamp=execution_timestamp,
-            metadata={"signal_timestamp": str(pending["signal_timestamp"]), "reason": pending.get("reason", "signal")},
+            metadata={
+                "signal_timestamp": str(pending["signal_timestamp"]),
+                "reason": pending.get("reason", "signal"),
+                "execution_source": execution_source,
+                "source_sequence_number": source_seq,
+            },
             risk_decision=decision,
             volume=float(bar.get("lagged_adv20") or bar.get("prior_volume") or bar.get("volume") or 0.0),
             close_price=float(bar.get("prior_close") or bar.get("open") or price),

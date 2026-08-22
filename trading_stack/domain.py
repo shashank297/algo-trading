@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from enum import Enum
+import math
 from typing import Any
 
 import pandas as pd
@@ -47,9 +48,35 @@ class OpeningTickObservation:
     exchange: str
     token: str
     price: float
-    timestamp: datetime
+    exchange_timestamp: datetime | None = None
+    received_at_utc: datetime | None = None
+    timestamp: datetime | None = None
     sequence_number: int | None = None
     quality_state: str = "TRUSTED"
+
+    def __post_init__(self) -> None:
+        if not self.symbol.strip() or not self.exchange.strip() or not self.token.strip():
+            raise ValueError("Opening tick observations require non-empty symbol, exchange, and token.")
+        if not math.isfinite(self.price) or self.price <= 0:
+            raise ValueError("Opening tick price must be finite and greater than zero.")
+        ts = self.exchange_timestamp or self.timestamp
+        if ts is None:
+            raise ValueError("Opening tick observations require an exchange timestamp.")
+        if ts.tzinfo is None or ts.utcoffset() is None:
+            raise ValueError("Opening tick exchange timestamp must be timezone-aware.")
+        received = self.received_at_utc or ts
+        if received.tzinfo is None or received.utcoffset() is None:
+            raise ValueError("Opening tick receipt timestamp must be timezone-aware.")
+        if received < ts:
+            raise ValueError("Opening tick receipt time cannot precede exchange event time.")
+        if self.sequence_number is not None and self.sequence_number < 0:
+            raise ValueError("Opening tick sequence number cannot be negative.")
+        if self.exchange_timestamp is None:
+            object.__setattr__(self, "exchange_timestamp", ts)
+        if self.timestamp is None:
+            object.__setattr__(self, "timestamp", ts)
+        if self.received_at_utc is None:
+            object.__setattr__(self, "received_at_utc", received)
 
 
 @dataclass(frozen=True)

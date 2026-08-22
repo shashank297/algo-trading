@@ -15,6 +15,7 @@ ignore_missing_imports = true
 follow_imports = "silent"
 check_untyped_defs = true
 warn_unused_ignores = true
+explicit_package_bases = true
 exclude = "^(venv|logs|reports|data|tests)/"
 
 [tool.coverage.run]

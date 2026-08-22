@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Any, List, Optional
 import duckdb
 import pandas as pd
 from pathlib import Path
@@ -9,7 +9,7 @@ import time
 from functools import wraps
 
 def ttl_cache(ttl_seconds: int = 30):
-    cache = {}
+    cache: dict[str, tuple[Any, float]] = {}
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):

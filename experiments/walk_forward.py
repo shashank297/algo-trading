@@ -113,7 +113,10 @@ class WalkForwardEvaluator:
     def _source(self, spec: ExperimentSpec, scope: StrategyScope, lookback: int) -> ResearchDataset:
         if scope == StrategyScope.CROSS_SECTIONAL:
             return SynchronizedPanelBuilder(
-                self.db, calendar=self.india_calendar, strict_calendar=self.india_calendar is not None,
+                self.db,
+                calendar=self.india_calendar,
+                strict_calendar=self.india_calendar is not None,
+                require_authoritative_certification=spec.require_authoritative_certification,
             ).build(
                 spec.universe,
                 spec.timeframe,

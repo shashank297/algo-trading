@@ -8,25 +8,29 @@ from datetime import datetime, timezone
 from enum import Enum
 
 import math
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, StrictInt, field_validator
 
 from data_platform.contracts import OrderSide
 
 
 class RiskAction(str, Enum):
+    """The outcome of an independent risk assessment."""
+
     PASS = "PASS"
     MODIFY = "MODIFY"
+    RESIZE = "RESIZE"
     REJECT = "REJECT"
 
 
 class RiskPolicy(BaseModel):
-    """Conservative limits used unless the operator explicitly changes config."""
+    """Declarative safety parameters applied to every execution proposal."""
 
-    max_position_pct: float = Field(default=0.05, gt=0, le=1)
-    max_gross_exposure_pct: float = Field(default=0.20, gt=0, le=1)
-    max_sector_exposure_pct: float = Field(default=0.20, gt=0, le=1)
-    max_daily_loss_pct: float = Field(default=0.01, gt=0, le=1)
-    max_drawdown_pct: float = Field(default=0.05, gt=0, le=1)
+    max_position_pct: float = Field(default=0.20, gt=0, le=1)
+    max_gross_exposure_pct: float = Field(default=1.00, gt=0, le=3)
+    max_daily_loss_pct: float = Field(default=0.03, gt=0, le=1)
+    max_drawdown_pct: float = Field(default=0.15, gt=0, le=1)
+    max_sector_exposure_pct: float = Field(default=0.40, gt=0, le=1)
+
     # New production-grade limits
     max_open_positions: int = Field(default=20, ge=1, le=500)
     max_var_pct: float = Field(default=0.02, gt=0, le=1)  # Max 2% daily portfolio VaR at 95%
@@ -47,14 +51,20 @@ class TradeProposal(BaseModel):
     daily_pnl: float | None = None
     current_drawdown: float | None = None
     stop_loss_pct: float | None = None
-    open_position_count: int | None = None
+    open_position_count: StrictInt | None = None
     daily_turnover_crore: float | None = None
     estimated_portfolio_var_pct: float | None = None
 
-    @field_validator("requested_notional", "capital", "current_position_notional")
+    @field_validator(
+        "requested_notional", "capital", "current_position_notional",
+        "current_gross_exposure", "current_sector_exposure", "daily_pnl",
+        "current_drawdown", "daily_turnover_crore", "estimated_portfolio_var_pct",
+        "stop_loss_pct",
+        mode="before"
+    )
     @classmethod
-    def validate_finite_numbers(cls, value: float) -> float:
-        if not math.isfinite(value):
+    def validate_finite_numbers(cls, value: float | None) -> float | None:
+        if value is not None and isinstance(value, (int, float)) and not math.isfinite(value):
             raise ValueError(f"Value must be a finite number, got {value}")
         return value
 

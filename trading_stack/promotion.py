@@ -76,7 +76,7 @@ class PromotionEngine:
         from trading_stack.certification import RunCertificationService
         if not certification_bundle_id:
             bundle_row = self.db.conn.execute(
-                "SELECT bundle_id FROM run_certifications WHERE run_id = ? ORDER BY certified_at DESC LIMIT 1",
+                "SELECT bundle_id FROM run_certification_bundles WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
                 [run_id],
             ).fetchone()
             if bundle_row:
@@ -88,6 +88,10 @@ class PromotionEngine:
             "SELECT category, status FROM run_certifications WHERE bundle_id = ? AND run_id = ?",
             [certification_bundle_id, run_id],
         ).fetchall()
+        if {str(row[0]) for row in cert_rows} != {
+            "DATA_LINEAGE", "DATA_QUALITY", "CAUSALITY", "PIT_SURVIVORSHIP", "OOS_WALK_FORWARD",
+        }:
+            raise RuntimeError(f"Certification bundle {certification_bundle_id} is incomplete for run {run_id}.")
         cert_map = {str(row[0]): str(row[1]) for row in cert_rows}
 
         lineage_certified = (cert_map.get("DATA_LINEAGE") == "PASS")
@@ -133,7 +137,7 @@ class PromotionEngine:
             "profit_factor": metrics.get("profit_factor", 0.0) >= self.policy.minimum_profit_factor,
             "drawdown": abs(metrics.get("max_drawdown", 1.0)) <= self.policy.maximum_drawdown,
             "trades": metrics.get("trades", 0.0) >= self.policy.minimum_trades,
-            "out_of_sample": evidence > 0,
+            "out_of_sample": evidence > 0 and oos_certified,
             "walk_forward_metrics": bool(metrics),
             "minimum_folds": len(fold_rows) >= self.policy.minimum_walk_forward_folds,
             "fold_consistency": positive_fold_fraction >= self.policy.minimum_positive_fold_fraction,

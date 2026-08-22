@@ -54,12 +54,22 @@ class MigrationRunner:
                     continue
 
                 logger.info("Applying migration {}", version)
-                self.conn.execute(sql_content)
-                self.conn.execute(
-                    "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)",
-                    [version, datetime.now(timezone.utc), checksum],
-                )
-                applied_now.append(version)
+                try:
+                    self.conn.execute("BEGIN TRANSACTION;")
+                    self.conn.execute(sql_content)
+                    self.conn.execute(
+                        "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)",
+                        [version, datetime.now(timezone.utc), checksum],
+                    )
+                    self.conn.execute("COMMIT;")
+                    applied_now.append(version)
+                except Exception as exc:
+                    try:
+                        self.conn.execute("ROLLBACK;")
+                    except Exception:
+                        pass
+                    logger.error("Failed to apply migration {}: {}", version, exc)
+                    raise RuntimeError(f"Failed to apply migration {version}: {exc}") from exc
             return applied_now
         finally:
             if self._owns_conn:

@@ -12,10 +12,10 @@ from data_platform.contracts import PriceAdjustment
 from storage.duckdb_manager import DuckDBManager
 from risk.engine import RiskEngine
 from risk.models import RiskAction, RiskDecision, TradeProposal
-from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, PaperBroker, VectorizedBacktester
+from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, VectorizedBacktester
 from trading_stack.calendars import MarketCalendar, build_default_calendars
 from trading_stack.costs import IndianDeliveryCostSchedule
-from trading_stack.domain import AssetClass, PaperExecutionMode, StrategyScope, infer_asset_class
+from trading_stack.domain import AssetClass, OpeningTickObservation, PaperExecutionMode, StrategyScope, infer_asset_class
 from trading_stack.features import FeatureFactory
 from trading_stack.strategies import StrategyRegistry
 from trading_stack.paper import ForwardPaperSessionEngine
@@ -48,9 +48,9 @@ class StrategyPipeline:
         risk_engine: RiskEngine | None = None,
         strict_calendar: bool = False,
         india_calendar: MarketCalendar | None = None,
-        require_authoritative_certification: bool = False,
+        require_authoritative_certification: bool = True,
     ) -> None:
-        self.db = db or DuckDBManager()
+        self.db = db or DuckDBManager("market_data.duckdb")
         self.calendars = build_default_calendars()
         if india_calendar is not None:
             self.calendars[AssetClass.INDIA_EQUITY] = india_calendar
@@ -62,6 +62,7 @@ class StrategyPipeline:
         self.risk_engine = risk_engine or RiskEngine()
         self.promotion_engine = PromotionEngine(self.db)
         self.require_authoritative_certification = require_authoritative_certification
+        self._last_frame_certification_id: str | None = None
         self.vector_backtester = VectorizedBacktester()
         self.event_backtester = EventDrivenBacktester()
 
@@ -89,6 +90,13 @@ class StrategyPipeline:
         if frame.empty:
             raise ValueError(f"No stored candles found for {symbol} {timeframe}")
 
+        adj_enum = (
+            adjustment if isinstance(adjustment, PriceAdjustment)
+            else PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
+        )
+        ca_df = self.db.get_corporate_actions(symbol)
+        frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
+
         if not bypass_quality_gate:
             must_certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
             try:
@@ -107,7 +115,7 @@ class StrategyPipeline:
                     for ds_id in contributing_dataset_ids:
                         # 1. Verify dataset in market_datasets
                         ds_record = self.db.conn.execute(
-                            "SELECT status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
+                            "SELECT status, lifecycle_status, transformation_hash FROM market_datasets WHERE dataset_id = ?",
                             [ds_id],
                         ).fetchone()
                         if not ds_record or ds_record[0] != "VERIFIED" or ds_record[1] != "CANONICAL_PROMOTED":
@@ -118,12 +126,20 @@ class StrategyPipeline:
 
                         # 2. Verify atomic certification batch in data_quality_certifications
                         cert_record = self.db.conn.execute(
-                            "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                            "SELECT certification_id, status, issue_count, checks_json FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
                             [ds_id],
                         ).fetchone()
                         if not cert_record or cert_record[1] != "CERTIFIED" or int(cert_record[2]) > 0:
                             raise DataQualityError(
                                 f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} does not possess an active CERTIFIED batch in data_quality_certifications."
+                            )
+                        try:
+                            cert_payload = json.loads(str(cert_record[3] or "{}"))
+                        except json.JSONDecodeError:
+                            cert_payload = {}
+                        if ds_record[2] and cert_payload.get("dataset_content_hash") != ds_record[2]:
+                            raise DataQualityError(
+                                f"DataQualityError: Certification for dataset {ds_id} is not bound to its current content hash."
                             )
 
                         cert_id = cert_record[0]
@@ -156,7 +172,15 @@ class StrategyPipeline:
                         raise DataQualityError(f"DataQualityError: Composed frame for {symbol} contains OHLC integrity violations.")
 
                     # Persist research frame certification
-                    frame_hash = hashlib.sha256(frame[["timestamp", "open", "high", "low", "close", "volume"]].to_json().encode()).hexdigest()[:16]
+                    hash_columns = [
+                        column for column in (
+                            "timestamp", "open", "high", "low", "close", "volume",
+                            "adjustment", "provider_name", "dataset_id",
+                        ) if column in frame.columns
+                    ]
+                    frame_hash = hashlib.sha256(
+                        pd.util.hash_pandas_object(frame[hash_columns], index=True).values.tobytes()
+                    ).hexdigest()
                     frame_cert_id = str(uuid.uuid4())
                     now_utc = datetime.now(timezone.utc)
                     self.db.conn.execute(
@@ -168,9 +192,10 @@ class StrategyPipeline:
                         """,
                         [
                             frame_cert_id, frame_hash, json.dumps(contributing_dataset_ids),
-                            symbol, timeframe, len(frame), str(adjustment), "validator-v1", "CERTIFIED", now_utc,
+                            symbol, timeframe, len(frame), str(adj_enum.value), "validator-v1", "CERTIFIED", now_utc,
                         ],
                     )
+                    self._last_frame_certification_id = frame_cert_id
                 else:
                     # Non-authoritative fallback check on quality_report
                     quality_rows = self.db.conn.execute(
@@ -188,15 +213,7 @@ class StrategyPipeline:
                     f"Data quality certification failed for {symbol} {timeframe}: {e}. Failing closed."
                 ) from e
 
-        adj_enum = (
-            adjustment if isinstance(adjustment, PriceAdjustment)
-            else PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
-        )
-        ca_df = self.db.get_corporate_actions(symbol)
-        frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
-
         return frame
-
 
     def run(
         self,
@@ -219,54 +236,46 @@ class StrategyPipeline:
             symbol, timeframe, adjustment=adjustment, require_authoritative_certification=certify,
         )
         asset_class = self._lookup_asset_class(symbol=symbol, exchange=str(raw_bars["exchange"].iloc[0]))
-        calendar = self.calendars[asset_class]
         if self.strict_calendar:
-            validation = calendar.validate_bars(raw_bars["timestamp"], timeframe)
+            validation = self.calendars[asset_class].validate_bars(raw_bars["timestamp"], timeframe)
             if validation.out_of_session_count:
-                raise ValueError(
-                    f"Stored bars contain {validation.out_of_session_count} timestamps outside calendar {calendar.version}."
-                )
-        featured = self.feature_factory.build(raw_bars, timezone_name="Asia/Kolkata")
+                raise ValueError("Candles contain out-of-session timestamps.")
+        featured = self.feature_factory.build(raw_bars, timezone_name=self.calendars[asset_class].spec.timezone)
         self._persist_features(featured, symbol=symbol, timeframe=timeframe)
         strategy = StrategyRegistry.create(strategy_name, **parameters)
-        signals = strategy.generate_signals(featured)
-        if signals.empty:
-            raise ValueError("Strategy produced zero signals for the provided dataset.")
-
-        metadata = strategy.metadata
-        dataset_id = self._latest_dataset_id(symbol, timeframe)
         execution_model = self._execution_model(cost_model)
         if mode == "vectorized":
             result = self.vector_backtester.run(
-                strategy, featured, starting_capital=starting_capital,
-                symbol=symbol, timeframe=timeframe, calendar=calendar, parameters=parameters,
-            )
-        elif mode == "event-driven":
-            result = EventDrivenBacktester(
-                execution_model=execution_model,
-            ).run(
-                strategy, featured, starting_capital=starting_capital,
-                symbol=symbol, timeframe=timeframe, calendar=calendar, parameters=parameters,
+                strategy=strategy,
+                bars=featured,
+                symbol=symbol,
+                timeframe=timeframe,
+                starting_capital=starting_capital,
+                calendar=self.calendars[asset_class],
+                parameters=parameters,
             )
         else:
-            raise ValueError(f"Unknown backtest mode: {mode}")
-
-        persisted_starting_capital = starting_capital
-        result.starting_capital = persisted_starting_capital
-        result.dataset_id = dataset_id
+            result = EventDrivenBacktester(execution_model=execution_model).run(
+                strategy=strategy,
+                bars=featured,
+                symbol=symbol,
+                timeframe=timeframe,
+                starting_capital=starting_capital,
+                calendar=self.calendars[asset_class],
+                parameters=parameters,
+            )
         self._persist_result(
             result,
-            mode=mode,
             strategy_name=strategy_name,
             asset_class=asset_class,
+            mode=mode,
+            starting_capital=starting_capital,
             execution_model=execution_model,
-            starting_capital=persisted_starting_capital,
+            frame_certification_id=self._last_frame_certification_id,
         )
-        if mode == "event-driven":
-            self._apply_paper_risk(result, starting_capital)
+        dataset_id = self._latest_dataset_id(symbol, timeframe)
         return {
             "result": result,
-            "signals": signals,
             "featured": featured,
             "run_id": result.run_id,
             "dataset_id": dataset_id,
@@ -290,6 +299,7 @@ class StrategyPipeline:
         execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
         opening_ticks: dict[str, float] | None = None,
         open_tick_timestamps: dict[str, datetime] | None = None,
+        opening_observations: dict[str, OpeningTickObservation] | None = None,
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> dict[str, Any]:
         """Advance a persisted forward-only paper session by newly observed bars."""
@@ -306,6 +316,7 @@ class StrategyPipeline:
             portfolio_result = ForwardPortfolioPaperSessionEngine(
                 self.db, calendar=self.calendars[AssetClass.INDIA_EQUITY],
                 risk_engine=self.risk_engine, cost_schedule=schedule,
+                require_authoritative_certification=self.require_authoritative_certification,
             ).run(
                 strategy_name=strategy_name, approved_run_id=approved_run_id,
                 symbols=universe, universe_snapshot_id=universe_snapshot_id,
@@ -313,6 +324,7 @@ class StrategyPipeline:
                 parameters=parameters, starting_capital=starting_capital, as_of=as_of,
                 execution_mode=execution_mode, opening_ticks=opening_ticks,
                 open_tick_timestamps=open_tick_timestamps,
+                opening_observations=opening_observations,
             )
             return {
                 "forward_portfolio_result": portfolio_result,
@@ -336,6 +348,7 @@ class StrategyPipeline:
         )
         open_tick = (opening_ticks.get(symbol) if opening_ticks else None)
         open_ts = (open_tick_timestamps.get(symbol) if open_tick_timestamps else None)
+        open_obs = (opening_observations.get(symbol) if opening_observations else None)
         result = engine.run(
             strategy_name=strategy_name,
             approved_run_id=approved_run_id,
@@ -347,6 +360,7 @@ class StrategyPipeline:
             execution_mode=execution_mode,
             open_tick_price=open_tick,
             open_tick_timestamp=open_ts,
+            opening_observation=open_obs,
         )
         return {"forward_result": result, "paper_summary": result.paper_summary}
 
@@ -414,6 +428,7 @@ class StrategyPipeline:
         asset_class: AssetClass,
         execution_model: ExecutionModel,
         starting_capital: float = 100_000.0,
+        frame_certification_id: str | None = None,
     ) -> None:
         with self.db.transaction():
             self.db.clear_backtest_artifacts(result.run_id)
@@ -431,7 +446,7 @@ class StrategyPipeline:
                     "status": "COMPLETED",
                     "started_at": datetime.now(tz=timezone.utc),
                     "finished_at": datetime.now(tz=timezone.utc),
-                    "notes": None,
+                    "notes": json.dumps({"frame_certification_id": frame_certification_id}) if frame_certification_id else None,
                 },
                 result.metrics,
             )

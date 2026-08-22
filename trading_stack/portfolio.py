@@ -14,6 +14,7 @@ from loguru import logger
 
 from trading_stack.backtest import _compute_metrics
 from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
+from trading_stack.datasets import ResearchDataset
 from trading_stack.domain import (
     AssetClass,
     OrderSide,

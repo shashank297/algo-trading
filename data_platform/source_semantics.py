@@ -903,6 +903,8 @@ class SourceSemanticsAdapter:
                         evidence_strength = 1.0
 
         # 3. Apply override governance and contract conflict checks
+        validation_status: SourceValidationStatus
+        pre_override_status: SourceValidationStatus | None
         if declared_explicitly and declared_target is not None:
             if empirical_status == SourceValidationStatus.VERIFIED:
                 if declared_target == inferred_price_adj:

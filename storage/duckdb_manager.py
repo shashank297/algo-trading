@@ -9,7 +9,6 @@ import uuid
 from datetime import date, datetime, timezone
 
 
-from pathlib import Path
 from typing import Any
 
 import duckdb
@@ -571,6 +570,17 @@ class DuckDBManager:
         check_rows: list[dict[str, Any]],
     ) -> None:
         """Atomically persist a DQ certification batch and all child check rows in one transaction."""
+        try:
+            checks_payload = json.loads(checks_json)
+        except (TypeError, json.JSONDecodeError):
+            checks_payload = {}
+        dataset_row = self.conn.execute(
+            "SELECT transformation_hash FROM market_datasets WHERE dataset_id = ?",
+            [dataset_id],
+        ).fetchone()
+        if dataset_row and dataset_row[0]:
+            checks_payload["dataset_content_hash"] = str(dataset_row[0])
+            checks_json = json.dumps(checks_payload, sort_keys=True)
         with self._write_lock:
             with self.conn.cursor() as cur:
                 cur.execute(

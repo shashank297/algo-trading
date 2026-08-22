@@ -58,10 +58,11 @@ class DuckDBValidator:
 
         started_at = datetime.now(timezone.utc)
         if dataset_id:
-            total_candles = int(db.conn.execute(
+            count_row: Any = db.conn.execute(
                 "SELECT COUNT(*) FROM historical_candles WHERE symbol = ? AND timeframe = ? AND dataset_id = ?",
                 [symbol, self.timeframe, dataset_id],
-            ).fetchone()[0])
+            ).fetchone()
+            total_candles = int(count_row[0]) if count_row else 0
         else:
             total_candles = db.get_candle_count(symbol, self.timeframe)
 
@@ -122,7 +123,7 @@ class DuckDBValidator:
         if persist_atomic_certification and dataset_id:
             certification_id = str(uuid.uuid4())
             required_6 = ["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"]
-            total_issues_6 = sum(int(checks[k].get("count", 0)) for k in required_6)
+            total_issues_6 = sum(int(str(checks[k].get("count", 0))) for k in required_6)
             cert_status = "CERTIFIED" if (total_issues_6 == 0 and summary.get("passed", False)) else "FAILED"
 
             check_rows = [
@@ -130,7 +131,7 @@ class DuckDBValidator:
                     "symbol": symbol,
                     "timeframe": self.timeframe,
                     "check_type": k,
-                    "issue_count": int(checks[k].get("count", 0)),
+                    "issue_count": int(str(checks[k].get("count", 0))),
                     "details": json.dumps(checks[k], default=str),
                     "checked_at": completed_at,
                 }

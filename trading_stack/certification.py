@@ -43,9 +43,14 @@ class RunCertificationService:
         if run_row is None:
             raise ValueError(f"Cannot certify unknown run_id: {run_id}")
 
-        strategy_name, symbol_str, timeframe, mode, data_hash, notes = (
+        _, symbol_str, timeframe, mode, data_hash, notes = (
             str(run_row[0]), str(run_row[1]), str(run_row[2]), str(run_row[3]), str(run_row[4]), str(run_row[5] or "")
         )
+        try:
+            run_metadata = json.loads(notes) if notes else {}
+        except json.JSONDecodeError:
+            run_metadata = {}
+        frame_certification_id = run_metadata.get("frame_certification_id")
 
         bundle_id = str(uuid.uuid4())
         now_utc = datetime.now(timezone.utc)
@@ -55,19 +60,54 @@ class RunCertificationService:
         lineage_status = "PASS"
         lineage_details: dict[str, Any] = {"symbol": symbol_str, "timeframe": timeframe}
         try:
-            if "PORTFOLIO:" in symbol_str:
-                lineage_details["universe"] = symbol_str
-                lineage_details["portfolio"] = True
-            else:
-                ds = self.db.conn.execute(
-                    "SELECT dataset_id, status, lifecycle_status FROM market_datasets WHERE canonical_symbol = ? AND timeframe = ? ORDER BY retrieved_at DESC LIMIT 1",
-                    [symbol_str, timeframe],
-                ).fetchone()
-                if not ds or ds[1] != "VERIFIED" or ds[2] != "CANONICAL_PROMOTED":
+            if symbol_str.startswith("PORTFOLIO:"):
+                snap_id = symbol_str.split(":", 1)[1]
+                member_rows = self.db.conn.execute(
+                    "SELECT symbol, provider_symbol FROM universe_snapshot_members WHERE snapshot_id = ?",
+                    [snap_id],
+                ).fetchall()
+                if not member_rows:
                     lineage_status = "FAIL"
-                    lineage_details["reason"] = f"Canonical dataset not VERIFIED/CANONICAL_PROMOTED: {ds}"
+                    lineage_details["reason"] = f"No snapshot members for {snap_id}"
                 else:
-                    lineage_details["dataset_id"] = ds[0]
+                    symbols = [str(r[0]) for r in member_rows if r[0]]
+                    lineage_details["constituent_count"] = len(symbols)
+                    for sym in symbols:
+                        ds = self.db.conn.execute(
+                            "SELECT dataset_id, status, lifecycle_status FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
+                            [sym, sym, timeframe],
+                        ).fetchone()
+                        if not ds:
+                            lineage_status = "FAIL"
+                            lineage_details["missing_canonical_dataset"] = sym
+                            break
+            else:
+                ds_rows = self.db.conn.execute(
+                    "SELECT DISTINCT dataset_id FROM historical_candles WHERE symbol = ? AND timeframe = ?",
+                    [symbol_str, timeframe],
+                ).fetchall()
+                dataset_ids = [str(r[0]) for r in ds_rows if r[0]]
+                if not dataset_ids:
+                    ds_fallback = self.db.conn.execute(
+                        "SELECT dataset_id, status, lifecycle_status FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
+                        [symbol_str, symbol_str, timeframe],
+                    ).fetchone()
+                    if ds_fallback:
+                        dataset_ids = [str(ds_fallback[0])]
+                if not dataset_ids:
+                    lineage_status = "FAIL"
+                    lineage_details["reason"] = f"No contributing dataset IDs for {symbol_str} {timeframe}"
+                else:
+                    lineage_details["contributing_datasets"] = dataset_ids
+                    for ds_id in dataset_ids:
+                        ds = self.db.conn.execute(
+                            "SELECT status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
+                            [ds_id],
+                        ).fetchone()
+                        if not ds or ds[0] != "VERIFIED" or ds[1] != "CANONICAL_PROMOTED":
+                            lineage_status = "FAIL"
+                            lineage_details["unverified_dataset"] = ds_id
+                            break
         except Exception as exc:
             lineage_status = "FAIL"
             lineage_details["error"] = str(exc)
@@ -78,37 +118,88 @@ class RunCertificationService:
             "evidence": lineage_details,
         })
 
+        # A run must point to the exact transformed frame it consumed.
+        frame_status = "PASS"
+        frame_details: dict[str, Any] = {}
+        if not frame_certification_id:
+            frame_status = "FAIL"
+            frame_details["reason"] = "Run has no exact frame_certification_id."
+        else:
+            frame_row = self.db.conn.execute(
+                """SELECT research_frame_hash, symbol, timeframe, status
+                   FROM research_frame_certifications
+                   WHERE frame_certification_id = ?""",
+                [frame_certification_id],
+            ).fetchone()
+            if not frame_row or frame_row[3] != "CERTIFIED":
+                frame_status = "FAIL"
+                frame_details["reason"] = "Referenced frame certification is missing or not certified."
+            elif frame_row[0] != data_hash or frame_row[1] != symbol_str or frame_row[2] != timeframe:
+                frame_status = "FAIL"
+                frame_details["reason"] = "Run data hash or scope does not match its frame certification."
+            else:
+                frame_details["frame_certification_id"] = frame_certification_id
+        if lineage_status == "PASS" and frame_status == "FAIL":
+            lineage_status = "FAIL"
+            lineage_details["frame_certification"] = frame_details
+
         # 2. DATA_QUALITY
         dq_status = "PASS"
         dq_details: dict[str, Any] = {}
         try:
-            if "PORTFOLIO:" in symbol_str:
-                dq_stats = self.db.conn.execute(
-                    "SELECT COUNT(*), SUM(issue_count) FROM quality_report WHERE timeframe = ?", [timeframe]
-                ).fetchone()
-                if not dq_stats or not dq_stats[0] or (dq_stats[1] is not None and int(dq_stats[1]) > 0):
+            if symbol_str.startswith("PORTFOLIO:"):
+                snap_id = symbol_str.split(":", 1)[1]
+                member_rows = self.db.conn.execute(
+                    "SELECT symbol FROM universe_snapshot_members WHERE snapshot_id = ?", [snap_id]
+                ).fetchall()
+                symbols = [str(r[0]) for r in member_rows if r[0]]
+                if not symbols:
                     dq_status = "FAIL"
-                    dq_details["reason"] = f"Quality issues detected across portfolio: {dq_stats}"
+                    dq_details["reason"] = f"No members for snapshot {snap_id}"
                 else:
-                    dq_details["report_count"] = int(dq_stats[0])
+                    for sym in symbols:
+                        ds = self.db.conn.execute(
+                            "SELECT dataset_id FROM market_datasets WHERE (canonical_symbol = ? OR symbol = ?) AND timeframe = ? AND lifecycle_status = 'CANONICAL_PROMOTED' AND status = 'VERIFIED' LIMIT 1",
+                            [sym, sym, timeframe],
+                        ).fetchone()
+                        if not ds:
+                            dq_status = "FAIL"
+                            dq_details["missing_dataset"] = sym
+                            break
+                        cert = self.db.conn.execute(
+                            "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                            [ds[0]],
+                        ).fetchone()
+                        if not cert or cert[1] != "CERTIFIED" or int(cert[2]) > 0:
+                            dq_status = "FAIL"
+                            dq_details["uncertified_dataset"] = ds[0]
+                            break
             else:
-                ds = self.db.conn.execute(
-                    "SELECT dataset_id FROM market_datasets WHERE canonical_symbol = ? AND timeframe = ? ORDER BY retrieved_at DESC LIMIT 1",
-                    [symbol_str, timeframe],
-                ).fetchone()
-                if ds:
-                    cert_row = self.db.conn.execute(
-                        "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
-                        [ds[0]],
-                    ).fetchone()
-                    if not cert_row or cert_row[1] != "CERTIFIED" or int(cert_row[2]) > 0:
-                        dq_status = "FAIL"
-                        dq_details["reason"] = f"Dataset {ds[0]} lacks active CERTIFIED batch: {cert_row}"
-                    else:
-                        dq_details["certification_id"] = cert_row[0]
-                else:
+                target_datasets = lineage_details.get("contributing_datasets", [])
+                if not target_datasets:
                     dq_status = "FAIL"
-                    dq_details["reason"] = "No market dataset record found."
+                    dq_details["reason"] = "No datasets to verify for run."
+                else:
+                    for ds_id in target_datasets:
+                        cert_row = self.db.conn.execute(
+                            "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                            [ds_id],
+                        ).fetchone()
+                        if not cert_row or cert_row[1] != "CERTIFIED" or int(cert_row[2]) > 0:
+                            dq_status = "FAIL"
+                            dq_details["uncertified_dataset"] = ds_id
+                            break
+                        # Check 6 required child checks
+                        quality_rows = self.db.conn.execute(
+                            "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
+                            [cert_row[0]],
+                        ).fetchall()
+                        observed_checks = {r[0] for r in quality_rows if int(r[1]) == 0}
+                        missing_checks = {"schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"} - observed_checks
+                        if missing_checks:
+                            dq_status = "FAIL"
+                            dq_details["missing_checks"] = list(missing_checks)
+                            break
         except Exception as exc:
             dq_status = "FAIL"
             dq_details["error"] = str(exc)
@@ -138,8 +229,15 @@ class RunCertificationService:
                 causality_details["invalid_fill_timestamps"] = invalid_fills
             else:
                 causality_details["fill_chronology_verified"] = True
+
+            # Verify research frame certification exists
+            rf_row = self.db.conn.execute(
+                "SELECT COUNT(*) FROM research_frame_certifications WHERE symbol = ? AND timeframe = ? AND status = 'CERTIFIED'",
+                [symbol_str, timeframe],
+            ).fetchone()
+            if rf_row and int(rf_row[0]) > 0:
+                causality_details["research_frame_certified"] = True
         except Exception as exc:
-            # Table might not exist for some run types
             causality_details["note"] = str(exc)
 
         evidence_records.append({
@@ -152,11 +250,19 @@ class RunCertificationService:
         pit_status = "PASS"
         pit_details: dict[str, Any] = {}
         try:
-            if "PORTFOLIO:" in symbol_str:
-                pit_count = self.db.conn.execute("SELECT COUNT(*) FROM index_constituents_pit").fetchone()
+            if symbol_str.startswith("PORTFOLIO:"):
+                snap_id = symbol_str.split(":", 1)[1]
+                snap_row = self.db.conn.execute(
+                    "SELECT name FROM universe_snapshots WHERE snapshot_id = ?", [snap_id]
+                ).fetchone()
+                universe_name = str(snap_row[0]) if snap_row else snap_id
+                pit_count = self.db.conn.execute(
+                    "SELECT COUNT(*) FROM index_constituents_pit WHERE UPPER(universe_name) = ?",
+                    [universe_name.upper()],
+                ).fetchone()
                 if not pit_count or int(pit_count[0]) == 0:
                     pit_status = "FAIL"
-                    pit_details["reason"] = "No PIT constituent history available for portfolio universe."
+                    pit_details["reason"] = f"No PIT constituent history available for universe {universe_name}."
                 else:
                     pit_details["pit_records"] = int(pit_count[0])
             else:
@@ -201,6 +307,13 @@ class RunCertificationService:
         # Write all 5 certification rows within a single transaction
         with self.db._write_lock:
             with self.db.conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO run_certification_bundles (
+                           bundle_id, run_id, run_data_hash, frame_certification_id,
+                           certification_version, created_at
+                       ) VALUES (?, ?, ?, ?, ?, ?)""",
+                    [bundle_id, run_id, data_hash, frame_certification_id, "validator-v1", now_utc],
+                )
                 for rec in evidence_records:
                     cert_id = str(uuid.uuid4())
                     cur.execute(

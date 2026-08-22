@@ -88,13 +88,16 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 db.upsert_candles(benchmark, "NIFTY200", "INDEX", "NSE", "1d")
                 calendar = MarketCalendar(infer_market_spec("INDIA_EQUITY", "NSE", "EQUITY"))
                 engine = ForwardPortfolioPaperSessionEngine(
-                    db, calendar=calendar, risk_engine=RiskEngine(),
+                    db,
+                    calendar=calendar,
+                    risk_engine=RiskEngine(),
+                    require_authoritative_certification=False,
                 )
                 symbols = sorted(source["symbol"].unique().tolist())
                 last_timestamp = pd.Timestamp(source["timestamp"].max())
                 first = engine.run(
                     strategy_name="cross_sectional_momentum", approved_run_id="approved-portfolio",
-                    symbols=symbols, universe_snapshot_id="TEST", benchmark_symbol="NIFTY200",
+                    symbols=symbols, universe_snapshot_id="CONFIGURED_UNIVERSE", benchmark_symbol="NIFTY200",
                     timeframe="1d", as_of=(last_timestamp + pd.Timedelta(hours=12)).to_pydatetime(),
                 )
 
@@ -111,7 +114,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 }), "NIFTY200", "INDEX", "NSE", "1d")
                 second = engine.run(
                     strategy_name="cross_sectional_momentum", approved_run_id="approved-portfolio",
-                    symbols=symbols, universe_snapshot_id="TEST", benchmark_symbol="NIFTY200",
+                    symbols=symbols, universe_snapshot_id="CONFIGURED_UNIVERSE", benchmark_symbol="NIFTY200",
                     timeframe="1d", as_of=(next_timestamp + pd.Timedelta(hours=12)).to_pydatetime(),
                 )
                 held_symbol = str(db.conn.execute(
@@ -132,7 +135,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 }), "NIFTY200", "INDEX", "NSE", "1d")
                 third = engine.run(
                     strategy_name="cross_sectional_momentum", approved_run_id="approved-portfolio",
-                    symbols=symbols, universe_snapshot_id="TEST", benchmark_symbol="NIFTY200",
+                    symbols=symbols, universe_snapshot_id="CONFIGURED_UNIVERSE", benchmark_symbol="NIFTY200",
                     timeframe="1d", as_of=(third_timestamp + pd.Timedelta(hours=12)).to_pydatetime(),
                 )
             finally:
@@ -155,6 +158,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     db,
                     calendar=MarketCalendar(infer_market_spec("INDIA_EQUITY", "NSE", "EQUITY")),
                     risk_engine=RiskEngine(),
+                    require_authoritative_certification=False,
                 )
                 timestamp = pd.Timestamp("2026-08-17", tz="UTC")
                 symbols = ["EXIT", "KEEP1", "KEEP2", "KEEP3", "ENTER"]
@@ -279,7 +283,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     "score": 1.0, "reasons_json": "[]", "human_approved": True,
                     "reviewed_at": datetime.now(timezone.utc),
                 }])
-                pipeline = StrategyPipeline(db)
+                pipeline = StrategyPipeline(db, require_authoritative_certification=False)
                 first = pipeline.run_paper_session(
                     strategy_name="trend_following", approved_run_id="approved-run",
                     symbol="TEST-EQ", timeframe="1d",
@@ -314,7 +318,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 )
                 db.upsert_candles(bars, "TEST-EQ", "1", "NSE", "1d")
                 with self.assertRaisesRegex(PermissionError, "No promotion review"):
-                    StrategyPipeline(db).run_paper_session(
+                    StrategyPipeline(db, require_authoritative_certification=False).run_paper_session(
                         strategy_name="trend_following",
                         approved_run_id="unapproved-run",
                         symbol="TEST-EQ",
@@ -334,7 +338,9 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 })
                 db.upsert_candles(bars, "TEST-EQ", "1", "NSE", "1d")
                 pipeline = StrategyPipeline(
-                    db, india_calendar=build_nse_calendar(verified_through=date(2026, 8, 17)),
+                    db,
+                    india_calendar=build_nse_calendar(verified_through=date(2026, 8, 17)),
+                    require_authoritative_certification=False,
                 )
                 with self.assertRaisesRegex(ValueError, "verified only through"):
                     pipeline.run(
@@ -378,12 +384,12 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     "volume": [100_000] * len(close),
                 })
                 db.upsert_candles(bars, "TEST-EQ", "1", "NSE", "1d")
-                outcome = StrategyPipeline(db).run(
+                outcome = StrategyPipeline(db, require_authoritative_certification=False).run(
                     strategy_name="trend_following", symbol="TEST-EQ", timeframe="1d",
                     mode="event-driven",
                     cost_model={"fee_bps": 2.0, "slippage_bps": 3.0, "spread_bps": 2.0},
                 )
-                rerun = StrategyPipeline(db).run(
+                rerun = StrategyPipeline(db, require_authoritative_certification=False).run(
                     strategy_name="trend_following", symbol="TEST-EQ", timeframe="1d",
                     mode="event-driven",
                     cost_model={"fee_bps": 2.0, "slippage_bps": 3.0, "spread_bps": 2.0},
@@ -473,6 +479,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     strategy_names=["trend_following"], universe=symbols,
                     benchmark_symbol=None, max_workers=2, mode="event-driven",
                     walk_forward_train_size=80, walk_forward_test_size=40,
+                    require_authoritative_certification=False,
                 ))
             finally:
                 db.close()
@@ -517,9 +524,9 @@ class MultiStrategyPlatformTests(unittest.TestCase):
             try:
                 bars = panel_fixture(periods=10, symbols=1).drop(columns=["symbol", "exchange", "timeframe", "benchmark_close", "sector"])
                 db.upsert_candles(bars.iloc[:5], "STOCK0", "1", "NSE", "1d")
-                first = SynchronizedPanelBuilder(db).build(["STOCK0"], "1d", benchmark_symbol=None)
+                first = SynchronizedPanelBuilder(db, require_authoritative_certification=False).build(["STOCK0"], "1d", benchmark_symbol=None)
                 db.upsert_candles(bars.iloc[5:], "STOCK0", "1", "NSE", "1d")
-                second = SynchronizedPanelBuilder(db).build(["STOCK0"], "1d", benchmark_symbol=None)
+                second = SynchronizedPanelBuilder(db, require_authoritative_certification=False).build(["STOCK0"], "1d", benchmark_symbol=None)
             finally:
                 db.close()
         self.assertEqual(len(first.panel), 5)
@@ -680,7 +687,8 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                         timeframe="1d",
                         mode="event-driven",
                         benchmark_symbol=None,
-                        universe_snapshot_id="TEST",
+                        universe_snapshot_id="CONFIGURED_UNIVERSE",
+                        require_authoritative_certification=False,
                     ),
                     train_size=200,
                     test_size=40,
@@ -735,7 +743,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     "volume": [100_000] * periods,
                 })
                 db.upsert_candles(bars, "TEST-EQ", "1", "NSE", "1d")
-                outcome = StrategyPipeline(db).run(
+                outcome = StrategyPipeline(db, require_authoritative_certification=False).run(
                     strategy_name="trend_following", symbol="TEST-EQ", timeframe="1d",
                     mode="event-driven",
                 )

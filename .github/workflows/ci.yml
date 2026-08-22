@@ -52,7 +52,10 @@ jobs:
       - name: Type check (Pyright)
         run: pyright
       - name: Coverage
-        run: coverage run -m pytest -q && coverage report --fail-under=80
+        run: |
+          coverage run -m pytest -q
+          coverage report --fail-under=80
+          coverage report --include="trading_stack/domain.py,trading_stack/costs.py,trading_stack/certification.py,risk/models.py,risk/validators.py,storage/integrity.py,data_platform/contracts.py,validators/severity.py" --fail-under=95
       - name: Dependency vulnerability audit
         run: pip-audit -r requirements.txt
 

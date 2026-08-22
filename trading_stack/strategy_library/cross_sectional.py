@@ -40,7 +40,8 @@ class CrossSectionalRankingStrategy(BaseStrategy):
 
         panel["score"] = self.score_panel(panel).replace([np.inf, -np.inf], np.nan)
         panel["observation_count"] = panel.groupby("symbol").cumcount() + 1
-        req_lookback = getattr(self, "long_lookback", None) + 1 if hasattr(self, "long_lookback") and self.long_lookback else self.metadata.required_lookback
+        long_lookback = getattr(self, "long_lookback", None)
+        req_lookback = long_lookback + 1 if long_lookback else self.metadata.required_lookback
         panel = panel[panel["observation_count"] >= req_lookback]
         rebalance_dates = panel.groupby(panel["timestamp"].dt.strftime("%Y-%m"))["timestamp"].max()
         ranked = panel[panel["timestamp"].isin(rebalance_dates)].dropna(subset=["score"]).copy()

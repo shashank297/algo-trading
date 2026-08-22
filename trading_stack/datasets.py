@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass, field, fields
 from threading import Lock
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import numpy as np
 import pandas as pd
@@ -19,6 +19,16 @@ from trading_stack.features import FeatureFactory
 from trading_stack.calendars import MarketCalendar
 from trading_stack.domain import AssetClass
 from trading_stack.calendars import build_default_calendars
+from validators.data_quality import DataQualityError
+
+REQUIRED_AUTHORITATIVE_DQ_CHECKS = {
+    "schema",
+    "ohlc_integrity",
+    "duplicates",
+    "session_alignment",
+    "missing_sessions",
+    "timestamp_integrity",
+}
 
 
 @dataclass(frozen=True)
@@ -61,6 +71,25 @@ class ResearchDataset:
         }, sort_keys=True, default=str).encode())
         return digest.hexdigest()
 
+    def calculate_dataset_hash(self) -> str:
+        """Deterministic fingerprint of raw data + corporate action revision."""
+        digest = hashlib.sha256()
+        frame = self.panel.drop(columns=["benchmark_close"], errors="ignore")
+        digest.update(
+            pd.util.hash_pandas_object(frame, index=False, categorize=True).values.tobytes()
+        )
+        digest.update(json.dumps({
+            "universe_snapshot_id": self.universe_snapshot_id,
+            "universe_name": self.universe_name,
+            "dataset_snapshot_ids": self.dataset_snapshot_ids,
+            "benchmark_symbol": self.benchmark_symbol,
+            "benchmark_provider_symbol": self.benchmark_provider_symbol,
+            "benchmark_relationship": self.benchmark_relationship,
+            "research_basis": self.research_basis,
+            "corporate_action_version": self.corporate_action_version,
+        }, sort_keys=True, default=str).encode())
+        return digest.hexdigest()
+
 
 class SynchronizedPanelBuilder:
     """Load each symbol once and build causal per-symbol features."""
@@ -74,11 +103,13 @@ class SynchronizedPanelBuilder:
         feature_factory: FeatureFactory | None = None,
         calendar: MarketCalendar | None = None,
         strict_calendar: bool = False,
+        require_authoritative_certification: bool = True,
     ) -> None:
         self.db = db
         self.feature_factory = feature_factory or FeatureFactory()
         self.calendar = calendar or build_default_calendars()[AssetClass.INDIA_EQUITY]
         self.strict_calendar = strict_calendar
+        self.require_authoritative_certification = require_authoritative_certification
 
     def build(
         self,
@@ -232,17 +263,10 @@ class SynchronizedPanelBuilder:
                 ).fetchall()
 
             is_named_index = False
-            if universe_name and universe_name != "CONFIGURED_UNIVERSE":
-                named_count = self.db.conn.execute(
-                    "SELECT COUNT(*) FROM index_constituents_pit WHERE UPPER(universe_name) = ?",
-                    [universe_name.upper()],
-                ).fetchone()[0]
-                snapshot_count = self.db.conn.execute(
-                    "SELECT COUNT(*) FROM universe_snapshots WHERE snapshot_id = ? OR UPPER(name) = ?",
-                    [universe_snapshot_id, universe_name.upper()],
-                ).fetchone()[0]
-                if named_count > 0 or snapshot_count > 0 or universe_name.upper().startswith("NIFTY"):
-                    is_named_index = True
+            if (universe_name and universe_name not in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}) or (
+                universe_snapshot_id and universe_snapshot_id not in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}
+            ):
+                is_named_index = True
 
             if pit_rows:
                 pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until"])
@@ -385,6 +409,7 @@ class SynchronizedPanelBuilder:
         symbol: str | None,
         timeframe: str,
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
+        require_authoritative_certification: bool | None = None,
     ) -> pd.DataFrame:
         if not symbol:
             return pd.DataFrame()
@@ -401,6 +426,44 @@ class SynchronizedPanelBuilder:
         if not frame.empty:
             ca_df = self.db.get_corporate_actions(symbol)
             frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
+
+            must_certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
+            if must_certify:
+                contributing_dataset_ids = [
+                    str(x).strip() for x in frame["dataset_id"].dropna().unique() if str(x).strip()
+                ]
+                null_dataset_count = int(frame["dataset_id"].isna().sum()) + int((frame["dataset_id"] == "").sum())
+                if null_dataset_count > 0 or not contributing_dataset_ids:
+                    raise DataQualityError(
+                        f"DataQualityError: {null_dataset_count} uncertified candle rows present with NULL dataset_id for {symbol} {timeframe} in panel build."
+                    )
+                for ds_id in contributing_dataset_ids:
+                    ds_record = self.db.conn.execute(
+                        "SELECT status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
+                        [ds_id],
+                    ).fetchone()
+                    if not ds_record or ds_record[0] != "VERIFIED" or ds_record[1] != "CANONICAL_PROMOTED":
+                        raise DataQualityError(
+                            f"DataQualityError: Dataset {ds_id} contributing to {symbol} {timeframe} in panel build has status={ds_record[0] if ds_record else 'NONE'}; must be VERIFIED and CANONICAL_PROMOTED."
+                        )
+                    cert_record = self.db.conn.execute(
+                        "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                        [ds_id],
+                    ).fetchone()
+                    if not cert_record or cert_record[1] != "CERTIFIED" or int(cert_record[2]) > 0:
+                        raise DataQualityError(
+                            f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} in panel build lacks active CERTIFIED batch in data_quality_certifications."
+                        )
+                    quality_rows = self.db.conn.execute(
+                        "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
+                        [cert_record[0]],
+                    ).fetchall()
+                    observed_checks = {r[0] for r in quality_rows if int(r[1]) == 0}
+                    missing_checks = REQUIRED_AUTHORITATIVE_DQ_CHECKS - observed_checks
+                    if missing_checks:
+                        raise DataQualityError(
+                            f"DataQualityError: Incomplete DQ certification for dataset {ds_id} ({symbol} {timeframe}) in panel build: missing {sorted(missing_checks)}."
+                        )
         return frame
 
     def _latest_dataset_id(self, symbol: str, timeframe: str) -> str | None:
@@ -429,10 +492,11 @@ class SynchronizedPanelBuilder:
                     if candidate is not None and str(candidate) in requested and sector_str and sector_str != "UNKNOWN":
                         mapping[str(candidate)] = sector_str
             if snapshot_id and snapshot_id != "CONFIGURED_UNIVERSE":
-                is_registered = self.db.conn.execute(
+                is_registered_row = self.db.conn.execute(
                     "SELECT COUNT(*) FROM universe_snapshots WHERE snapshot_id = ?",
                     [snapshot_id],
-                ).fetchone()[0] > 0
+                ).fetchone()
+                is_registered = bool(is_registered_row and is_registered_row[0] > 0)
                 if is_registered or snapshot_id.startswith("NIFTY"):
                     missing = [s for s in symbols if s not in mapping]
                     if missing:

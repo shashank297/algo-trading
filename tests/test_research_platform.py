@@ -90,7 +90,11 @@ class ResearchPlatformTests(unittest.TestCase):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.db = DuckDBManager(str(Path(self.temp_dir.name) / "research.duckdb"))
         self.frame = self._bars(30)
-        self.db.upsert_candles(self.frame, "NIFTY", "26000", "NSE", "1d", adjustment="UNADJUSTED")
+        self.db.upsert_candles(self.frame, "NIFTY", "26000", "NSE", "1d", adjustment="UNADJUSTED", dataset_id="ds_nifty")
+        self.db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_nifty', 'NIFTY', 'NIFTY', 'NSE', '1d', 'ANGEL', 'h1', 'VERIFIED', 'CANONICAL_PROMOTED');")
+        self.db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_nifty', 'ds_nifty', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+        for i, check in enumerate(["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"], start=1):
+            self.db.conn.execute("INSERT INTO quality_report (id, symbol, timeframe, dataset_id, check_type, issue_count, details, checked_at, certification_id) VALUES (?, 'NIFTY', '1d', 'ds_nifty', ?, 0, '{}', CURRENT_TIMESTAMP, 'cert_nifty');", [i, check])
 
     def tearDown(self) -> None:
         self.db.close()
@@ -103,7 +107,7 @@ class ResearchPlatformTests(unittest.TestCase):
         snapshot = platform.fetch_and_store(request)
 
         self.assertEqual(snapshot.provenance.provider_name, "static")
-        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM market_datasets").fetchone()[0], 1)
+        self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM market_datasets WHERE provider_name = 'static'").fetchone()[0], 1)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM raw_bar_observations").fetchone()[0], len(self.frame))
         statuses = self.db.conn.execute("SELECT status FROM provider_attempts ORDER BY started_at").fetchall()
         self.assertEqual([row[0] for row in statuses], ["FAILED", "SUCCEEDED"])
@@ -141,7 +145,7 @@ class ResearchPlatformTests(unittest.TestCase):
             )
 
     def test_risk_policy_returns_pass_modify_and_reject(self) -> None:
-        engine = RiskEngine(RiskPolicy())
+        engine = RiskEngine(RiskPolicy(max_position_pct=0.05, max_daily_loss_pct=0.005))
         base_state = {
             "current_gross_exposure": 0.0,
             "current_sector_exposure": 0.0,
@@ -263,7 +267,7 @@ class ResearchPlatformTests(unittest.TestCase):
             "score": 1.0, "reasons_json": "[]", "human_approved": True,
             "reviewed_at": datetime.now(timezone.utc),
         }])
-        outcome = StrategyPipeline(self.db).run_paper_session(
+        outcome = StrategyPipeline(self.db, require_authoritative_certification=False).run_paper_session(
             strategy_name="trend_following",
             approved_run_id="approved-run",
             symbol="NIFTY",

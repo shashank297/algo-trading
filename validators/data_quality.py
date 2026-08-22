@@ -11,6 +11,11 @@ from utils.timezone import IST, get_ist_now
 from validators.severity import summarize_quality
 
 
+class DataQualityError(ValueError):
+    """Raised when dataset fails authoritative data quality gates."""
+    pass
+
+
 class DataValidator:
     """Run a fixed set of quality checks against historical candle data."""
 

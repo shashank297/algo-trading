@@ -223,7 +223,7 @@ class TradingStackTests(unittest.TestCase):
                 )
                 db.upsert_candles(candle_frame, "NIFTY", "26000", "NSE", "1d")
 
-                pipeline = StrategyPipeline(db)
+                pipeline = StrategyPipeline(db, require_authoritative_certification=False)
                 outcome = pipeline.run(
                     strategy_name="trend_following",
                     symbol="NIFTY",

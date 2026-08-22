@@ -40,7 +40,6 @@ from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmi
 from orchestration.engine import TaskOrchestrator
 from risk.engine import RiskEngine
 from risk.models import RiskAction, RiskPolicy, TradeProposal
-from risk.validators import VaRValidator
 from storage.duckdb_manager import DuckDBManager
 from storage.integrity import DatabaseIntegrityValidator
 from trading_stack.backtest import (
@@ -295,7 +294,7 @@ def test_p0_4_pit_coverage_fail_closed(tmp_path):
     """P0-4: SynchronizedPanelBuilder fails closed when requested period starts before PIT coverage."""
     from trading_stack.datasets import SynchronizedPanelBuilder
     db = DuckDBManager(str(tmp_path / "pit_cov.duckdb"))
-    builder = SynchronizedPanelBuilder(db=db)
+    builder = SynchronizedPanelBuilder(db=db, require_authoritative_certification=False)
 
     # Seed historical candles starting in 2020
     db.conn.execute("INSERT INTO historical_candles (token, symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id) VALUES ('2885', 'RELIANCE', 'NSE', '1d', '2020-01-01', 100, 105, 95, 100, 1000, 'SPLIT_ADJUSTED', 'ANGEL', 'ds1');")
@@ -518,7 +517,6 @@ def test_p2_23_partial_fill_position_tracking():
 
 def test_p2_24_p2_25_raw_packets_and_spool_counters(tmp_path):
     """P2-24 & P2-25: Validates raw binary packet storage and FlushResult durable contract."""
-    from trading_stack.stream_persistence import FlushResult
     db_file = tmp_path / "stream_test.duckdb"
     writer = DuckDBStreamWriter(db_path=str(db_file), capture_raw_packets=True, batch_size=10)
     writer.start()
@@ -572,6 +570,7 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
         db=db,
         calendar=build_nse_calendar(),
         risk_engine=RiskEngine(),
+            require_authoritative_certification=False,
     )
     params = {"long_lookback": 1, "skip_recent": 0}
     
@@ -623,7 +622,7 @@ def test_p0_4_generic_universe_missing_pit_fails_closed(tmp_path):
     db.conn.execute("INSERT INTO universe_snapshot_members VALUES ('CUSTOM_UNIVERSE_2026', 'RELIANCE', 'RELIANCE', '2885', 'Reliance', 'ENERGY', 'NSE', '2020-01-01', '2027-01-01', true, true, true);")
     db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 100, 1000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
 
-    builder = SynchronizedPanelBuilder(db)
+    builder = SynchronizedPanelBuilder(db, require_authoritative_certification=False)
     with pytest.raises(RuntimeError, match="Missing point-in-time constituent history"):
         builder.build(["RELIANCE"], "1d", universe_snapshot_id="CUSTOM_UNIVERSE_2026", benchmark_symbol=None)
 
@@ -632,7 +631,7 @@ def test_p1_8_paper_missing_risk_state_rejection():
     """P1-8: RequiredRiskStateValidator rejects proposals with missing turnover or VaR."""
     policy = RiskPolicy(min_liquidity_crore=10.0)
     engine = RiskEngine(policy=policy)
-    
+
     # Missing daily_turnover_crore
     proposal_no_turnover = TradeProposal(
         symbol="RELIANCE",
@@ -766,6 +765,9 @@ def test_e10_run_certification_service_and_promotion_engine(tmp_path):
     # Seed raw dataset and certification
     db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_rel', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'raw1', 'VERIFIED', 'CANONICAL_PROMOTED');")
     db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_rel', 'ds_rel', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+    for i, check in enumerate(["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"], start=1):
+        db.conn.execute("INSERT INTO quality_report (id, symbol, timeframe, dataset_id, check_type, issue_count, details, checked_at, certification_id) VALUES (?, 'RELIANCE', '1d', 'ds_rel', ?, 0, '{}', CURRENT_TIMESTAMP, 'cert_rel');", [i, check])
+    db.conn.execute("INSERT INTO research_frame_certifications (frame_certification_id, research_frame_hash, contributing_dataset_ids_json, symbol, timeframe, row_count, basis, validator_version, status, verified_at) VALUES ('rfc1', 'h1', '[\"ds_rel\"]', 'RELIANCE', '1d', 1, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP);")
     # Seed historical candles
     db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds_rel', CURRENT_TIMESTAMP);")
     # Seed strategy equity curve
@@ -810,51 +812,159 @@ def test_p1_9_duckdb_validator_comprehensive_checks(tmp_path):
     assert cert_row[1] == 6
 
 
-def test_e8_websocket_degraded_callbacks_and_untrusted_window(tmp_path):
-    """E-8: WebSocket sequence gap recovery callbacks and RealtimeBarAggregator untrusted window tagging."""
+def test_e8_websocket_full_recovery_and_reanchor_lifecycle():
+    """E-8: Feed binary packets into _on_data to prove: N -> N+2 -> DEGRADED -> N+3 remains DEGRADED -> reanchor_stream -> CONNECTED -> TRUSTED."""
+    import struct
     from unittest.mock import MagicMock
     from smartapi.auth import SmartAPIAuth
     from smartapi.websocket_client import SmartAPIWebSocketClient, ConnectionState
-    from data_platform.contracts import LiveTickerMode
+    from data_platform.live_admission import EventTimePolicy
 
-    db = DuckDBManager(str(tmp_path / "stream_rec.duckdb"))
     auth = MagicMock(spec=SmartAPIAuth)
     auth.websocket_authorization = "Bearer mock"
     auth.api_key = "k"
     auth.client_code = "c"
     auth.feed_token = "f"
 
-    degraded_called = []
-    reanchored_called = []
-    gap_repaired_called = []
+    degraded_events = []
+    reanchored_events = []
 
+    event_time = EventTimePolicy(max_feed_staleness_seconds=1e9, max_future_skew_seconds=1e9)
+    policy = LiveAdmissionPolicy(event_time=event_time, max_stale_latency_seconds=1e9, check_session_hours=False)
+    validator = LiveMarketDataAdmissionValidator(policy=policy)
     client = SmartAPIWebSocketClient(
         auth=auth,
-        on_stream_degraded=lambda exch, tok, sym, gap, epoch: degraded_called.append((tok, gap, epoch)),
-        on_stream_reanchored=lambda exch, tok, sym, epoch: reanchored_called.append((tok, epoch)),
-        on_gap_repaired=lambda exch, tok, sym, gap_id: gap_repaired_called.append((tok, gap_id)),
+        admission_validator=validator,
+        on_stream_degraded=lambda exch, tok, sym, gap, epoch: degraded_events.append((tok, epoch)),
+        on_stream_reanchored=lambda exch, tok, sym, epoch: reanchored_events.append((tok, epoch)),
     )
+    # Simulate active connected state
+    with client._state_lock:
+        client._state = ConnectionState.CONNECTED
 
-    agg = RealtimeBarAggregator(timeframe="1m")
-    gap_start = datetime(2026, 1, 1, 9, 15, tzinfo=timezone.utc)
-    gap_end = datetime(2026, 1, 1, 9, 20, tzinfo=timezone.utc)
-    agg.mark_untrusted("RELIANCE", gap_start, gap_end)
+    def make_ltp_packet(token_str: str, seq_num: int, ltp_paise: int) -> bytes:
+        # Mode 1 LTP packet: mode (1 byte), exchange (1 byte), token (25 bytes), seq (8 bytes), ex_ts (8 bytes), ltp (8 bytes) -> 51 bytes
+        token_bytes = token_str.encode().ljust(25, b"\x00")
+        now_ms = int(time.time() * 1000)
+        return struct.pack("<BB25sqqq", 1, 1, token_bytes, seq_num, now_ms, ltp_paise)
 
-    # Ingest tick within untrusted interval
-    tick = QuoteTick(
+    # 1. Packet 1: seq=100 -> CONNECTED, TRUSTED
+    p1 = make_ltp_packet("2885", 100, 250000)
+    client._on_data(None, p1, 2, True)
+    ev1 = client._dispatch_queue.get_nowait()
+    assert ev1.quality_state == "TRUSTED"
+    assert client.state == ConnectionState.CONNECTED
+
+    # 2. Packet 2: seq=105 -> Gap detected! State transitions to DEGRADED
+    p2 = make_ltp_packet("2885", 105, 250500)
+    client._on_data(None, p2, 2, True)
+    ev2 = client._dispatch_queue.get_nowait()
+    assert ev2.quality_state == "DEGRADED"
+    assert client.state == ConnectionState.DEGRADED
+    assert len(degraded_events) == 1
+
+    # 3. Packet 3: seq=106 -> No further gap, but stream MUST REMAIN DEGRADED without authoritative re-anchor!
+    p3 = make_ltp_packet("2885", 106, 250600)
+    client._on_data(None, p3, 2, True)
+    ev3 = client._dispatch_queue.get_nowait()
+    assert ev3.quality_state == "DEGRADED"
+    assert client.state == ConnectionState.DEGRADED
+
+    # 4. Authoritative re-anchor snapshot reset
+    client.reanchor_stream("NSE", "2885", baseline_seq=200)
+    assert client.state == ConnectionState.CONNECTED
+    assert len(reanchored_events) == 1
+
+    # 5. Packet 4: seq=201 -> Stream is now authoritatively TRUSTED
+    p4 = make_ltp_packet("2885", 201, 251000)
+    client._on_data(None, p4, 2, True)
+    ev4 = client._dispatch_queue.get_nowait()
+    assert ev4.quality_state == "TRUSTED"
+    assert client.state == ConnectionState.CONNECTED
+
+
+def test_p0_4_arbitrary_named_universe_fails_closed(tmp_path):
+    """P0-4: Arbitrary explicit named-but-unregistered universes fail closed without PIT."""
+    db = DuckDBManager(str(tmp_path / "custom_univ.duckdb"))
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    builder = SynchronizedPanelBuilder(db, require_authoritative_certification=False)
+
+    # Passing an arbitrary named universe with no PIT records must raise RuntimeError
+    with pytest.raises(RuntimeError, match="Missing point-in-time constituent history for universe"):
+        builder.build(["RELIANCE"], "1d", universe_name="MY_CUSTOM_MOMENTUM_UNIVERSE", benchmark_symbol=None)
+
+
+def test_p1_8_strict_int_position_count_contract():
+    """P1-8: open_position_count must be StrictInt and reject non-integer types."""
+    from pydantic import ValidationError
+
+    # Valid int passes
+    proposal = TradeProposal(
+        symbol="RELIANCE",
+        requested_notional=50_000.0,
+        capital=100_000.0,
+        open_position_count=5,
+    )
+    assert proposal.open_position_count == 5
+
+    # String int coercion must be rejected by StrictInt
+    with pytest.raises(ValidationError):
+        TradeProposal(
+            symbol="RELIANCE",
+            requested_notional=50_000.0,
+            capital=100_000.0,
+            open_position_count="5",
+        )
+
+    # Float must also be rejected
+    with pytest.raises(ValidationError):
+        TradeProposal(
+            symbol="RELIANCE",
+            requested_notional=50_000.0,
+            capital=100_000.0,
+            open_position_count=5.5,
+        )
+
+
+def test_p0_3_pipeline_paper_session_forwarding(tmp_path):
+    """P0-3: StrategyPipeline forwards OpeningTickObservation end-to-end."""
+    from trading_stack.domain import OpeningTickObservation
+    db = DuckDBManager(str(tmp_path / "paper_obs.duckdb"))
+    candle_frame = pd.DataFrame({
+        "timestamp": pd.date_range("2026-01-05 09:15", periods=10, freq="B", tz="Asia/Kolkata"),
+        "open": [100.0] * 10,
+        "high": [105.0] * 10,
+        "low": [95.0] * 10,
+        "close": [102.0] * 10,
+        "volume": [1000] * 10,
+    })
+    db.upsert_candles(candle_frame, "RELIANCE", "2885", "NSE", "1d")
+
+    # Authorize run
+    db.conn.execute("""
+        INSERT INTO promotion_reviews (review_id, run_id, strategy_name, stage, decision, human_approved, score, reasons_json, reviewed_at)
+        VALUES ('rev-1', 'approved-run-1', 'cross_sectional_momentum', 'PAPER_ACTIVE', 'PASS', true, 1.0, '[]', CURRENT_TIMESTAMP);
+    """)
+
+    obs = OpeningTickObservation(
+        symbol="RELIANCE",
         exchange="NSE",
         token="2885",
-        symbol="RELIANCE",
-        mode=LiveTickerMode.QUOTE,
-        exchange_timestamp=datetime(2026, 1, 1, 9, 16, tzinfo=timezone.utc),
-        received_at_utc=datetime(2026, 1, 1, 9, 16, tzinfo=timezone.utc),
-        received_monotonic_ns=0,
-        raw_packet_size=100,
-        ltp=100.0,
-        cumulative_volume=500,
+        price=105.0,
+        exchange_timestamp=datetime(2026, 1, 10, 9, 15, tzinfo=timezone.utc),
+        received_at_utc=datetime(2026, 1, 10, 9, 15, 1, tzinfo=timezone.utc),
     )
-    agg.process_tick(tick)
-    bar = agg.get_current_bar_snapshot("RELIANCE")
-    assert bar is not None
-    assert bar.is_authoritative is False
-    assert bar.quality_status == "UNTRUSTED"
+
+    pipeline = StrategyPipeline(db, require_authoritative_certification=False)
+    out = pipeline.run_paper_session(
+        strategy_name="cross_sectional_momentum",
+        approved_run_id="approved-run-1",
+        symbol="RELIANCE",
+        timeframe="1d",
+        universe=["RELIANCE"],
+        benchmark_symbol="RELIANCE",
+        execution_mode="TRUE_NEXT_OPEN",
+        opening_observations={"RELIANCE": obs},
+    )
+    assert "forward_portfolio_result" in out
+

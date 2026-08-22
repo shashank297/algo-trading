@@ -26,6 +26,7 @@ class ExperimentSpec(BaseModel):
     universe_snapshot_id: str = "CONFIGURED_UNIVERSE"
     fold_id: str | None = None
     cost_model_version: str = "legacy-bps-v1"
+    require_authoritative_certification: bool = True
 
 
 class MassExperimentSpec(BaseModel):
@@ -46,6 +47,7 @@ class MassExperimentSpec(BaseModel):
     stale_job_seconds: int = Field(default=3_600, ge=60, le=86_400)
     walk_forward_train_size: int = Field(default=252, ge=20)
     walk_forward_test_size: int = Field(default=63, ge=5)
+    require_authoritative_certification: bool = True
 
     @field_validator("universe")
     @classmethod

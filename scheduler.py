@@ -175,7 +175,7 @@ class ProcessLock:
 
     def __init__(self, lock_path: Path) -> None:
         self.lock_path = lock_path
-        self._file = None
+        self._file: Any | None = None
 
     def acquire(self) -> bool:
         try:
@@ -186,7 +186,7 @@ class ProcessLock:
                 msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
             else:
                 import fcntl
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
             return True
         except (IOError, OSError):
             return False
@@ -199,7 +199,7 @@ class ProcessLock:
                     msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
                 else:
                     import fcntl
-                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
                 self._file.close()
             except Exception:
                 pass

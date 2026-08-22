@@ -8,6 +8,7 @@ import random
 import ssl
 import threading
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Callable
@@ -104,6 +105,9 @@ class SmartAPIWebSocketClient:
         self._connected_monotonic = 0.0
         self._reconnect_attempts = 0
         self._auth_refresh_lock = threading.Lock()
+        self._degraded_tokens: set[tuple[str, str]] = set()
+        self._gap_start_times: dict[tuple[str, str], datetime] = {}
+        self._recovery_epoch = 0
 
     @property
     def state(self) -> ConnectionState:
@@ -116,6 +120,47 @@ class SmartAPIWebSocketClient:
         """Current connection generation identifier."""
         with self._state_lock:
             return self._generation_id
+
+    def reanchor_stream(self, exchange: str, token: str, baseline_seq: int | None = None) -> None:
+        """Authoritatively re-anchor stream baseline following snapshot resync."""
+        if baseline_seq is not None:
+            self.metrics.sequence_tracker.reanchor(exchange, token, baseline_seq)
+            # Also reanchor under prefix variants
+            for ex in ["NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"]:
+                self.metrics.sequence_tracker.reanchor(ex, token, baseline_seq)
+
+        keys_to_remove = [
+            k for k in self._degraded_tokens
+            if k[1] == token and (k[0] == exchange or k[0].startswith(exchange) or exchange.startswith(k[0]))
+        ]
+        for k in keys_to_remove:
+            self._degraded_tokens.discard(k)
+            self._gap_start_times.pop(k, None)
+
+        with self._state_lock:
+            if not self._degraded_tokens and self._state == ConnectionState.DEGRADED:
+                self._state = ConnectionState.CONNECTED
+
+        resolved_sym = token
+        if self.instrument_master is not None:
+            resolved_sym = self.instrument_master.resolve_symbol(token, exchange) or token
+        logger.info("Stream authoritatively re-anchored for {}:{}.", exchange, resolved_sym)
+        if self.on_stream_reanchored is not None:
+            try:
+                self.on_stream_reanchored(exchange, token, resolved_sym, self._recovery_epoch)
+            except Exception as exc:
+                logger.error("Error in on_stream_reanchored callback: {}", exc)
+
+    def repair_gap(self, exchange: str, token: str, gap_id: str) -> None:
+        """Acknowledge backfilled repair of a historical gap interval."""
+        resolved_sym = token
+        if self.instrument_master is not None:
+            resolved_sym = self.instrument_master.resolve_symbol(token, exchange) or token
+        if self.on_gap_repaired is not None:
+            try:
+                self.on_gap_repaired(exchange, token, resolved_sym, gap_id)
+            except Exception as exc:
+                logger.error("Error in on_gap_repaired callback: {}", exc)
 
     def subscribe_tick(self, callback: Callable[[MarketDataEvent], None]) -> None:
         """Register a subscriber callback for decoded market data events."""
@@ -267,7 +312,10 @@ class SmartAPIWebSocketClient:
 
         def run_socket() -> None:
             try:
-                self._ws.run_forever(
+                ws = self._ws
+                if ws is None:
+                    return
+                ws.run_forever(
                     sslopt=sslopt,
                     ping_interval=self.ping_interval,
                     ping_timeout=5,
@@ -377,9 +425,10 @@ class SmartAPIWebSocketClient:
                     self.metrics.sequence_gaps_total += gap_size
                     self._recovery_epoch += 1
                     curr_epoch = self._recovery_epoch
+                    self._degraded_tokens.add((event.exchange, event.token))
+                    self._gap_start_times[(event.exchange, event.token)] = recv_utc
                     with self._state_lock:
-                        if self._state == ConnectionState.CONNECTED:
-                            self._state = ConnectionState.DEGRADED
+                        self._state = ConnectionState.DEGRADED
                     resolved_sym = symbol_lookup(getattr(event, "exchange", "NSE"), getattr(event, "token", "")) or getattr(event, "token", "")
                     logger.warning(
                         "Stream sequence gap detected: exchange={} token={} symbol={} gap_size={}; transitioning connection to DEGRADED state and triggering resynchronization (epoch={}).",
@@ -393,26 +442,11 @@ class SmartAPIWebSocketClient:
                     self._trigger_stream_resync(getattr(event, "exchange", "NSE"), getattr(event, "token", ""))
                 elif is_dup:
                     self.metrics.duplicate_packets_total += 1
-                else:
-                    was_degraded = False
-                    with self._state_lock:
-                        if self._state == ConnectionState.DEGRADED:
-                            self._state = ConnectionState.CONNECTED
-                            was_degraded = True
-                    if was_degraded:
-                        resolved_sym = symbol_lookup(getattr(event, "exchange", "NSE"), getattr(event, "token", "")) or getattr(event, "token", "")
-                        logger.info("Stream synchronized: restored connection state to CONNECTED for {}.", resolved_sym)
-                        if self.on_stream_reanchored is not None:
-                            try:
-                                self.on_stream_reanchored(event.exchange, event.token, resolved_sym, self._recovery_epoch)
-                            except Exception as exc:
-                                logger.error("Error in on_stream_reanchored callback: {}", exc)
 
-            # Tag tick quality state based on connection state
-            if self.state == ConnectionState.DEGRADED:
-                object.__setattr__(event, "quality_state", "DEGRADED")
-            else:
-                object.__setattr__(event, "quality_state", "TRUSTED")
+            # Preserve event immutability while attaching stream trust metadata.
+            token_key = (getattr(event, "exchange", ""), getattr(event, "token", ""))
+            quality_state = "DEGRADED" if token_key in self._degraded_tokens else "TRUSTED"
+            event = replace(event, quality_state=quality_state, stream_epoch=self._recovery_epoch)
 
             # Admission validation gate (mandatory fail-closed)
             admission = self.admission_validator.validate(event, received_at_utc=recv_utc)

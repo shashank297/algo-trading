@@ -237,7 +237,7 @@ class TestHistoricalGateway(unittest.TestCase):
             bars=bad_df, symbol="UNREACHABLE_SYM", exchange="NSE", timeframe="1d", provider_name="angel_one", db=self.db,
         )
 
-        pipeline = StrategyPipeline(self.db)
+        pipeline = StrategyPipeline(self.db, require_authoritative_certification=False)
         with self.assertRaises(ValueError):
             pipeline.load_candles("UNREACHABLE_SYM", "1d")
 

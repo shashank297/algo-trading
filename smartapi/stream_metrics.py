@@ -78,12 +78,19 @@ class StreamSequenceTracker:
         with self._lock:
             self._last_sequences.clear()
 
+    def reanchor(self, exchange: str, token: str, baseline_seq: int) -> None:
+        """Explicitly re-anchor sequence baseline following snapshot resynchronization."""
+        stream_key = (exchange, token)
+        with self._lock:
+            self._last_sequences[stream_key] = baseline_seq
+
 
 @dataclass
 class StreamMetrics:
     """Global counters and latency distribution metrics for live streaming operations."""
 
     packets_received_total: int = 0
+    connection_uptime_seconds: float = 0.0
     packets_decoded_total: int = 0
     invalid_packets_total: int = 0
     invalid_packet_size: int = 0

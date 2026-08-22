@@ -90,7 +90,10 @@ class ExperimentManager:
             dataset_id: str | None
             if metadata.scope == StrategyScope.CROSS_SECTIONAL:
                 dataset = SynchronizedPanelBuilder(
-                    self.db, calendar=self.india_calendar, strict_calendar=self.india_calendar is not None,
+                    self.db,
+                    calendar=self.india_calendar,
+                    strict_calendar=self.india_calendar is not None,
+                    require_authoritative_certification=spec.require_authoritative_certification,
                 ).build(
                     spec.universe,
                     spec.timeframe,
@@ -116,7 +119,11 @@ class ExperimentManager:
                 result = portfolio_result.run
                 dataset_id = self._record_dataset_group(dataset, spec.timeframe)
             else:
-                outcome = StrategyPipeline(self.db, india_calendar=self.india_calendar).run(
+                outcome = StrategyPipeline(
+                    self.db,
+                    india_calendar=self.india_calendar,
+                    require_authoritative_certification=spec.require_authoritative_certification,
+                ).run(
                     strategy_name=spec.strategy_name,
                     symbol=spec.universe[0],
                     timeframe=spec.timeframe,
