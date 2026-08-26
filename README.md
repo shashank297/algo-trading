@@ -1,274 +1,176 @@
 # AlgoTrading — Research-First Systematic Trading Platform
 
-## Portfolio research commands
+## Quickstart & Key Commands
 
+### 1. Ingestion & Universe Setup
 ```powershell
+# Import official NIFTY 200 snapshot
 .\venv\Scripts\python.exe tools\import_nifty200.py --effective-date 2026-08-17 --snapshot-id NIFTY200_2026_08_17
+
+# Ingest daily history for snapshot constituents
 .\venv\Scripts\python.exe main.py --universe-snapshot NIFTY200_2026_08_17 --benchmark NIFTY200
+
+# Verify Point-in-Time universe readiness
 .\venv\Scripts\python.exe research.py --command universe-status --universe-snapshot NIFTY200_2026_08_17 --benchmark NIFTY200
-.\venv\Scripts\python.exe research.py --command portfolio-experiment --strategy cross_sectional_momentum --universe-snapshot NIFTY200_2026_08_17 --benchmark NIFTY200 --mode event-driven
-.\venv\Scripts\python.exe research.py --command paper --strategy trend_following --symbol RELIANCE-EQ --timeframe 1d
 ```
 
-Complete resumable history backfill (2012 or the provider/listing boundary, whichever is later):
-
+### 2. Strategy Research & Backtesting
 ```powershell
-.\venv\Scripts\python.exe tools\backfill_market_history.py --universe-snapshot NIFTY200_2026_08_17 --start-date 2012-01-01 --timeframes 1m,1d
+# Cross-sectional portfolio event-driven backtest
+.\venv\Scripts\python.exe research.py --command portfolio-experiment --strategy cross_sectional_momentum --universe-snapshot NIFTY200_2026_08_17 --benchmark NIFTY200 --mode event-driven
+
+# Single-asset strategy research
+.\venv\Scripts\python.exe research.py --strategy trend_following --symbol RELIANCE-EQ --timeframe 1d --mode vectorized
+
+# Resumable multi-strategy walk-forward mass research
+.\venv\Scripts\python.exe research.py --command mass-research --strategies trend_following,cross_sectional_momentum,low_volatility --universe-snapshot NIFTY200_2026_08_17
 ```
 
-Use `--symbols RELIANCE-EQ` and `--max-windows 2` for a bounded connectivity smoke test.
+### 3. Forward Paper Trading Simulation
+```powershell
+# EOD_BATCH execution (signals executed at completed bar close)
+.\venv\Scripts\python.exe research.py --command paper --strategy trend_following --symbol RELIANCE-EQ --timeframe 1d --execution-mode EOD_BATCH
 
-Snapshot portfolio experiments fail closed until `universe-status` reports `ready: true`.
-Snapshot ingestion is daily-only, automatically resolves the exact NIFTY 200 Angel index token,
-and performs a bounded overlapping repair of missing expected daily sessions. The first paper invocation intentionally creates no
-orders; it establishes the watermark and pending target for a future eligible bar.
+# TRUE_NEXT_OPEN execution (signals execute at next session opening tick observation)
+.\venv\Scripts\python.exe research.py --command paper --strategy trend_following --symbol RELIANCE-EQ --timeframe 1d --execution-mode TRUE_NEXT_OPEN
+```
+
+### 4. Interactive Web Dashboard
+```powershell
+# Start FastAPI backend (Read-Only connection to DuckDB)
+.\venv\Scripts\python.exe -m uvicorn tools.dashboard.api.main:app --port 8000 --reload
+
+# Start Vite/React frontend
+cd tools\dashboard\ui
+npm run dev
+```
+
+---
 
 ## Overview
-This project is a local-first systematic trading research platform. It preserves the Angel One SmartAPI ingestion engine for Indian markets and adds reproducible research, backtesting, paper-trading controls, provider-neutral data contracts, and evidence-bound AI research.
 
-The platform includes:
-- SmartAPI authentication with TOTP and token refresh
-- Instrument master download, caching, and lookup
-- Historical data download with chunking and rate limiting
-- DuckDB storage with idempotent upserts and audit logs
-- Incremental updates with overlap-safe deduplication
-- Data-quality validation
-- 20 long-only delivery-research strategies with two execution scopes
-- Resumable universe research with expanding walk-forward evidence
-- Portfolio event replay with Indian delivery costs and liquidity limits
-- RCA correlation clustering and deterministic paper-promotion gates
-- Loguru logging and saved summary reports
+This project is a local-first systematic trading research and simulation platform built for Indian equity markets (NSE). It combines the Angel One SmartAPI historical and streaming ingestion engine with reproducible backtesting, strict anti-lookahead causality invariants, fail-closed data quality gates, provider-neutral data contracts, and deterministic paper-trading controls.
 
-Live trading is intentionally disabled. Historical results are research evidence only, not proof that a strategy will be profitable.
+### Key Capabilities
+- **SmartAPI Ingestion**: TOTP authentication, token refresh, chunked history downloads, rate-limit backoff, and live binary WebSocket streaming.
+- **Data Quality & Provenance**: Atomic 6-check DQ certification gate (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`), immutable dataset content hashing, and Point-in-Time universe filtering.
+- **Corporate Actions Engine**: Automatic detection and adjustment of stock splits, consolidations, and dividends to generate canonical `SPLIT_ADJUSTED` research frames.
+- **20 Delivery Research Strategies**: 9 single-asset and 11 cross-sectional ranking strategies auto-discovered from `trading_stack/strategy_library/`.
+- **Causal Execution Engines**:
+  - `VectorizedBacktester`: Fast screening with cost model integration.
+  - `PortfolioEventBacktester`: Authoritative event replay with statutory Indian delivery costs (STT, stamp duty, exchange charges, GST, SEBI fee, DP charges), liquidity constraints (20-day lagged ADV participation caps), and partial fill tracking.
+- **Risk Management**: Independent `RiskEngine` enforcing strict position size (5%), gross exposure (20%), sector exposure (10%), daily loss (1%), and VaR limits.
+- **Root-Cause Analysis (RCA) & Promotion**: Out-of-sample correlation clustering, return overlap analysis, and deterministic research-to-paper promotion gates.
+- **Web Dashboard**: Interactive UI visualizing strategy runs, equity curves, drawdown series, fills, trade attribution, and data quality metrics.
 
-Python `3.12` and `3.13` are supported and exercised by CI.
+> **Safety Notice**: Live broker order routing is intentionally unavailable. All execution modes are deterministic research simulations and forward-only paper sessions.
+
+---
 
 ## Project Structure
+
 ```text
-AlgoTrading/
-├── config/
-│   ├── config.yaml
-│   ├── config.example.yaml
-│   ├── symbols.yaml
-│   └── .gitignore
-├── data/
-│   └── instrument_master.json
-├── logs/
-├── smartapi/
-│   ├── __init__.py
-│   ├── auth.py
-│   ├── historical.py
-│   └── instrument.py
-├── storage/
-│   ├── __init__.py
-│   └── duckdb_manager.py
-├── tests/
-│   ├── test_auth.py
-│   ├── test_historical.py
-│   ├── test_storage.py
-│   └── test_validators.py
-├── utils/
-│   ├── __init__.py
-│   ├── logger.py
-│   ├── report.py
-│   ├── retry.py
-│   └── timezone.py
-├── validators/
-│   ├── __init__.py
-│   └── data_quality.py
-├── .gitignore
-├── database_schema.sql
-├── main.py
-├── market_data.duckdb
-├── README.md
-└── requirements.txt
+algo-trading/
+├── ai_research/              # Structured evidence-bound AI research agents
+├── config/                   # Configuration files (YAML, symbols, market calendars)
+├── data_platform/            # Provider-neutral data contracts, admission, universe management
+├── docs/                     # Architectural, operational, risk, and security documentation
+├── experiments/              # Reproducible experiment specs, managers, and mass walk-forward jobs
+├── operations/               # Database backup, checksum verification, and recovery
+├── orchestration/            # Local task lifecycle, retries, and approval workflows
+├── risk/                     # Independent deterministic risk engine, policies, and validators
+├── smartapi/                 # Angel One broker API, auth, historical download, binary WebSocket
+├── specs/                    # Specification documentation and requirements checklists
+├── storage/                  # DuckDB persistence, schema migrations (001-010), integrity checks
+│   └── migrations/           # Versioned SQL migration scripts
+├── tests/                    # Deterministic pytest suite (385+ tests, >=95% critical coverage)
+├── tools/                    # Operational utilities, backfills, recovery scripts, and dashboard
+│   └── dashboard/            # Interactive Web Dashboard
+│       ├── api/              # FastAPI read-only backend
+│       └── ui/               # Vite + React + TypeScript frontend
+├── trading_stack/            # Core trading engine, calendars, features, execution, and paper
+│   └── strategy_library/     # 20 auto-discovered delivery-research strategies
+├── validators/               # Data quality and DuckDB integrity validators
+├── database_schema.sql       # Authoritative DuckDB schema definition
+├── main.py                   # Market data ingestion and live streaming entrypoint
+├── research.py               # Research, backtesting, RCA, and paper trading CLI
+└── scheduler.py              # Single-process advisory locked scheduling runner
 ```
 
-## Prerequisites
-- Windows, Linux, or macOS laptop
-- Python `3.12`
-- Angel One trading account with SmartAPI access enabled
-- SmartAPI API key
-- Client code
-- Trading PIN
-- TOTP secret from the Angel One app
+---
 
-## Installation
-```bash
+## Installation & Setup
+
+### Prerequisites
+- Python `3.12` or `3.13`
+- Node.js `20+` (for Dashboard UI)
+- Angel One trading account with SmartAPI enabled
+
+### Setup Virtual Environment
+```powershell
+python -m venv venv
+.\venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Configuration
-### Environment Variables
-Store SmartAPI credentials in environment variables instead of `config.yaml`:
-
-- `SMARTAPI_API_KEY`
-- `SMARTAPI_CLIENT_CODE`
-- `SMARTAPI_PIN`
-- `SMARTAPI_TOTP_SECRET`
-
-The application reads these values at startup and overlays them on top of `config/config.yaml`.
-Keep `SMARTAPI_BASE_URL` and `SMARTAPI_INSTRUMENT_MASTER_URL` in `config/config.yaml`.
-
-Retry limits in `rate_limits` are applied to transient SmartAPI requests. Maintain
-`data.market_holidays` with exchange holiday dates in `YYYY-MM-DD` format so data-quality
-checks do not report expected market closures as missing candles.
-
-### How to get SmartAPI API Key
-1. Log in to the Angel One SmartAPI portal.
-2. Create or open your app.
-3. Copy the generated API key.
-
-### How to get Client Code
-Use the same Angel One client code that you use to sign in to your trading account.
-
-### How to get TOTP Secret
-Open the Angel One app, then go to `Profile -> TOTP`. Use the TOTP secret shown there with an authenticator-compatible flow.
-
-### Create your local config
-```bash
-cp config/config.example.yaml config/config.yaml
-```
-
-PowerShell alternative:
+### Configuration
+1. Copy the example configuration:
 ```powershell
-Copy-Item config/config.example.yaml config/config.yaml
+Copy-Item config\config.example.yaml config\config.yaml
 ```
-
-Keep `config/config.yaml` for non-sensitive settings.
-For SmartAPI secrets, export the environment variables above before running `python main.py`.
-
-PowerShell example:
+2. Set your SmartAPI credentials via environment variables:
 ```powershell
 $env:SMARTAPI_API_KEY="your-api-key"
 $env:SMARTAPI_CLIENT_CODE="your-client-code"
 $env:SMARTAPI_PIN="your-pin"
 $env:SMARTAPI_TOTP_SECRET="your-totp-secret"
-python main.py
 ```
 
-## First Run
-```bash
-python main.py
+---
+
+## Quality Assurance & Verification
+
+The codebase maintains rigorous quality gates with 100% clean passes:
+
+```powershell
+# 1. Run deterministic test suite (387 tests)
+.\venv\Scripts\python.exe -m pytest -q
+
+# 2. Run Ruff linter
+.\venv\Scripts\python.exe -m ruff check .
+
+# 3. Run Mypy static type checking (85 source files)
+.\venv\Scripts\python.exe -m mypy ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools main.py research.py scheduler.py
+
+# 4. Run Pyright type checking
+npx --yes pyright
+
+# 5. Verify byte compilation
+.\venv\Scripts\python.exe -m compileall -q main.py research.py scheduler.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
+
+# 6. Verify test coverage gates (80% global, 95% critical path)
+.\venv\Scripts\python.exe -m coverage run -m pytest -q
+.\venv\Scripts\python.exe -m coverage report --fail-under=80
+.\venv\Scripts\python.exe -m coverage report --include="risk/*.py,trading_stack/paper.py,trading_stack/portfolio.py,trading_stack/portfolio_paper.py,trading_stack/pipeline.py,trading_stack/datasets.py,trading_stack/certification.py,trading_stack/promotion.py,smartapi/websocket_client.py,trading_stack/live_aggregator.py,storage/migrations/*.py" --fail-under=95
+
+# 7. Dependency vulnerability audit
+.\venv\Scripts\python.exe -m pip_audit -r requirements.txt
+
+# 8. Build Frontend Dashboard
+cd tools\dashboard\ui ; npm run build ; cd ..\..\..
 ```
 
-## Incremental Updates
-Run `python main.py` daily to keep data current.
+---
 
-Already-downloaded data is not duplicated. The downloader re-fetches from the latest stored candle date and relies on DuckDB primary-key deduplication to stay idempotent and recover cleanly from partial runs.
+## Documentation Index
 
-## GitHub Setup
-```bash
-git init
-git remote add origin https://github.com/username/AlgoTrading.git
-git add .
-git commit -m "feat: Phase 1 initial setup"
-git push -u origin main
-```
-
-`config.yaml` and `*.duckdb` are in `.gitignore` and will never be pushed to GitHub. The local `data/` and `logs/` folders are also ignored.
-
-## Expected Output (first run)
-Sample terminal output:
-
-```text
-2026-06-18 09:01:00 | INFO | __main__ | 🚀 AlgoTrading Phase 1 starting...
-2026-06-18 09:01:01 | INFO | smartapi.auth | ✅ Login successful for client: ABC123
-2026-06-18 09:01:03 | INFO | smartapi.instrument | 📦 Instrument master loaded: 97864 instruments
-Downloading: 100%|████████████████████████████████| 10/10 [04:32<00:00, 27.24s/it]
-╔══════════════════════════════════════════════════════════════╗
-║        AlgoTrading Phase 1 — Download Summary              ║
-╠══════════════════════════════════════════════════════════════╣
-║ Run Date     : 2026-06-18 09:01:00 IST                     ║
-║ Total Symbols: 10                                          ║
-║ Timeframes   : 1m, 1d                                      ║
-║ Duration     : 4m 32s                                      ║
-╠══════════════════════════════════════════════════════════════╣
-║ Symbol          TF    Candles   Inserted  Status           ║
-║ NIFTY           1m    185,420      1,240  ✅ SUCCESS       ║
-║ NIFTY           1d      1,580         12  ✅ SUCCESS       ║
-║ SENSEX          1m          0          0  ❌ FAILED        ║
-╠══════════════════════════════════════════════════════════════╣
-║ Quality Issues:                                             ║
-║  • NIFTY 1m: 2 issues                                      ║
-║  • TCS-EQ 1m: 0 issues                                     ║
-╚══════════════════════════════════════════════════════════════╝
-```
-
-## Verify Data
-```bash
-python -c "
-import duckdb
-c = duckdb.connect('market_data.duckdb')
-print(c.execute('''
-  SELECT symbol, timeframe, COUNT(*) as candles,
-         MIN(timestamp), MAX(timestamp)
-  FROM historical_candles
-  GROUP BY symbol, timeframe
-  ORDER BY symbol, timeframe
-''').df())
-"
-```
-
-## Troubleshooting
-- `AG8001 / AG8002`: Token expired. The engine automatically refreshes and retries.
-- `AB1009`: Symbol not found. Check the `token` and `exchange` in `config/symbols.yaml`.
-- `429`: Rate limit reached. The engine automatically backs off and retries.
-- Empty data: Check the symbol token, date range, trading session timing, and whether the market had valid candles for the requested span.
-
-## Continuous Integration
-
-Every push and pull request runs compilation and the full unittest suite on Python 3.12 and 3.13 via `.github/workflows/ci.yml`.
-
-## Manual Smoke Guide
-1. Fill `config/config.yaml` with your real SmartAPI credentials.
-2. Run `python main.py`.
-3. Confirm login succeeds and a log file appears under `logs/`.
-4. Confirm `data/instrument_master.json` refreshes when stale or missing.
-5. Confirm `market_data.duckdb` contains rows in `instrument_master`, `historical_candles`, `download_log`, and `quality_report`.
-6. Run `python main.py` a second time and confirm most rows show `UP_TO_DATE` or low insert counts because duplicate candles are ignored.
-
-## New Research Layer
-
-The repository now includes a new `trading_stack/` package and a `research.py` entrypoint for:
-
-- strategy templates
-- vectorized and event-driven backtests
-- paper-trading simulation
-- feature persistence
-- strategy run, order, fill, and reconciliation logging
-
-Example:
-
-```bash
-python research.py --strategy trend_following --symbol NIFTY --timeframe 1d --mode vectorized
-```
-
-## Research Workflows
-
-```bash
-# Record a reproducible experiment
-python research.py --command experiment --strategy trend_following --symbol NIFTY --timeframe 1d
-
-# Run the event-driven paper workflow with conservative risk controls
-python research.py --command paper --strategy trend_following --symbol NIFTY --timeframe 1d
-
-# Inspect recorded experiments
-python research.py --command inspect
-
-# Run structured AI research; requires OPENAI_API_KEY
-python research.py --command agent-research --strategy trend_following --symbol NIFTY --timeframe 1d
-
-# Run resumable mixed-scope research
-python research.py --command mass-research --strategies trend_following,cross_sectional_momentum --universe RELIANCE-EQ,TCS-EQ,HDFCBANK-EQ
-
-# Run authoritative cross-sectional portfolio replay
-python research.py --command portfolio-experiment --strategy low_volatility --universe RELIANCE-EQ,TCS-EQ,HDFCBANK-EQ,INFY-EQ,ICICIBANK-EQ
-
-# Ingest all eligible members from the imported official NIFTY 200 snapshot
-python main.py --universe-snapshot NIFTY200_2026_08_17
-```
-
-Running `python main.py` without the snapshot flag continues to use `config/symbols.yaml`. Snapshot ingestion fails explicitly if the snapshot is missing or contains no eligible members with Angel One tokens; it never silently falls back or mixes universes.
-
-See `docs/production_readiness.md`, `docs/operator_runbook.md`, `docs/data_sources.md`, `docs/strategies.md`, `docs/backtesting.md`, `docs/rca.md`, `docs/risk_management.md`, and `docs/security.md` before running a paper workflow.
+- [Architecture & Invariants](docs/architecture.md): Component boundaries, data flow, and target architecture.
+- [Production Readiness](docs/production_readiness.md): Production readiness status, verified evidence, and operational prerequisites.
+- [Traceability Matrix](docs/traceability_matrix.md): Mapping of all audit findings (P0-P2, E1-E15) to code and tests.
+- [Operator Runbook](docs/operator_runbook.md): Procedures for data operations, backfills, backups, and recovery.
+- [Operations Guide](tools/OPERATIONS.md): Quick reference for CLI commands, paper trading, and dashboard.
+- [Backtesting Guide](docs/backtesting.md): Vectorized vs. event-driven execution, cost schedules, and walk-forward splits.
+- [Data Sources & Adjustments](docs/data_sources.md): Providers, PIT universe isolation, and price adjustment policies.
+- [Risk Management](docs/risk_management.md): Risk engine contract, position sizing, VaR, and exposure constraints.
+- [Strategy Specifications](docs/strategies.md): Details of the 20 delivery-research strategies.
+- [Security & Data Safety](docs/security.md): Credential isolation, agent sandboxing, and data privacy.

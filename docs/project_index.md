@@ -1,144 +1,110 @@
 # Project Index
 
-This repository is a research-first systematic trading platform built on an Angel One SmartAPI historical-data engine.
+This repository is a research-first systematic trading and simulation platform built on an Angel One SmartAPI historical-data and streaming engine.
 
 ## What the project does
 
 - Authenticates with SmartAPI using API key, client code, PIN, and TOTP.
 - Downloads and caches the instrument master.
-- Fetches historical candles for configured symbols and timeframes.
-- Stores data in DuckDB with idempotent upserts.
-- Runs data-quality validation after ingestion.
-- Writes audit logs and a run summary.
+- Fetches historical candles for configured symbols and timeframes with rate limiting and retry backoff.
+- Ingests live binary WebSocket packets, decodes feeds, tracks sequence gaps, and logs telemetry.
+- Computes canonical `SPLIT_ADJUSTED` price data using official corporate action records.
+- Enforces strict Point-in-Time universe filtering and constituent masking.
+- Evaluates 20 auto-discovered delivery-research strategies with vectorized and event-driven backtesting.
+- Enforces independent risk policies (position, gross exposure, sector exposure, daily loss, drawdown, and VaR).
+- Executes forward-only paper sessions under `EOD_BATCH` and `TRUE_NEXT_OPEN` modes.
+- Generates out-of-sample RCA correlation clusters and evaluates atomic 5-category promotion bundles.
+- Serves an interactive Web Dashboard for inspecting runs, equity curves, fills, attribution, and data quality.
 
-## Top-Level Files
+## Top-Level Entrypoints
 
-- [main.py](../main.py): Orchestrates the entire ingestion pipeline.
-- [database_schema.sql](../database_schema.sql): DuckDB schema definition.
-- [README.md](../README.md): Setup, usage, and project overview.
-- [requirements.txt](../requirements.txt): Python dependencies.
-- [PROJECT_INDEX.md](../PROJECT_INDEX.md): This file.
-- `market_data.duckdb`: Local DuckDB database generated at runtime.
-- `research.py`: CLI entrypoint for research, backtesting, and paper runs.
-- `scheduler.py`: Task scheduler and crontab operations.
+- [`main.py`](../main.py): Orchestrates market data ingestion and live streaming client.
+- [`research.py`](../research.py): CLI entrypoint for research, backtesting, RCA, walk-forward, and paper runs.
+- [`scheduler.py`](../scheduler.py): Single-process advisory-locked task scheduler.
+- [`run_pipeline.py`](../run_pipeline.py): Local pipeline orchestration wrapper.
+- [`clean_db.py`](../clean_db.py): Research state reset utility.
+- [`database_schema.sql`](../database_schema.sql): Authoritative DuckDB schema definition.
+- [`README.md`](../README.md): Setup, usage, and project overview.
+- [`requirements.txt`](../requirements.txt): Production Python dependencies.
 
 ## Configuration
 
-- [config/config.yaml](../config/config.yaml): Active runtime config.
-- [config/config.example.yaml](../config/config.example.yaml): Template config.
-- [config/symbols.yaml](../config/symbols.yaml): Symbols, tokens, exchanges, and instrument types.
-
-Important config groups:
-
-- `smartapi`: API credentials and SmartAPI URLs.
-- `database`: DuckDB file path.
-- `logging`: Log directory and log settings.
-- `rate_limits`: Request throttling and retry parameters.
-- `data`: Start date, timeframes, instrument master refresh interval.
-- `timezone`: Market timezone and market open/close times.
+- [`config/config.yaml`](../config/config.yaml): Active runtime config.
+- [`config/config.example.yaml`](../config/config.example.yaml): Template config.
+- [`config/symbols.yaml`](../config/symbols.yaml): Symbols, tokens, exchanges, and instrument types.
 
 ## Source Packages
 
-### `smartapi/`
+### `smartapi/` (Broker Integration & Streaming)
+- [`smartapi/auth.py`](../smartapi/auth.py): Handles login, token refresh, header creation.
+- [`smartapi/historical.py`](../smartapi/historical.py): Fetches and normalizes historical candles.
+- [`smartapi/instrument.py`](../smartapi/instrument.py): Downloads, caches, and queries instrument master data.
+- [`smartapi/stream_decoder.py`](../smartapi/stream_decoder.py): High-performance binary packet decoder for SmartStream feeds.
+- [`smartapi/stream_metrics.py`](../smartapi/stream_metrics.py): Feed latency, dispatch latency, and sequence gap tracking.
+- [`smartapi/subscription_registry.py`](../smartapi/subscription_registry.py): Mode-aware subscription management and action payload building.
+- [`smartapi/websocket_client.py`](../smartapi/websocket_client.py): Generation-isolated WebSocket streaming client with quarantine store.
 
-- [smartapi/auth.py](../smartapi/auth.py): Handles login, token refresh, header creation.
-- [smartapi/historical.py](../smartapi/historical.py): Fetches and normalizes historical candles.
-- [smartapi/instrument.py](../smartapi/instrument.py): Downloads, caches, and queries instrument master data.
-- [smartapi/__init__.py](../smartapi/__init__.py): Re-exports SmartAPI classes.
+### `storage/` (DuckDB Persistence & Migrations)
+- [`storage/duckdb_manager.py`](../storage/duckdb_manager.py): Creates schema, upserts rows, executes atomic transactions, and logs audit events.
+- [`storage/integrity.py`](../storage/integrity.py): Forensic database relational integrity and foreign-key validation.
+- [`storage/migrations/runner.py`](../storage/migrations/runner.py): Checksum-validated schema migration runner (migrations 001 through 010).
 
-### `storage/`
+### `data_platform/` (Data Contracts & Semantics)
+- [`data_platform/contracts.py`](../data_platform/contracts.py): Normalized ticker modes, ticks, bars, quotes, and adjustments.
+- [`data_platform/live_admission.py`](../data_platform/live_admission.py): Market data admission validator and tick filtering.
+- [`data_platform/providers.py`](../data_platform/providers.py): Provider abstraction layer (Angel One, DuckDB Cache, OpenBB).
+- [`data_platform/service.py`](../data_platform/service.py): Unified market data ingestion service.
+- [`data_platform/source_semantics.py`](../data_platform/source_semantics.py): Corporate action detection, `PriceAdjustmentEngine`, and basis transformation.
+- [`data_platform/universe.py`](../data_platform/universe.py): Point-in-Time universe filtering and snapshot membership.
 
-- [storage/duckdb_manager.py](../storage/duckdb_manager.py): Creates schema, upserts rows, and writes audit records.
-- [storage/__init__.py](../storage/__init__.py): Re-exports the DuckDB manager.
+### `trading_stack/` (Execution, Strategies & Paper Trading)
+- [`trading_stack/domain.py`](../trading_stack/domain.py): Shared market, order, fill, `OpeningTickObservation`, and run models.
+- [`trading_stack/calendars.py`](../trading_stack/calendars.py): NSE and global market session calendars with annualization logic.
+- [`trading_stack/features.py`](../trading_stack/features.py): Causal feature factory.
+- [`trading_stack/strategies.py`](../trading_stack/strategies.py): Strategy base contracts and auto-discovery registry.
+- `trading_stack/strategy_library/`: 20 delivery-research strategies (9 single-asset, 11 cross-sectional).
+- [`trading_stack/backtest.py`](../trading_stack/backtest.py): Vectorized and event-driven backtest engines.
+- [`trading_stack/costs.py`](../trading_stack/costs.py): Side-aware Indian delivery statutory and broker cost schedules.
+- [`trading_stack/datasets.py`](../trading_stack/datasets.py): `SynchronizedPanelBuilder` with PIT constituent masking and exact frame certification.
+- [`trading_stack/live_aggregator.py`](../trading_stack/live_aggregator.py): Multi-window event-time watermark live bar aggregator with stream re-anchoring.
+- [`trading_stack/paper.py`](../trading_stack/paper.py): Single-asset forward paper trading engine (`EOD_BATCH` and `TRUE_NEXT_OPEN`).
+- [`trading_stack/portfolio.py`](../trading_stack/portfolio.py): `PortfolioEventBacktester` with liquidity caps, partial fills, and causal lagged ADV.
+- [`trading_stack/portfolio_paper.py`](../trading_stack/portfolio_paper.py): Forward-only cross-sectional portfolio paper session engine.
+- [`trading_stack/certification.py`](../trading_stack/certification.py): `RunCertificationService` evaluating exact 5-category evidence bundles.
+- [`trading_stack/promotion.py`](../trading_stack/promotion.py): Deterministic research-to-paper promotion gates evaluating stitched OOS returns.
+- [`trading_stack/rca.py`](../trading_stack/rca.py): Out-of-sample correlation clustering, overlap analysis, and loss attribution.
+
+### `risk/` (Deterministic Risk Management)
+- [`risk/engine.py`](../risk/engine.py): Independent `RiskEngine` evaluating order sizing, exposure, and limits.
+- [`risk/models.py`](../risk/models.py): `RiskPolicy`, `RiskDecision`, and `RiskAction` domain contracts.
+- [`risk/validators.py`](../risk/validators.py): `RequiredRiskStateValidator` and constraint validators.
+
+### `experiments/` & `orchestration/`
+- [`experiments/manager.py`](../experiments/manager.py): Reproducible experiment runner and provenance tracking.
+- [`experiments/mass.py`](../experiments/mass.py): Resumable multi-strategy walk-forward research orchestrator.
+- [`experiments/walk_forward.py`](../experiments/walk_forward.py): Chronological train/test window splitting.
+- [`orchestration/engine.py`](../orchestration/engine.py): Task lifecycle management with non-overlapping worker retries.
+
+### `tools/` & `tools/dashboard/` (Operational Tools & Web Dashboard)
+- [`tools/import_nifty200.py`](../tools/import_nifty200.py): Official NIFTY 200 snapshot importer.
+- [`tools/backfill_market_history.py`](../tools/backfill_market_history.py): Resumable multi-timeframe historical backfill.
+- [`tools/database_recovery.py`](../tools/database_recovery.py): Backup, verification, and restore utility.
+- [`tools/revalidate_historical_datasets.py`](../tools/revalidate_historical_datasets.py): Data quality revalidation runner.
+- [`tools/dashboard/api/main.py`](../tools/dashboard/api/main.py): FastAPI backend providing read-only endpoints for runs, metrics, and data quality.
+- `tools/dashboard/ui/`: Vite + React + TypeScript web application frontend.
 
 ### `validators/`
+- [`validators/data_quality.py`](../validators/data_quality.py): In-memory data quality validation for missing candles, duplicates, and OHLC integrity.
+- [`validators/duckdb_quality.py`](../validators/duckdb_quality.py): In-database data quality validator implementing the 6 required child checks.
 
-- [validators/data_quality.py](../validators/data_quality.py): Runs missing-candle, duplicate, future timestamp, null, and OHLC integrity checks.
-- [validators/__init__.py](../validators/__init__.py): Re-exports the validator.
+## Documentation Index
 
-### `utils/`
-
-- [utils/logger.py](../utils/logger.py): Loguru setup.
-- [utils/report.py](../utils/report.py): Generates the run summary.
-- [utils/retry.py](../utils/retry.py): Retry decorators and SmartAPI error types.
-- [utils/timezone.py](../utils/timezone.py): IST helpers and date chunking.
-- [utils/__init__.py](../utils/__init__.py): Re-exports utility helpers.
-
-### `trading_stack/`
-
-- [trading_stack/domain.py](../trading_stack/domain.py): Shared market, order, fill, and run models.
-- [trading_stack/calendars.py](../trading_stack/calendars.py): Market session calendars for India, US, forex, and crypto.
-- [trading_stack/features.py](../trading_stack/features.py): Research feature factory.
-- [trading_stack/strategies.py](../trading_stack/strategies.py): Strategy contracts, compatibility classes, and automatic registry.
-- `trading_stack/strategy_library/`: Twenty auto-discovered delivery-research strategies.
-- [trading_stack/backtest.py](../trading_stack/backtest.py): Vectorized and event-driven backtest engines.
-- `trading_stack/broker.py`: Broker interface and execution modeling.
-- `trading_stack/paper.py`: Forward-only paper trading execution wrapper.
-- [trading_stack/pipeline.py](../trading_stack/pipeline.py): End-to-end orchestration and persistence.
-- [trading_stack/portfolio.py](../trading_stack/portfolio.py): Allocation helpers and authoritative cross-sectional portfolio replay.
-- `trading_stack/portfolio_paper.py`: Portfolio-level paper execution coordination.
-- `trading_stack/datasets.py`: Synchronized universe panels and eligibility handling.
-- `trading_stack/universe.py`: Universe components and constraints processing.
-- `trading_stack/costs.py`: Versioned side-aware Indian delivery costs.
-- `trading_stack/rca.py`: Out-of-sample correlation, overlap, clustering, and loss attribution.
-- `trading_stack/promotion.py`: Deterministic research-to-paper promotion gates.
-- [trading_stack/validation.py](../trading_stack/validation.py): Chronological out-of-sample and walk-forward splits.
-
-### Research Platform Packages
-
-- `data_platform/`: Provider-neutral data contracts, Angel One and DuckDB adapters, optional OpenBB HTTP adapter, and provenance storage.
-- `experiments/`: Reproducible experiment specifications and run management.
-- `risk/`: Independent conservative risk policy and deterministic trade review.
-- `orchestration/`: Persisted local task lifecycle, retry, approval, and cancellation controls.
-- `ai_research/`: Structured OpenAI-first research roles with no shell, SQL, web, or broker permissions.
-
-## Tests
-
-- [tests/test_auth.py](../tests/test_auth.py): SmartAPI auth behavior.
-- [tests/test_configuration.py](../tests/test_configuration.py): Settings and config schema.
-- [tests/test_historical.py](../tests/test_historical.py): Historical data chunking, retries, and normalization.
-- [tests/test_multi_strategy_platform.py](../tests/test_multi_strategy_platform.py): Core platform, orchestrations, and multi-strategy interactions.
-- [tests/test_observability.py](../tests/test_observability.py): Logger and metrics assertions.
-- [tests/test_operations.py](../tests/test_operations.py): Operational utility tests.
-- [tests/test_quality_severity.py](../tests/test_quality_severity.py): Validation logic severity.
-- [tests/test_research_platform.py](../tests/test_research_platform.py): Event loop and research tools testing.
-- [tests/test_scheduler.py](../tests/test_scheduler.py): Scheduler functions and timing.
-- [tests/test_storage.py](../tests/test_storage.py): DuckDB schema and upsert behavior.
-- [tests/test_timezone.py](../tests/test_timezone.py): IST calculations and chunking.
-- [tests/test_trading_stack.py](../tests/test_trading_stack.py): Backtest limits, risk controls, and validation runs.
-- [tests/test_validators.py](../tests/test_validators.py): Data-quality checks.
-
-## Runtime Flow
-
-1. Load `config/config.yaml`.
-2. Overlay SmartAPI secret values from environment variables.
-3. Validate config and symbols.
-4. Configure logging.
-5. Log in to SmartAPI.
-6. Initialize DuckDB and schema.
-7. Download or reuse the instrument master.
-8. Loop over every configured symbol and timeframe.
-9. Fetch missing candle data in date chunks.
-10. Upsert candles into DuckDB.
-11. Write download audit logs.
-12. Validate stored candles.
-13. Write quality reports.
-14. Generate the run summary.
-15. Close the database.
-16. Optionally run a strategy research or paper session via `research.py`.
-
-## Generated Artifacts
-
-- `logs/algotrading_YYYY-MM-DD.log`: Runtime log file.
-- `logs/summary_YYYY-MM-DD.txt`: Text summary of the ingestion run.
-- `data/instrument_master.json`: Cached instrument master.
-- `market_data.duckdb`: Local database file.
-
-## Notes
-
-- See `PRODUCTION_READINESS.md` for the verified audit status, release blockers, and go-live sequence.
-- See `OPERATOR_RUNBOOK.md` for preflight, backfill, research, paper, recovery, and incident procedures.
-- The project is designed for local-only execution.
-- Live execution remains disabled; research agents can never access SmartAPI credentials or broker actions.
-- `config.yaml` and the DuckDB file should stay out of source control.
-
+- [`docs/architecture.md`](architecture.md): Architecture boundaries and target-state design.
+- [`docs/production_readiness.md`](production_readiness.md): Production readiness status and verification evidence.
+- [`docs/traceability_matrix.md`](traceability_matrix.md): Invariant and audit finding traceability.
+- [`docs/operator_runbook.md`](operator_runbook.md): Operator runbook for maintenance and incidents.
+- [`docs/backtesting.md`](backtesting.md): Backtesting models and execution realism.
+- [`docs/risk_management.md`](risk_management.md): Risk management policies and limits.
+- [`docs/data_sources.md`](data_sources.md): Data sources, adjustments, and providers.
+- [`docs/strategies.md`](strategies.md): 20 strategy specifications.
+- [`docs/security.md`](security.md): Security and credential safety.

@@ -78,7 +78,7 @@
 
 ### Start Frontend UI
 ```powershell
-cd tools/dashboard
+cd tools/dashboard/ui
 npm run dev
 ```
 
