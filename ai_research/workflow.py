@@ -98,11 +98,17 @@ class ResearchWorkflow:
             "risk": risk_output,
             "synthesis": synthesis,
             "experiment_id": experiment_result["experiment_id"],
-            "paper_eligible": bool(goal.paper_approved and goal.paper_session_id and risk.approved_notional > 0),
+            "paper_eligible": bool(
+                goal.paper_approved
+                and (goal.paper_session_id or goal.paper_portfolio_session_id)
+                and risk.approved_notional > 0
+            ),
         }
 
     def _authoritative_risk_decision(self, goal: ResearchGoal, starting_capital: float) -> RiskDecision:
         """Use an explicitly bound paper ledger or make the result non-executable."""
+        if goal.paper_portfolio_session_id:
+            return self._portfolio_risk_decision(goal, starting_capital)
         if not goal.paper_session_id:
             return RiskDecision(
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
@@ -156,6 +162,113 @@ class ResearchWorkflow:
             daily_turnover_crore=float(turnover[0] or 0.0) / 10_000_000.0 if turnover else 0.0,
             estimated_portfolio_var_pct=1.65 * volatility,
         ))
+
+    def _portfolio_risk_decision(self, goal: ResearchGoal, starting_capital: float) -> RiskDecision:
+        """Evaluate an AI proposal against all persisted holdings in a portfolio session."""
+        session_id = str(goal.paper_portfolio_session_id)
+        session = self.db.conn.execute(
+            """SELECT cash, peak_equity, daily_start_equity, last_processed_timestamp, status, universe_snapshot_id
+               FROM paper_portfolio_sessions WHERE session_id = ?""",
+            [session_id],
+        ).fetchone()
+        if not session or str(session[4]) != "ACTIVE" or session[3] is None:
+            return self._reject_authoritative(goal, starting_capital, "MISSING_OR_INACTIVE_AUTHORITATIVE_PORTFOLIO_STATE")
+        holdings = self.db.conn.execute(
+            "SELECT symbol, quantity FROM paper_portfolio_holdings WHERE session_id = ? AND quantity <> 0",
+            [session_id],
+        ).fetchall()
+        symbols = {goal.symbol, *(str(row[0]) for row in holdings)}
+        marks = self._authoritative_marks(symbols, session[3])
+        if marks is None:
+            return self._reject_authoritative(goal, starting_capital, "MISSING_AUTHORITATIVE_PORTFOLIO_MARK_PRICE")
+        sectors = self._authoritative_sectors(symbols, str(session[5]))
+        if sectors is None:
+            return self._reject_authoritative(goal, starting_capital, "MISSING_AUTHORITATIVE_SECTOR_STATE")
+        quantities = {str(symbol): float(quantity) for symbol, quantity in holdings}
+        gross_exposure = sum(abs(quantity * marks[symbol]) for symbol, quantity in quantities.items())
+        sector_exposure = sum(
+            abs(quantity * marks[symbol]) for symbol, quantity in quantities.items()
+            if sectors[symbol] == sectors[goal.symbol]
+        )
+        equity = float(session[0]) + sum(quantity * marks[symbol] for symbol, quantity in quantities.items())
+        if equity <= 0:
+            return self._reject_authoritative(goal, starting_capital, "NON_POSITIVE_AUTHORITATIVE_PORTFOLIO_EQUITY")
+        volatility = self._portfolio_volatility(quantities, marks, session[3])
+        if volatility is None:
+            return self._reject_authoritative(goal, starting_capital, "INSUFFICIENT_AUTHORITATIVE_PORTFOLIO_VAR_HISTORY")
+        turnover = self.db.conn.execute(
+            """SELECT COALESCE(SUM(ABS(quantity * price)), 0) FROM strategy_fills
+               WHERE run_id = ? AND CAST(timestamp AS DATE) = CAST(? AS DATE)""",
+            [session_id, session[3]],
+        ).fetchone()
+        peak = float(session[1] or equity)
+        return self.risk_engine.evaluate(TradeProposal(
+            symbol=goal.symbol,
+            requested_notional=equity * 0.05,
+            capital=equity,
+            current_position_notional=quantities.get(goal.symbol, 0.0) * marks[goal.symbol],
+            current_gross_exposure=gross_exposure,
+            daily_pnl=equity - float(session[2] or equity),
+            current_drawdown=max((peak - equity) / max(peak, 1e-12), 0.0),
+            current_sector_exposure=sector_exposure,
+            open_position_count=len(quantities),
+            daily_turnover_crore=float(turnover[0] or 0.0) / 10_000_000.0 if turnover is not None else 0.0,
+            estimated_portfolio_var_pct=1.65 * volatility,
+        ))
+
+    def _reject_authoritative(self, goal: ResearchGoal, capital: float, reason: str) -> RiskDecision:
+        return RiskDecision(
+            symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=capital * 0.05,
+            approved_notional=0.0, reasons=[reason], policy=self.risk_engine.policy,
+        )
+
+    def _authoritative_marks(self, symbols: set[str], as_of: Any) -> dict[str, float] | None:
+        marks: dict[str, float] = {}
+        for symbol in symbols:
+            row = self.db.conn.execute(
+                "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                [symbol, as_of],
+            ).fetchone()
+            if not row or float(row[0]) <= 0:
+                return None
+            marks[symbol] = float(row[0])
+        return marks
+
+    def _authoritative_sectors(self, symbols: set[str], snapshot_id: str) -> dict[str, str] | None:
+        rows = self.db.conn.execute(
+            "SELECT symbol, sector FROM universe_snapshot_members WHERE snapshot_id = ?",
+            [snapshot_id],
+        ).fetchall()
+        sectors = {str(symbol): str(sector) for symbol, sector in rows if sector and str(sector) != "UNKNOWN"}
+        return sectors if symbols.issubset(sectors) else None
+
+    def _portfolio_volatility(
+        self, quantities: dict[str, float], marks: dict[str, float], as_of: Any,
+    ) -> float | None:
+        active = {symbol: quantity for symbol, quantity in quantities.items() if quantity != 0}
+        if not active:
+            return None
+        rows = self.db.conn.execute(
+            """SELECT symbol, timestamp, close FROM historical_candles
+               WHERE symbol IN (SELECT UNNEST(?)) AND timestamp <= ? ORDER BY timestamp DESC""",
+            [list(active), as_of],
+        ).fetchall()
+        series: dict[str, list[float]] = {symbol: [] for symbol in active}
+        for symbol, _, close in rows:
+            values = series[str(symbol)]
+            if len(values) < 21:
+                values.append(float(close))
+        if any(len(values) < 21 for values in series.values()):
+            return None
+        weights_total = sum(abs(quantity * marks[symbol]) for symbol, quantity in active.items())
+        returns = [0.0] * 20
+        for symbol, quantity in active.items():
+            prices = list(reversed(series[symbol]))
+            weight = abs(quantity * marks[symbol]) / weights_total
+            for index in range(1, 21):
+                returns[index - 1] += weight * ((prices[index] / prices[index - 1]) - 1.0)
+        mean = sum(returns) / len(returns)
+        return (sum((value - mean) ** 2 for value in returns) / len(returns)) ** 0.5
 
     def _data_context(self, goal: ResearchGoal) -> dict[str, Any]:
         frame = self.db.get_candles(goal.symbol, goal.timeframe.lower())

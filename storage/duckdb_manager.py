@@ -341,7 +341,7 @@ class DuckDBManager:
         gap_size: int,
         stream_epoch: int,
         detected_at: datetime,
-    ) -> None:
+    ) -> str:
         """Persist one unrepaired stream discontinuity in the canonical gap ledger."""
         if min(expected_sequence, received_sequence, gap_size, stream_epoch) < 0 or gap_size <= 0:
             raise ValueError("Stream gap evidence requires non-negative bounds and positive gap_size.")
@@ -354,6 +354,7 @@ class DuckDBManager:
                 [gap_id, token, symbol, exchange, expected_sequence, received_sequence,
                  gap_size, stream_epoch, detected_at, detected_at],
             )
+        return gap_id
 
     def reanchor_stream_gap(
         self, *, exchange: str, token: str, stream_epoch: int, reanchored_at: datetime, evidence: dict[str, Any],
@@ -374,7 +375,7 @@ class DuckDBManager:
             )
         return [(str(row[0]), str(row[1] or token), row[2], row[3]) for row in rows]
 
-    def repair_stream_gap(self, *, gap_id: str, evidence: dict[str, Any], repaired_at: datetime) -> tuple[str, datetime, datetime | None]:
+    def repair_stream_gap(self, *, gap_id: str, evidence: dict[str, Any], repaired_at: datetime) -> tuple[str, str, datetime, datetime | None]:
         """Mark a specific historical range repaired and return its interval for memory projection."""
         with self.transaction():
             row = self.conn.execute(
@@ -388,16 +389,16 @@ class DuckDBManager:
                    WHERE gap_id = ?""",
                 [repaired_at, json.dumps(evidence, sort_keys=True, default=str), gap_id],
             )
-        return str(row[0]), row[1], row[2]
+        return gap_id, str(row[0]), row[1], row[2]
 
-    def load_unrepaired_stream_gaps(self) -> list[tuple[str, datetime, datetime | None]]:
+    def load_unrepaired_stream_gaps(self) -> list[tuple[str, str, datetime, datetime | None]]:
         """Load canonical unresolved intervals; database failure is intentionally propagated."""
         rows = self.conn.execute(
-            "SELECT symbol, gap_start, gap_end FROM stream_gaps WHERE gap_status = 'UNREPAIRED'"
+            "SELECT gap_id, symbol, gap_start, gap_end FROM stream_gaps WHERE gap_status = 'UNREPAIRED'"
         ).fetchall()
-        if any(not row[0] or row[1] is None for row in rows):
+        if any(not row[0] or not row[1] or row[2] is None for row in rows):
             raise RuntimeError("Canonical stream gap ledger contains an invalid unresolved interval.")
-        return [(str(row[0]), row[1], row[2]) for row in rows]
+        return [(str(row[0]), str(row[1]), row[2], row[3]) for row in rows]
 
     def upsert_instrument_master(self, df: pd.DataFrame) -> int:
         """Upsert the instrument master into DuckDB.
@@ -988,7 +989,7 @@ class DuckDBManager:
             self._safe_unregister(table_name)
 
     def log_strategy_fills(self, fills: list[dict[str, Any]]) -> None:
-        """Persist fill rows for backtest or paper sessions."""
+        """Persist immutable fill rows; conflicting replay evidence is rejected."""
 
         if not fills:
             return
@@ -996,10 +997,26 @@ class DuckDBManager:
         table_name = f"temp_strategy_fills_{uuid.uuid4().hex}"
         try:
             with self._write_lock:
+                existing = self.conn.execute(
+                    "SELECT fill_id, order_id, run_id, symbol, timestamp, quantity, price, side, fill_type "
+                    "FROM strategy_fills WHERE fill_id IN (SELECT UNNEST(?))",
+                    [fill_df["fill_id"].astype(str).tolist()],
+                ).fetchall()
+                proposed = {
+                    str(row.fill_id): (
+                        str(row.order_id), str(row.run_id), str(row.symbol), row.timestamp,
+                        float(row.quantity), float(row.price), str(row.side), str(row.fill_type),
+                    )
+                    for row in fill_df.itertuples(index=False)
+                }
+                for row in existing:
+                    persisted = (str(row[1]), str(row[2]), str(row[3]), row[4], float(row[5]), float(row[6]), str(row[7]), str(row[8]))
+                    if proposed[str(row[0])] != persisted:
+                        raise ValueError(f"Conflicting immutable fill evidence for fill_id={row[0]}.")
                 self.conn.register(table_name, fill_df)
                 self.conn.execute(
                     f"""
-                    INSERT OR REPLACE INTO strategy_fills (
+                    INSERT INTO strategy_fills (
                         fill_id,
                         order_id,
                         run_id,
@@ -1027,6 +1044,7 @@ class DuckDBManager:
                         slippage_bps,
                         metadata_json
                     FROM {table_name}
+                    ON CONFLICT (fill_id) DO NOTHING
                     """
                 )
         except Exception as exc:
@@ -1034,6 +1052,43 @@ class DuckDBManager:
             raise
         finally:
             self._safe_unregister(table_name)
+
+    def record_paper_position_intents(self, rows: list[dict[str, Any]]) -> None:
+        """Append desired-position evidence, rejecting a changed replay at the same instant."""
+        for row in rows:
+            existing = self.conn.execute(
+                "SELECT desired_quantity FROM paper_position_intents WHERE session_id = ? AND symbol = ? AND as_of = ?",
+                [row["session_id"], row["symbol"], row["as_of"]],
+            ).fetchone()
+            if existing is not None:
+                if float(existing[0]) != float(row["desired_quantity"]):
+                    raise ValueError("Conflicting desired-position evidence for an existing paper execution instant.")
+                continue
+            self.conn.execute(
+                """INSERT INTO paper_position_intents
+                   (intent_id, session_id, symbol, as_of, desired_quantity, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                [row["intent_id"], row["session_id"], row["symbol"], row["as_of"], row["desired_quantity"], row["created_at"]],
+            )
+
+    def fill_derived_positions(self, session_id: str) -> dict[str, float]:
+        """Rebuild observed position quantities from immutable fills only."""
+        rows = self.conn.execute(
+            """SELECT symbol, SUM(CASE WHEN side = 'BUY' THEN quantity ELSE -quantity END)
+               FROM strategy_fills WHERE run_id = ? GROUP BY symbol""",
+            [session_id],
+        ).fetchall()
+        return {str(symbol): float(quantity or 0.0) for symbol, quantity in rows}
+
+    def latest_paper_position_intents(self, session_id: str) -> dict[str, float]:
+        """Return the latest independently persisted desired quantity for each symbol."""
+        rows = self.conn.execute(
+            """SELECT symbol, desired_quantity FROM paper_position_intents
+               WHERE session_id = ?
+               QUALIFY ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY as_of DESC, created_at DESC) = 1""",
+            [session_id],
+        ).fetchall()
+        return {str(symbol): float(quantity) for symbol, quantity in rows}
 
     def log_paper_reconciliation(self, rows: list[dict[str, Any]]) -> None:
         """Persist paper-trading reconciliation rows."""

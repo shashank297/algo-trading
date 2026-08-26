@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
@@ -146,6 +147,7 @@ class ForwardPortfolioPaperSessionEngine:
                     session_id, strategy_name, universe_snapshot_id, timeframe, parameters,
                     latest_timestamp, starting_capital, 0, starting_capital=starting_capital,
                 )
+                self._record_desired_positions(session_id, {}, latest_timestamp.to_pydatetime(), now)
                 summary = self._reconcile(
                     session_id, as_of, [], [], 0.0,
                     "portfolio session bootstrapped; no historical orders replayed",
@@ -329,10 +331,16 @@ class ForwardPortfolioPaperSessionEngine:
                 session_id, strategy_name, universe_snapshot_id, timeframe, parameters,
                 final_timestamp, equity, len(quantities), starting_capital=starting_capital,
             )
+            self._record_desired_positions(session_id, quantities, final_timestamp, now)
             summary = self._reconcile(
                 session_id, as_of, all_orders, all_fills, equity - starting_capital,
                 "forward-only synchronized portfolio paper reconciliation",
             )
+            if summary["drift"] > 1e-9:
+                self.db.conn.execute(
+                    "UPDATE paper_portfolio_sessions SET status = 'RECONCILIATION_FAILED' WHERE session_id = ?",
+                    [session_id],
+                )
         return ForwardPortfolioPaperResult(
             session_id, "PROCESSED", strategy_name, universe_snapshot_id, timeframe,
             len(dates), tuple(all_orders), tuple(all_fills), cash, quantities, equity,
@@ -548,13 +556,11 @@ class ForwardPortfolioPaperSessionEngine:
         fills: list[dict[str, Any]],
         pnl: float,
         notes: str,
-        target_quantities: dict[str, float] | None = None,
-        actual_quantities: dict[str, float] | None = None,
     ) -> dict[str, Any]:
-        drift = 0.0
-        if target_quantities is not None and actual_quantities is not None:
-            all_syms = set(target_quantities) | set(actual_quantities)
-            drift = sum(abs(actual_quantities.get(s, 0.0) - target_quantities.get(s, 0.0)) for s in all_syms)
+        target_quantities = self.db.latest_paper_position_intents(session_id)
+        actual_quantities = self.db.fill_derived_positions(session_id)
+        all_syms = set(target_quantities) | set(actual_quantities)
+        drift = sum(abs(actual_quantities.get(s, 0.0) - target_quantities.get(s, 0.0)) for s in all_syms)
         submitted_count = len(orders)
         filled_count = len(fills)
         rejected_count = sum(order.get("status") == "REJECTED" for order in orders)
@@ -573,6 +579,23 @@ class ForwardPortfolioPaperSessionEngine:
         }
         self.db.log_paper_reconciliation([summary])
         return summary
+
+    def _record_desired_positions(
+        self, session_id: str, quantities: dict[str, float], as_of: datetime, created_at: datetime,
+    ) -> None:
+        desired = {symbol: 0.0 for symbol in self.db.latest_paper_position_intents(session_id)}
+        desired.update(quantities)
+        self.db.record_paper_position_intents([
+            {
+                "intent_id": str(uuid.uuid5(uuid.NAMESPACE_URL, f"portfolio-intent:{session_id}:{symbol}:{as_of.isoformat()}")),
+                "session_id": session_id,
+                "symbol": symbol,
+                "as_of": as_of,
+                "desired_quantity": quantity,
+                "created_at": created_at,
+            }
+            for symbol, quantity in desired.items()
+        ])
 
     def _session_id(
         self,

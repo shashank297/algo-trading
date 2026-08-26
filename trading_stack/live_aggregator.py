@@ -98,44 +98,77 @@ class RealtimeBarAggregator:
         self._last_day_volumes: dict[str, int] = {}
         # Completed bar history / deduplication
         self._closed_windows: set[tuple[str, pd.Timestamp]] = set()
-        # Thread-safe untrusted window intervals for gap-affected data: symbol -> list of (start_time, end_time)
-        self._untrusted_windows: dict[str, list[tuple[datetime, datetime | None]]] = {}
+        # Thread-safe canonical gap projection: symbol -> (gap_id, start_time, end_time).
+        self._untrusted_windows: dict[str, list[tuple[str, datetime, datetime | None]]] = {}
 
-    def mark_untrusted(self, symbol: str, start_time: datetime, end_time: datetime | None = None) -> None:
+    def mark_untrusted(
+        self, gap_id: str, symbol: str | datetime, start_time: datetime | None = None, end_time: datetime | None = None,
+    ) -> None:
         """Flag an interval for a symbol as degraded/untrusted due to stream sequence gaps."""
+        if isinstance(symbol, datetime):
+            # Compatibility projection for old diagnostic callers; production callbacks
+            # always provide the canonical gap ID explicitly.
+            legacy_symbol = gap_id
+            gap_id = f"legacy:{legacy_symbol}:{symbol.isoformat()}"
+            end_time = start_time
+            start_time = symbol
+            symbol = legacy_symbol
+        if start_time is None:
+            raise ValueError("Untrusted interval requires a start timestamp.")
         with self._lock:
-            if symbol not in self._untrusted_windows:
-                self._untrusted_windows[symbol] = []
-            self._untrusted_windows[symbol].append((start_time, end_time))
+            intervals = self._untrusted_windows.setdefault(symbol, [])
+            if any(existing_id == gap_id for existing_id, _, _ in intervals):
+                return
+            intervals.append((gap_id, start_time, end_time))
 
-    def close_degraded_interval(self, symbol: str, reanchor_time: datetime) -> None:
-        """Close open-ended untrusted intervals at re-anchor timestamp while preserving historical gap interval."""
+    def close_degraded_interval(self, gap_id: str, reanchor_time: datetime) -> None:
+        """Close exactly one persisted gap interval at its authoritative re-anchor time."""
         with self._lock:
-            if symbol in self._untrusted_windows:
-                updated: list[tuple[datetime, datetime | None]] = []
-                for start_time, end_time in self._untrusted_windows[symbol]:
-                    if end_time is None:
-                        updated.append((start_time, reanchor_time))
-                    else:
-                        updated.append((start_time, end_time))
-                self._untrusted_windows[symbol] = updated
+            for symbol, intervals in self._untrusted_windows.items():
+                for index, (existing_id, start_time, end_time) in enumerate(intervals):
+                    if existing_id == gap_id:
+                        intervals[index] = (existing_id, start_time, end_time or reanchor_time)
+                        return
+            # Legacy diagnostics addressed intervals by symbol. This compatibility
+            # path is intentionally not used by live lifecycle callbacks.
+            if gap_id in self._untrusted_windows:
+                intervals = self._untrusted_windows[gap_id]
+                self._untrusted_windows[gap_id] = [
+                    (existing_id, start_time, end_time or reanchor_time)
+                    for existing_id, start_time, end_time in intervals
+                ]
+                return
+            raise KeyError(f"Unknown canonical stream gap {gap_id}.")
 
-    def repair_gap(self, symbol: str, from_time: datetime, to_time: datetime | None = None) -> None:
+    def repair_gap(self, gap_id: str, from_time: datetime | None = None, to_time: datetime | None = None) -> None:
         """Remove or resolve historical untrusted interval upon verified backfill."""
         with self._lock:
-            if symbol in self._untrusted_windows:
-                self._untrusted_windows[symbol] = [
-                    (st, et) for st, et in self._untrusted_windows[symbol]
-                    if not (st == from_time and (to_time is None or et == to_time or et is None))
+            for symbol, intervals in list(self._untrusted_windows.items()):
+                updated = [interval for interval in intervals if interval[0] != gap_id]
+                if len(updated) != len(intervals):
+                    if updated:
+                        self._untrusted_windows[symbol] = updated
+                    else:
+                        del self._untrusted_windows[symbol]
+                    return
+            if from_time is not None and gap_id in self._untrusted_windows:
+                self._untrusted_windows[gap_id] = [
+                    (existing_id, start_time, end_time)
+                    for existing_id, start_time, end_time in self._untrusted_windows[gap_id]
+                    if not (start_time == from_time and (to_time is None or end_time == to_time or end_time is None))
                 ]
+                if not self._untrusted_windows[gap_id]:
+                    del self._untrusted_windows[gap_id]
+                return
+            raise KeyError(f"Unknown canonical stream gap {gap_id}.")
 
     def load_unresolved_gaps(self, db: Any) -> None:
         """Reload unrepaired stream gaps from DuckDB into untrusted window registry."""
         with self._lock:
             self._untrusted_windows.clear()
             rows = db.load_unrepaired_stream_gaps()
-            for sym, start_time, end_time in rows:
-                self._untrusted_windows.setdefault(sym, []).append((start_time, end_time))
+            for gap_id, sym, start_time, end_time in rows:
+                self._untrusted_windows.setdefault(sym, []).append((gap_id, start_time, end_time))
             logger.info("Loaded {} canonical unrepaired stream gaps into aggregator.", len(rows))
 
     @property
@@ -328,7 +361,7 @@ class RealtimeBarAggregator:
         is_authoritative = True
         quality_status = "TRUSTED"
 
-        for gap_start, gap_end in self._untrusted_windows.get(symbol, []):
+        for _, gap_start, gap_end in self._untrusted_windows.get(symbol, []):
             if gap_start < w_end and (gap_end is None or gap_end > w_start):
                 is_authoritative = False
                 quality_status = "UNTRUSTED"

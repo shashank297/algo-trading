@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from enum import Enum
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ClaimKind(str, Enum):
@@ -56,6 +56,13 @@ class ResearchGoal(BaseModel):
     max_tokens: int = Field(default=20_000, ge=1_000, le=1_000_000)
     paper_approved: bool = False
     paper_session_id: str | None = None
+    paper_portfolio_session_id: str | None = None
+
+    @model_validator(mode="after")
+    def validate_paper_risk_scope(self) -> "ResearchGoal":
+        if self.paper_session_id and self.paper_portfolio_session_id:
+            raise ValueError("paper_session_id and paper_portfolio_session_id are mutually exclusive.")
+        return self
 
     @field_validator("symbol", "timeframe", "strategy_name")
     @classmethod

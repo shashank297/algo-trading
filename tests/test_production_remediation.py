@@ -18,18 +18,20 @@ def test_canonical_gap_lifecycle_survives_reanchor_and_repair(tmp_path):
     )
     aggregator = RealtimeBarAggregator()
     aggregator.load_unresolved_gaps(db)
-    assert aggregator._untrusted_windows["TEST"] == [(detected, None)]
+    assert aggregator._untrusted_windows["TEST"][0][0] == "gap-1"
+    assert aggregator._untrusted_windows["TEST"][0][2] is None
     db.reanchor_stream_gap(
         exchange="NSE", token="1", stream_epoch=2, reanchored_at=reanchored, evidence={"baseline": 200},
     )
     restarted = RealtimeBarAggregator()
     restarted.load_unresolved_gaps(db)
-    assert restarted._untrusted_windows["TEST"] == [(detected, reanchored)]
-    symbol, start, end = db.repair_stream_gap(
+    assert restarted._untrusted_windows["TEST"][0][0] == "gap-1"
+    assert restarted._untrusted_windows["TEST"][0][2] == reanchored
+    gap_id, _, _, _ = db.repair_stream_gap(
         gap_id="gap-1", repaired_at=reanchored, evidence={"backfill": "verified"},
     )
-    restarted.repair_gap(symbol, start, end)
-    assert restarted._untrusted_windows["TEST"] == []
+    restarted.repair_gap(gap_id)
+    assert "TEST" not in restarted._untrusted_windows
     assert db.load_unrepaired_stream_gaps() == []
 
 
@@ -39,6 +41,17 @@ def test_gap_reload_failure_is_not_silenced(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "load_unrepaired_stream_gaps", lambda: (_ for _ in ()).throw(RuntimeError("database unavailable")))
     with pytest.raises(RuntimeError, match="database unavailable"):
         aggregator.load_unresolved_gaps(db)
+
+
+def test_reanchor_closes_only_the_matching_gap_id():
+    detected = datetime(2026, 1, 5, 4, 0, tzinfo=timezone.utc)
+    aggregator = RealtimeBarAggregator()
+    aggregator.mark_untrusted("gap-a", "TEST", detected)
+    aggregator.mark_untrusted("gap-b", "TEST", detected)
+    aggregator.close_degraded_interval("gap-b", detected)
+    windows = {gap_id: end for gap_id, _, end in aggregator._untrusted_windows["TEST"]}
+    assert windows["gap-a"] is None
+    assert windows["gap-b"] == detected
 
 
 def test_certification_requires_direct_run_frame_binding(tmp_path):

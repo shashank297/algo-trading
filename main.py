@@ -9,7 +9,6 @@ import concurrent.futures
 import argparse
 import hashlib
 import json
-import uuid
 from collections import Counter
 from datetime import date, datetime, time as time_value, timedelta, timezone
 from pathlib import Path
@@ -545,6 +544,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         )
 
     def on_stream_degraded(
+        gap_id: str,
         exchange: str,
         token: str,
         symbol: str,
@@ -556,28 +556,35 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
     ) -> None:
         start_time, end_time = gap
         stream_db.record_stream_gap(
-            gap_id=str(uuid.uuid4()), exchange=exchange, token=token, symbol=symbol or token,
+            gap_id=gap_id, exchange=exchange, token=token, symbol=symbol or token,
             expected_sequence=expected_sequence, received_sequence=received_sequence,
             gap_size=gap_size, stream_epoch=epoch, detected_at=start_time,
         )
-        aggregator.mark_untrusted(symbol or token, start_time, end_time)
+        aggregator.mark_untrusted(gap_id, symbol or token, start_time, end_time)
 
     def on_gap_repaired(exchange: str, token: str, symbol: str, gap_id: str) -> None:
-        repaired_symbol, start_time, end_time = stream_db.repair_stream_gap(
+        repaired_gap_id, _, _, _ = stream_db.repair_stream_gap(
             gap_id=gap_id,
             repaired_at=datetime.now(timezone.utc),
             evidence={"exchange": exchange, "token": token, "requested_symbol": symbol},
         )
-        aggregator.repair_gap(repaired_symbol, start_time, end_time)
+        aggregator.repair_gap(repaired_gap_id)
 
-    def on_stream_reanchored(exchange: str, token: str, symbol: str, epoch: int) -> None:
+    def on_stream_reanchored(
+        exchange: str, token: str, symbol: str, epoch: int, expected_gap_ids: list[str],
+    ) -> None:
         reanchor_time = datetime.now(timezone.utc)
         rows = stream_db.reanchor_stream_gap(
             exchange=exchange, token=token, stream_epoch=epoch, reanchored_at=reanchor_time,
             evidence={"exchange": exchange, "token": token, "symbol": symbol, "stream_epoch": epoch},
         )
-        for _, affected_symbol, _, _ in rows:
-            aggregator.close_degraded_interval(affected_symbol, reanchor_time)
+        persisted_ids = {gap_id for gap_id, _, _, _ in rows}
+        if persisted_ids != set(expected_gap_ids):
+            raise RuntimeError(
+                f"Canonical re-anchor evidence mismatch: expected={expected_gap_ids}, persisted={sorted(persisted_ids)}"
+            )
+        for gap_id, _, _, _ in rows:
+            aggregator.close_degraded_interval(gap_id, reanchor_time)
         logger.info(
             "Stream re-anchored for exchange={} token={} symbol={} epoch={} at {}",
             exchange,

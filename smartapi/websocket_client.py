@@ -8,6 +8,7 @@ import random
 import ssl
 import threading
 import time
+import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -37,6 +38,11 @@ class ConnectionState(str, Enum):
     DEGRADED = "DEGRADED"
     RECONNECTING = "RECONNECTING"
     STOPPING = "STOPPING"
+    RECOVERY_FAILED = "RECOVERY_FAILED"
+
+
+class StreamRecoveryError(RuntimeError):
+    """Raised when mandatory durable stream-gap recovery evidence cannot be persisted."""
 
 
 class SmartAPIWebSocketClient:
@@ -107,6 +113,7 @@ class SmartAPIWebSocketClient:
         self._auth_refresh_lock = threading.Lock()
         self._degraded_tokens: set[tuple[str, str]] = set()
         self._gap_start_times: dict[tuple[str, str], datetime] = {}
+        self._gap_ids: dict[tuple[str, str], list[str]] = {}
         self._recovery_epoch = 0
 
     @property
@@ -125,43 +132,48 @@ class SmartAPIWebSocketClient:
         """Authoritatively re-anchor stream baseline following snapshot resync."""
         if baseline_seq is None or baseline_seq < 0:
             raise ValueError("Authoritative stream re-anchor requires a non-negative sequence baseline.")
-        self.metrics.sequence_tracker.reanchor(exchange, token, baseline_seq)
-        # Also reanchor under prefix variants
-        for ex in ["NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"]:
-            self.metrics.sequence_tracker.reanchor(ex, token, baseline_seq)
-
         keys_to_remove = [
             k for k in self._degraded_tokens
             if k[1] == token and (k[0] == exchange or k[0].startswith(exchange) or exchange.startswith(k[0]))
         ]
+        gap_ids = [gap_id for key in keys_to_remove for gap_id in self._gap_ids.get(key, [])]
+        resolved_sym = token
+        if self.instrument_master is not None:
+            resolved_sym = self.instrument_master.resolve_symbol(token, exchange) or token
+        if self.on_stream_reanchored is None:
+            raise StreamRecoveryError("Authoritative stream re-anchor requires a durable lifecycle callback.")
+        try:
+            self.on_stream_reanchored(exchange, token, resolved_sym, self._recovery_epoch, gap_ids)
+        except Exception as exc:
+            with self._state_lock:
+                self._state = ConnectionState.RECOVERY_FAILED
+            raise StreamRecoveryError(
+                f"Unable to durably re-anchor stream gap for {exchange}:{token}; trusted dispatch remains blocked."
+            ) from exc
+
+        self.metrics.sequence_tracker.reanchor(exchange, token, baseline_seq)
+        # Also reanchor under prefix variants.
+        for ex in ["NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"]:
+            self.metrics.sequence_tracker.reanchor(ex, token, baseline_seq)
         for k in keys_to_remove:
             self._degraded_tokens.discard(k)
             self._gap_start_times.pop(k, None)
+            self._gap_ids.pop(k, None)
 
         with self._state_lock:
             if not self._degraded_tokens and self._state == ConnectionState.DEGRADED:
                 self._state = ConnectionState.CONNECTED
 
-        resolved_sym = token
-        if self.instrument_master is not None:
-            resolved_sym = self.instrument_master.resolve_symbol(token, exchange) or token
         logger.info("Stream authoritatively re-anchored for {}:{}.", exchange, resolved_sym)
-        if self.on_stream_reanchored is not None:
-            try:
-                self.on_stream_reanchored(exchange, token, resolved_sym, self._recovery_epoch)
-            except Exception as exc:
-                logger.error("Error in on_stream_reanchored callback: {}", exc)
 
     def repair_gap(self, exchange: str, token: str, gap_id: str) -> None:
         """Acknowledge backfilled repair of a historical gap interval."""
         resolved_sym = token
         if self.instrument_master is not None:
             resolved_sym = self.instrument_master.resolve_symbol(token, exchange) or token
-        if self.on_gap_repaired is not None:
-            try:
-                self.on_gap_repaired(exchange, token, resolved_sym, gap_id)
-            except Exception as exc:
-                logger.error("Error in on_gap_repaired callback: {}", exc)
+        if self.on_gap_repaired is None:
+            raise StreamRecoveryError("Canonical gap repair requires a durable lifecycle callback.")
+        self.on_gap_repaired(exchange, token, resolved_sym, gap_id)
 
     def subscribe_tick(self, callback: Callable[[MarketDataEvent], None]) -> None:
         """Register a subscriber callback for decoded market data events."""
@@ -426,8 +438,10 @@ class SmartAPIWebSocketClient:
                     self.metrics.sequence_gaps_total += gap_size
                     self._recovery_epoch += 1
                     curr_epoch = self._recovery_epoch
+                    gap_id = str(uuid.uuid4())
                     self._degraded_tokens.add((event.exchange, event.token))
                     self._gap_start_times[(event.exchange, event.token)] = recv_utc
+                    self._gap_ids.setdefault((event.exchange, event.token), []).append(gap_id)
                     with self._state_lock:
                         self._state = ConnectionState.DEGRADED
                     resolved_sym = symbol_lookup(getattr(event, "exchange", "NSE"), getattr(event, "token", "")) or getattr(event, "token", "")
@@ -435,18 +449,20 @@ class SmartAPIWebSocketClient:
                         "Stream sequence gap detected: exchange={} token={} symbol={} gap_size={}; transitioning connection to DEGRADED state and triggering resynchronization (epoch={}).",
                         event.exchange, event.token, resolved_sym, gap_size, curr_epoch,
                     )
-                    if self.on_stream_degraded is not None:
-                        try:
-                            try:
-                                self.on_stream_degraded(
-                                    event.exchange, event.token, resolved_sym, (recv_utc, None),
-                                    seq_num - gap_size, seq_num, gap_size, curr_epoch,
-                                )
-                            except TypeError:
-                                # Compatibility adapter for external diagnostic consumers.
-                                self.on_stream_degraded(event.exchange, event.token, resolved_sym, (recv_utc, None), curr_epoch)
-                        except Exception as exc:
-                            logger.error("Error in on_stream_degraded callback: {}", exc)
+                    if self.on_stream_degraded is None:
+                        with self._state_lock:
+                            self._state = ConnectionState.RECOVERY_FAILED
+                        raise StreamRecoveryError("Canonical gap detection requires a durable lifecycle callback.")
+                    try:
+                        self.on_stream_degraded(
+                            gap_id, event.exchange, event.token, resolved_sym, (recv_utc, None),
+                            seq_num - gap_size, seq_num, gap_size, curr_epoch,
+                        )
+                    except Exception as exc:
+                        with self._state_lock:
+                            self._state = ConnectionState.RECOVERY_FAILED
+                        logger.critical("Unable to persist canonical stream gap {}: {}", gap_id, exc)
+                        return
                     self._trigger_stream_resync(getattr(event, "exchange", "NSE"), getattr(event, "token", ""))
                 elif is_dup:
                     self.metrics.duplicate_packets_total += 1

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tempfile
-import time
+import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
@@ -229,14 +229,23 @@ class ResearchPlatformTests(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM agent_outputs").fetchone()[0], 4)
 
     def test_task_timeout_is_enforced_before_callable_returns(self) -> None:
-        started = time.monotonic()
-        with self.assertRaises(TimeoutError):
-            TaskOrchestrator(self.db).run_task(
-                goal_id="goal-timeout", task_name="bounded",
-                executor=lambda: (time.sleep(0.2) or {"late": True}),
-                timeout_seconds=0.05,
-            )
-        self.assertLess(time.monotonic() - started, 0.15)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked_callable() -> dict[str, bool]:
+            entered.set()
+            release.wait(timeout=1.0)
+            return {"late": True}
+
+        try:
+            with self.assertRaises(TimeoutError):
+                TaskOrchestrator(self.db).run_task(
+                    goal_id="goal-timeout", task_name="bounded",
+                    executor=blocked_callable, timeout_seconds=0.05,
+                )
+            self.assertTrue(entered.is_set())
+        finally:
+            release.set()
 
     def test_real_agent_gateway_fails_closed_without_pricing(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "pricing must be configured"):

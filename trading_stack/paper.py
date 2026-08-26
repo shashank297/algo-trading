@@ -115,6 +115,7 @@ class ForwardPaperSessionEngine:
                 })
                 self._save_pending(session_id, pending, now)
                 self._persist_run_state(session_id, strategy_name, symbol, timeframe, parameters, latest_timestamp, starting_capital, 0.0)
+                self._record_desired_position(session_id, symbol, latest_timestamp.to_pydatetime(), 0.0, now)
                 summary = self._reconcile(session_id, as_of, [], [], 0.0, "forward session bootstrapped; no historical orders replayed")
             return ForwardPaperResult(
                 session_id, "BOOTSTRAPPED", strategy_name, symbol, timeframe, 0, (), (),
@@ -237,9 +238,12 @@ class ForwardPaperSessionEngine:
             if cost_rows:
                 self.db._replace_rows("fill_cost_components", cost_rows)
             self._persist_run_state(session_id, strategy_name, symbol, timeframe, parameters, pd.Timestamp(new_bars["timestamp"].max()), equity, quantity, starting_capital=starting_capital)
+            self._record_desired_position(
+                session_id, symbol, pd.Timestamp(new_bars["timestamp"].max()).to_pydatetime(), quantity, now,
+            )
             summary = self._reconcile(
                 session_id, as_of, all_orders, all_fills, equity - starting_capital,
-                "forward-only paper reconciliation", desired_quantity=quantity,
+                "forward-only paper reconciliation",
             )
             if summary["drift"] > 1e-9:
                 self.db.conn.execute("UPDATE paper_sessions SET status = 'RECONCILIATION_FAILED' WHERE session_id = ?", [session_id])
@@ -607,19 +611,11 @@ class ForwardPaperSessionEngine:
         fills: list[dict[str, Any]],
         pnl: float,
         notes: str,
-        desired_quantity: float | None = None,
-        observed_quantity: float | None = None,
     ) -> dict[str, Any]:
-        if observed_quantity is None:
-            try:
-                row = self.db.conn.execute(
-                    "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'current_quantity' ORDER BY rowid DESC LIMIT 1",
-                    [session_id],
-                ).fetchone()
-                observed_quantity = float(row[0]) if row and row[0] is not None else 0.0
-            except Exception:
-                observed_quantity = 0.0
-        drift = abs((desired_quantity if desired_quantity is not None else observed_quantity) - observed_quantity)
+        desired = self.db.latest_paper_position_intents(session_id)
+        observed = self.db.fill_derived_positions(session_id)
+        symbols = set(desired) | set(observed)
+        drift = sum(abs(desired.get(symbol, 0.0) - observed.get(symbol, 0.0)) for symbol in symbols)
         submitted_count = len(orders)
         filled_count = len(fills)
         rejected_count = sum(order.get("status") == "REJECTED" for order in orders)
@@ -638,6 +634,22 @@ class ForwardPaperSessionEngine:
         }
         self.db.log_paper_reconciliation([summary])
         return summary
+
+    @staticmethod
+    def _intent_id(session_id: str, symbol: str, as_of: datetime) -> str:
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"paper-intent:{session_id}:{symbol}:{as_of.isoformat()}"))
+
+    def _record_desired_position(
+        self, session_id: str, symbol: str, as_of: datetime, quantity: float, created_at: datetime,
+    ) -> None:
+        self.db.record_paper_position_intents([{
+            "intent_id": self._intent_id(session_id, symbol, as_of),
+            "session_id": session_id,
+            "symbol": symbol,
+            "as_of": as_of,
+            "desired_quantity": quantity,
+            "created_at": created_at,
+        }])
 
     @staticmethod
     def _session_id(

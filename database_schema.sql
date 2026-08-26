@@ -175,6 +175,25 @@ CREATE TABLE IF NOT EXISTS paper_reconciliation (
     PRIMARY KEY (run_id, trade_date)
 );
 
+-- Append-only strategy intent ledger. Reconciliation compares this independently
+-- persisted target against fill-derived positions, never mutable run metrics.
+CREATE TABLE IF NOT EXISTS paper_position_intents (
+    intent_id VARCHAR NOT NULL PRIMARY KEY,
+    session_id VARCHAR NOT NULL,
+    symbol VARCHAR NOT NULL,
+    as_of TIMESTAMPTZ NOT NULL,
+    desired_quantity DOUBLE NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL,
+    UNIQUE (session_id, symbol, as_of)
+);
+
+CREATE TABLE IF NOT EXISTS lineage_backfill_rejections (
+    run_id VARCHAR NOT NULL PRIMARY KEY,
+    legacy_frame_certification_id VARCHAR,
+    rejection_reason VARCHAR NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL
+);
+
 -- Immutable provenance for normalized market-data snapshots. Historical candles
 -- remain the compatibility cache used by the original ingestion pipeline.
 CREATE TABLE IF NOT EXISTS market_datasets (
