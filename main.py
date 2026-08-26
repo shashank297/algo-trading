@@ -549,6 +549,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         token: str,
         symbol: str,
         gap: tuple[datetime, datetime | None],
+        gap_size: int,
         epoch: int,
     ) -> None:
         start_time, end_time = gap
@@ -557,7 +558,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
             """INSERT INTO stream_gap_events
                (gap_id, exchange, token, symbol, start_time, end_time, gap_size, epoch, status)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNREPAIRED')""",
-            [str(uuid.uuid4()), exchange, token, symbol, start_time, end_time, 1, epoch],
+            [str(uuid.uuid4()), exchange, token, symbol, start_time, end_time, gap_size, epoch],
         )
 
     def on_gap_repaired(exchange: str, token: str, symbol: str, gap_id: str) -> None:

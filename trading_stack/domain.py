@@ -50,8 +50,8 @@ class OpeningTickObservation:
     price: float
     exchange_timestamp: datetime | None = None
     received_at_utc: datetime | None = None
-    timestamp: datetime | None = None
     sequence_number: int | None = None
+    stream_epoch: int | None = None
     quality_state: str = "TRUSTED"
 
     def __post_init__(self) -> None:
@@ -59,24 +59,27 @@ class OpeningTickObservation:
             raise ValueError("Opening tick observations require non-empty symbol, exchange, and token.")
         if not math.isfinite(self.price) or self.price <= 0:
             raise ValueError("Opening tick price must be finite and greater than zero.")
-        ts = self.exchange_timestamp or self.timestamp
+        ts = self.exchange_timestamp
         if ts is None:
             raise ValueError("Opening tick observations require an exchange timestamp.")
         if ts.tzinfo is None or ts.utcoffset() is None:
             raise ValueError("Opening tick exchange timestamp must be timezone-aware.")
-        received = self.received_at_utc or ts
+        received = self.received_at_utc
+        if received is None:
+            raise ValueError("Opening tick observations require an independently recorded receipt timestamp.")
         if received.tzinfo is None or received.utcoffset() is None:
             raise ValueError("Opening tick receipt timestamp must be timezone-aware.")
         if received < ts:
             raise ValueError("Opening tick receipt time cannot precede exchange event time.")
         if self.sequence_number is not None and self.sequence_number < 0:
             raise ValueError("Opening tick sequence number cannot be negative.")
-        if self.exchange_timestamp is None:
-            object.__setattr__(self, "exchange_timestamp", ts)
-        if self.timestamp is None:
-            object.__setattr__(self, "timestamp", ts)
-        if self.received_at_utc is None:
-            object.__setattr__(self, "received_at_utc", received)
+        if self.stream_epoch is not None and self.stream_epoch < 0:
+            raise ValueError("Opening tick stream epoch cannot be negative.")
+
+    @property
+    def timestamp(self) -> datetime:
+        """Compatibility alias for exchange time; never receipt-time evidence."""
+        return self.exchange_timestamp
 
 
 @dataclass(frozen=True)

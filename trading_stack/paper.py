@@ -167,7 +167,7 @@ class ForwardPaperSessionEngine:
                 obs_ts = obs_ts.tz_localize("UTC") if obs_ts.tzinfo is None else obs_ts
                 if obs_ts.tz_convert(self.calendar.zone).date() == bar_session_date:
                     bar["open_tick_observation"] = opening_observation
-            elif open_tick_price is not None:
+            elif execution_mode != PaperExecutionMode.TRUE_NEXT_OPEN.value and open_tick_price is not None:
                 if open_tick_timestamp is not None:
                     ts_val = pd.Timestamp(open_tick_timestamp)
                     ts_val = ts_val.tz_localize("UTC") if ts_val.tzinfo is None else ts_val
@@ -272,7 +272,19 @@ class ForwardPaperSessionEngine:
         elif execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN":
             obs = bar.get("open_tick_observation")
             if obs is not None and hasattr(obs, "price"):
-                if getattr(obs, "quality_state", "TRUSTED") == "TRUSTED" and float(obs.price) > 0:
+                expected_exchange = str(bar.get("exchange") or "").upper()
+                expected_token = str(bar.get("token") or "")
+                identity_matches = (
+                    str(getattr(obs, "symbol", "")) == symbol
+                    and (not expected_exchange or str(getattr(obs, "exchange", "")).upper() == expected_exchange)
+                    and (not expected_token or str(getattr(obs, "token", "")) == expected_token)
+                )
+                if (
+                    identity_matches
+                    and getattr(obs, "quality_state", "") == "TRUSTED"
+                    and getattr(obs, "received_at_utc", None) is not None
+                    and float(obs.price) > 0
+                ):
                     price = float(obs.price)
                     execution_timestamp = pd.Timestamp(
                         getattr(obs, "received_at_utc", None) or getattr(obs, "timestamp", None)
@@ -290,13 +302,6 @@ class ForwardPaperSessionEngine:
                         "metadata_json": json.dumps({"reason": pending.get("reason", "signal"), "rejection_reason": "MISSED_LIVE_OPEN_PRICE", "execution_mode": execution_mode, "execution_source": "UNAVAILABLE"}),
                     }
                     return (cash, quantity, average_cost, entry_timestamp, entry_reason, entry_cost_pool, entry_execution_cost_pool, rejected_order, None, None, None, None)
-            elif bar.get("open_tick_price") is not None and float(bar["open_tick_price"]) > 0:
-                price = float(bar["open_tick_price"])
-                execution_timestamp = pd.Timestamp(
-                    bar.get("open_tick_timestamp") or bar["timestamp"]
-                ).to_pydatetime()
-                source_seq = bar.get("source_sequence_number")
-                execution_source = "OBSERVED_TICK"
             else:
                 rejected_order = {
                     "order_id": str(uuid.uuid4()), "run_id": session_id, "symbol": symbol,
@@ -366,7 +371,10 @@ class ForwardPaperSessionEngine:
                 "signal_timestamp": str(pending["signal_timestamp"]),
                 "reason": pending.get("reason", "signal"),
                 "execution_source": execution_source,
+                "source_exchange_timestamp": str(getattr(obs, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,
+                "source_received_at_utc": str(getattr(obs, "received_at_utc", "")) if execution_source == "OBSERVED_TICK" else None,
                 "source_sequence_number": source_seq,
+                "source_stream_epoch": getattr(obs, "stream_epoch", None) if execution_source == "OBSERVED_TICK" else None,
             },
             risk_decision=decision,
             volume=float(bar.get("lagged_adv20") or bar.get("prior_volume") or bar.get("volume") or 0.0),

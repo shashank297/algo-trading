@@ -67,10 +67,20 @@ class PromotionEngine:
         paper_activation: bool = False,
         certification_bundle_id: str | None = None,
     ) -> dict[str, object]:
-        run = self.db.conn.execute("SELECT strategy_name, mode FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
+        run = self.db.conn.execute(
+            "SELECT strategy_name, mode, data_hash, frame_certification_id FROM strategy_runs WHERE run_id = ?", [run_id]
+        ).fetchone()
         if run is None:
             raise ValueError(f"Unknown run: {run_id}")
         strategy_name = str(run[0])
+        run_data_hash = str(run[2])
+        run_frame_certification_id = str(run[3]) if run[3] else None
+        if run_frame_certification_id is None:
+            legacy_notes = self.db.conn.execute("SELECT notes FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
+            try:
+                run_frame_certification_id = json.loads(str(legacy_notes[0] or "{}"))["frame_certification_id"]
+            except (IndexError, KeyError, TypeError, json.JSONDecodeError):
+                pass
 
         # Resolve or certify immutable run certification bundle
         from trading_stack.certification import RunCertificationService
@@ -84,13 +94,21 @@ class PromotionEngine:
             else:
                 certification_bundle_id = RunCertificationService(self.db).certify(run_id)
 
+        bundle = self.db.conn.execute(
+            "SELECT run_id, run_data_hash, frame_certification_id FROM run_certification_bundles WHERE bundle_id = ?",
+            [certification_bundle_id],
+        ).fetchone()
+        if not bundle or str(bundle[0]) != run_id or str(bundle[1]) != run_data_hash or bundle[2] != run_frame_certification_id:
+            raise RuntimeError("Certification bundle is not bound to this run's immutable data and frame evidence.")
+
         cert_rows = self.db.conn.execute(
             "SELECT category, status FROM run_certifications WHERE bundle_id = ? AND run_id = ?",
             [certification_bundle_id, run_id],
         ).fetchall()
-        if {str(row[0]) for row in cert_rows} != {
+        required_categories = {
             "DATA_LINEAGE", "DATA_QUALITY", "CAUSALITY", "PIT_SURVIVORSHIP", "OOS_WALK_FORWARD",
-        }:
+        }
+        if len(cert_rows) != len(required_categories) or {str(row[0]) for row in cert_rows} != required_categories:
             raise RuntimeError(f"Certification bundle {certification_bundle_id} is incomplete for run {run_id}.")
         cert_map = {str(row[0]): str(row[1]) for row in cert_rows}
 

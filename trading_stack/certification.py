@@ -37,20 +37,22 @@ class RunCertificationService:
             str: certification_bundle_id referencing the persisted bundle.
         """
         run_row = self.db.conn.execute(
-            "SELECT strategy_name, symbol, timeframe, mode, data_hash, notes FROM strategy_runs WHERE run_id = ?",
+            "SELECT strategy_name, symbol, timeframe, mode, data_hash, notes, frame_certification_id FROM strategy_runs WHERE run_id = ?",
             [run_id],
         ).fetchone()
         if run_row is None:
             raise ValueError(f"Cannot certify unknown run_id: {run_id}")
 
-        _, symbol_str, timeframe, mode, data_hash, notes = (
-            str(run_row[0]), str(run_row[1]), str(run_row[2]), str(run_row[3]), str(run_row[4]), str(run_row[5] or "")
+        _, symbol_str, timeframe, mode, data_hash, notes, stored_frame_certification_id = (
+            str(run_row[0]), str(run_row[1]), str(run_row[2]), str(run_row[3]), str(run_row[4]), str(run_row[5] or ""), run_row[6]
         )
         try:
             run_metadata = json.loads(notes) if notes else {}
         except json.JSONDecodeError:
             run_metadata = {}
-        frame_certification_id = run_metadata.get("frame_certification_id")
+        # The run column is authoritative. Notes are retained only for
+        # readability and must not select evidence for a new run.
+        frame_certification_id = str(stored_frame_certification_id) if stored_frame_certification_id else run_metadata.get("frame_certification_id")
         frame_dataset_ids: list[str] = []
         if frame_certification_id:
             frame_dataset_row = self.db.conn.execute(
@@ -269,7 +271,8 @@ class RunCertificationService:
             if rf_row and int(rf_row[0]) > 0:
                 causality_details["research_frame_certified"] = True
         except Exception as exc:
-            causality_details["note"] = str(exc)
+            causality_status = "FAIL"
+            causality_details["error"] = str(exc)
 
         evidence_records.append({
             "category": "CAUSALITY",
@@ -327,7 +330,8 @@ class RunCertificationService:
                     oos_status = "FAIL"
                     oos_details["reason"] = "No out-of-sample evidence or walk forward metrics."
         except Exception as exc:
-            oos_details["note"] = str(exc)
+            oos_status = "FAIL"
+            oos_details["error"] = str(exc)
 
         evidence_records.append({
             "category": "OOS_WALK_FORWARD",
@@ -336,7 +340,7 @@ class RunCertificationService:
         })
 
         # Write all 5 certification rows within a single transaction
-        with self.db._write_lock:
+        with self.db.transaction():
             with self.db.conn.cursor() as cur:
                 cur.execute(
                     """INSERT INTO run_certification_bundles (

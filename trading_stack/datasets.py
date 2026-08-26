@@ -54,6 +54,10 @@ class ResearchDataset:
     research_basis: str = "SPLIT_ADJUSTED"
     corporate_action_version: str = "v1"
     frame_certification_id: str | None = None
+    contributing_dataset_ids: tuple[str, ...] = ()
+    dq_certification_ids: tuple[str, ...] = ()
+    dataset_content_hashes: dict[str, str] = field(default_factory=dict)
+    pit_evidence_hash: str | None = None
 
     @property
     def data_hash(self) -> str:
@@ -70,6 +74,10 @@ class ResearchDataset:
             "benchmark_relationship": self.benchmark_relationship,
             "research_basis": self.research_basis,
             "corporate_action_version": self.corporate_action_version,
+            "contributing_dataset_ids": self.contributing_dataset_ids,
+            "dq_certification_ids": self.dq_certification_ids,
+            "dataset_content_hashes": self.dataset_content_hashes,
+            "pit_evidence_hash": self.pit_evidence_hash,
         }, sort_keys=True, default=str).encode())
         return digest.hexdigest()
 
@@ -174,6 +182,11 @@ class SynchronizedPanelBuilder:
             canonical_basis=cached.canonical_basis,
             research_basis=cached.research_basis,
             corporate_action_version=cached.corporate_action_version,
+            frame_certification_id=cached.frame_certification_id,
+            contributing_dataset_ids=tuple(cached.contributing_dataset_ids),
+            dq_certification_ids=tuple(cached.dq_certification_ids),
+            dataset_content_hashes=dict(cached.dataset_content_hashes),
+            pit_evidence_hash=cached.pit_evidence_hash,
         )
 
     def _build_uncached(
@@ -234,7 +247,9 @@ class SynchronizedPanelBuilder:
                 else:
                     featured = featured.merge(benchmark_close, on="timestamp", how="left")
             panels.append(featured)
-            dataset_ids[symbol] = self._latest_dataset_id(symbol, timeframe)
+            # Rows, not a mutable "latest dataset" lookup, define provenance.
+            exact_ids = [str(value) for value in bars["dataset_id"].dropna().unique() if str(value)]
+            dataset_ids[symbol] = exact_ids[-1] if len(exact_ids) == 1 else None
             if index % 25 == 0 or index == len(symbols):
                 logger.bind(
                     event="panel_build_progress",
@@ -375,19 +390,35 @@ class SynchronizedPanelBuilder:
             canonical_basis="SPLIT_ADJUSTED",
             research_basis=resolved_adjustment,
             corporate_action_version="v1",
+            contributing_dataset_ids=tuple(sorted({str(value) for value in panel["dataset_id"].dropna() if str(value)})),
         )
         if self.require_authoritative_certification:
-            contributing_ids = [value for value in dataset_ids.values() if value]
-            if resolved_benchmark:
-                benchmark_dataset_id = self._latest_dataset_id(resolved_benchmark, timeframe)
-                if benchmark_dataset_id:
-                    contributing_ids.append(benchmark_dataset_id)
+            contributing_ids = list(result.contributing_dataset_ids)
+            dataset_hashes: dict[str, str] = {}
+            dq_certification_ids: list[str] = []
+            for dataset_id in contributing_ids:
+                row = self.db.conn.execute(
+                    "SELECT transformation_hash, raw_hash FROM market_datasets WHERE dataset_id = ?",
+                    [dataset_id],
+                ).fetchone()
+                if not row or not (row[0] or row[1]):
+                    raise DataQualityError(f"Dataset {dataset_id} has no immutable content hash.")
+                dataset_hashes[dataset_id] = str(row[0] or row[1])
+                cert = self.db.conn.execute(
+                    "SELECT certification_id FROM data_quality_certifications WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0 ORDER BY completed_at DESC LIMIT 1",
+                    [dataset_id],
+                ).fetchone()
+                if not cert:
+                    raise DataQualityError(f"Dataset {dataset_id} has no certified DQ evidence.")
+                dq_certification_ids.append(str(cert[0]))
+            pit_evidence_hash = self._pit_evidence_hash(universe_name) if universe_name else None
             frame_certification_id = str(uuid.uuid4())
             self.db.conn.execute(
                 """INSERT INTO research_frame_certifications (
                        frame_certification_id, research_frame_hash, contributing_dataset_ids_json,
-                       symbol, timeframe, row_count, basis, validator_version, status, verified_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CERTIFIED', CURRENT_TIMESTAMP)""",
+                       symbol, timeframe, row_count, basis, validator_version, status, verified_at,
+                       dataset_evidence_json, dq_certification_ids_json, pit_evidence_hash
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'CERTIFIED', CURRENT_TIMESTAMP, ?, ?, ?)""",
                 [
                     frame_certification_id,
                     result.data_hash,
@@ -397,12 +428,25 @@ class SynchronizedPanelBuilder:
                     len(panel),
                     resolved_adjustment,
                     "validator-v1",
+                    json.dumps(dataset_hashes, sort_keys=True),
+                    json.dumps(sorted(dq_certification_ids)),
+                    pit_evidence_hash,
                 ],
             )
             result = ResearchDataset(
-                **{**result.__dict__, "frame_certification_id": frame_certification_id}
+                **{**result.__dict__, "frame_certification_id": frame_certification_id,
+                   "dq_certification_ids": tuple(sorted(dq_certification_ids)),
+                   "dataset_content_hashes": dataset_hashes,
+                   "pit_evidence_hash": pit_evidence_hash}
             )
         return result
+
+    def _pit_evidence_hash(self, universe_name: str) -> str:
+        rows = self.db.conn.execute(
+            "SELECT symbol, effective_from, effective_until FROM index_constituents_pit WHERE UPPER(universe_name) = ? ORDER BY symbol, effective_from, effective_until",
+            [universe_name.upper()],
+        ).fetchall()
+        return hashlib.sha256(json.dumps(rows, default=str, separators=(",", ":")).encode()).hexdigest()
 
     def _resolve_benchmark(self, symbol: str | None, timeframe: str) -> tuple[str | None, str | None]:
         if not symbol:

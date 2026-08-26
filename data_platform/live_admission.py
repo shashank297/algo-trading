@@ -67,6 +67,7 @@ class AdmissionReasonCode(str, Enum):
     OUT_OF_SESSION_HOURS = "OUT_OF_SESSION_HOURS"
     WEEKEND_SESSION_REJECTED = "WEEKEND_SESSION_REJECTED"
     HOLIDAY_SESSION_REJECTED = "HOLIDAY_SESSION_REJECTED"
+    DEGRADED_STREAM = "DEGRADED_STREAM"
 
 
 @dataclass(frozen=True, slots=True)
@@ -192,6 +193,17 @@ class LiveMarketDataAdmissionValidator:
         seq_no = getattr(event, "sequence_number", None) if not isinstance(event, dict) else event.get("sequence_number")
 
         reasons: list[AdmissionReasonCode] = []
+
+        # Degraded feed data is retained for diagnostics only; it must never
+        # cross the admission boundary into an authoritative consumer.
+        quality_state = getattr(event, "quality_state", None) if not isinstance(event, dict) else event.get("quality_state")
+        if quality_state is not None and quality_state != "TRUSTED":
+            reasons.append(AdmissionReasonCode.DEGRADED_STREAM)
+            self._stats["quarantined"] += 1
+            return self._build_result(
+                str(raw_token or ""), symbol, str(raw_exchange or "").upper(),
+                TickAdmissionAction.QUARANTINE, reasons, None, now_utc, 0.0, 0.0, seq_no, 0.0,
+            )
 
         # Fail-closed token and exchange validation
         if not raw_token:

@@ -306,7 +306,19 @@ class PortfolioEventBacktester:
             open_tick_missing = False
             observation = row.get("open_tick_observation")
             if observation is not None and hasattr(observation, "price"):
-                if getattr(observation, "quality_state", "TRUSTED") == "TRUSTED" and float(observation.price) > 0:
+                expected_exchange = str(row.get("exchange") or "").upper()
+                expected_token = str(row.get("token") or "")
+                identity_matches = (
+                    str(getattr(observation, "symbol", "")) == symbol
+                    and (not expected_exchange or str(getattr(observation, "exchange", "")).upper() == expected_exchange)
+                    and (not expected_token or str(getattr(observation, "token", "")) == expected_token)
+                )
+                if (
+                    identity_matches
+                    and getattr(observation, "quality_state", "") == "TRUSTED"
+                    and getattr(observation, "received_at_utc", None) is not None
+                    and float(observation.price) > 0
+                ):
                     base_price = float(observation.price)
                     execution_timestamp = pd.Timestamp(observation.received_at_utc)
                     source_seq = getattr(observation, "sequence_number", None)
@@ -318,18 +330,11 @@ class PortfolioEventBacktester:
                     source_seq = None
                     execution_source = "UNAVAILABLE"
             elif mode == "paper" and (execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN"):
-                open_tick = row.get("open_tick_price")
-                if open_tick is None or float(open_tick) <= 0:
-                    open_tick_missing = True
-                    base_price = float(row.get("open") or row.get("close") or 1.0)
-                    execution_timestamp = date
-                    source_seq = None
-                    execution_source = "UNAVAILABLE"
-                else:
-                    base_price = float(open_tick)
-                    execution_timestamp = pd.Timestamp(row.get("open_tick_timestamp") or date)
-                    source_seq = row.get("source_sequence_number")
-                    execution_source = "OBSERVED_TICK"
+                open_tick_missing = True
+                base_price = float(row.get("open") or row.get("close") or 1.0)
+                execution_timestamp = date
+                source_seq = None
+                execution_source = "UNAVAILABLE"
             elif mode == "paper" and (execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH"):
                 base_price = float(row.get("close") or row.get("price") or row.get("open") or 0.0)
                 execution_timestamp = date
@@ -412,7 +417,11 @@ class PortfolioEventBacktester:
                 "metadata_json": json.dumps({
                     "reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason,
                     "execution_mode": execution_mode, "execution_source": execution_source,
-                    "execution_timestamp": str(execution_timestamp), "source_sequence_number": source_seq,
+                    "execution_timestamp": str(execution_timestamp),
+                    "source_exchange_timestamp": str(getattr(observation, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,
+                    "source_received_at_utc": str(getattr(observation, "received_at_utc", "")) if execution_source == "OBSERVED_TICK" else None,
+                    "source_sequence_number": source_seq,
+                    "source_stream_epoch": getattr(observation, "stream_epoch", None) if execution_source == "OBSERVED_TICK" else None,
                 }),
             })
             if filled_quantity <= 0:
@@ -498,7 +507,11 @@ class PortfolioEventBacktester:
                 "fees": stat_fees, "slippage_bps": self.cost_schedule.slippage_bps,
                 "metadata_json": json.dumps({
                     "reason": reason, "participation": participation, "execution_mode": execution_mode,
-                    "execution_source": execution_source, "source_sequence_number": source_seq,
+                    "execution_source": execution_source,
+                    "source_exchange_timestamp": str(getattr(observation, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,
+                    "source_received_at_utc": str(getattr(observation, "received_at_utc", "")) if execution_source == "OBSERVED_TICK" else None,
+                    "source_sequence_number": source_seq,
+                    "source_stream_epoch": getattr(observation, "stream_epoch", None) if execution_source == "OBSERVED_TICK" else None,
                 }),
             })
             costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": execution_timestamp, **(breakdown.__dict__ if breakdown else {}), "total_cost": total_costs})

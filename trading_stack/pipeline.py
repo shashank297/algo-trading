@@ -447,6 +447,7 @@ class StrategyPipeline:
                     "started_at": datetime.now(tz=timezone.utc),
                     "finished_at": datetime.now(tz=timezone.utc),
                     "notes": json.dumps({"frame_certification_id": frame_certification_id}) if frame_certification_id else None,
+                    "frame_certification_id": frame_certification_id,
                 },
                 result.metrics,
             )

@@ -437,7 +437,19 @@ class SmartAPIWebSocketClient:
                     )
                     if self.on_stream_degraded is not None:
                         try:
-                            self.on_stream_degraded(event.exchange, event.token, resolved_sym, (recv_utc, None), curr_epoch)
+                            # The precise missing sequence count is immutable gap evidence.
+                            # Keep the temporary five-argument adapter solely for existing
+                            # integrations while callers migrate to the authoritative contract.
+                            try:
+                                self.on_stream_degraded(
+                                    event.exchange, event.token, resolved_sym,
+                                    (recv_utc, None), gap_size, curr_epoch,
+                                )
+                            except TypeError:
+                                self.on_stream_degraded(
+                                    event.exchange, event.token, resolved_sym,
+                                    (recv_utc, None), curr_epoch,
+                                )
                         except Exception as exc:
                             logger.error("Error in on_stream_degraded callback: {}", exc)
                     self._trigger_stream_resync(getattr(event, "exchange", "NSE"), getattr(event, "token", ""))
@@ -463,6 +475,13 @@ class SmartAPIWebSocketClient:
                         self._quarantine_queue.put_nowait((admission, {"raw_length": len(raw_bytes), "token": getattr(event, "token", "")}))
                     except queue.Full:
                         pass
+                # Preserve degraded events for diagnostics, but the dispatcher
+                # independently excludes them from all authoritative callbacks.
+                if getattr(event, "quality_state", "TRUSTED") == "DEGRADED":
+                    try:
+                        self._dispatch_queue.put_nowait(event)
+                    except queue.Full:
+                        self.metrics.dispatch_queue_drops += 1
                 return
 
             # Enqueue to bounded dispatch queue
@@ -607,6 +626,9 @@ class SmartAPIWebSocketClient:
                 self.metrics.dispatch_latency.record(dispatch_latency_ms)
             if event.feed_latency_ms is not None:
                 self.metrics.feed_latency.record(event.feed_latency_ms)
+
+            if getattr(event, "quality_state", "TRUSTED") != "TRUSTED":
+                continue
 
 
             with self._callback_lock:

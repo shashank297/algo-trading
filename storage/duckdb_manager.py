@@ -812,7 +812,8 @@ class DuckDBManager:
                         started_at,
                         finished_at,
                         notes,
-                        starting_capital
+                        starting_capital,
+                        frame_certification_id
                     )
                     SELECT
                         run_id,
@@ -827,7 +828,8 @@ class DuckDBManager:
                         started_at,
                         finished_at,
                         notes,
-                        starting_capital
+                        starting_capital,
+                        frame_certification_id
                     FROM {run_table}
                     """
                 )
@@ -1723,4 +1725,3 @@ class DuckDBManager:
                 self.conn.unregister(table_name)
         except Exception as exc:
             logger.debug("Skipping unregister for {}: {}", table_name, exc)
-
