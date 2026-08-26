@@ -201,7 +201,7 @@ class ForwardPortfolioPaperSessionEngine:
                 }
                 if matching_obs:
                     day["open_tick_observation"] = day["symbol"].map(matching_obs)
-            elif opening_ticks:
+            elif execution_mode not in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN") and opening_ticks:
                 matching_ticks = {}
                 matching_ts = {}
                 for sym, price in opening_ticks.items():

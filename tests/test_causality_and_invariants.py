@@ -165,12 +165,21 @@ def test_p0_2_anti_lookahead_future_volume_mutation():
 
 def test_p0_3_forward_paper_chronology_modes(tmp_path):
     """P0-3: Forward paper executes at close for EOD_BATCH and at open tick for TRUE_NEXT_OPEN."""
+    from trading_stack.domain import OpeningTickObservation
     db_file = tmp_path / "paper_test.duckdb"
     db = DuckDBManager(str(db_file))
     calendar = build_nse_calendar()
     risk_engine = RiskEngine()
     engine = ForwardPaperSessionEngine(db=db, calendar=calendar, risk_engine=risk_engine)
 
+    obs = OpeningTickObservation(
+        symbol="TEST",
+        exchange="NSE",
+        token="9999",
+        price=100.5,
+        exchange_timestamp=datetime(2026, 1, 6, 9, 15, tzinfo=timezone.utc),
+        received_at_utc=datetime(2026, 1, 6, 9, 15, 1, tzinfo=timezone.utc),
+    )
     bar = {
         "timestamp": datetime(2026, 1, 6, 10, 0, tzinfo=timezone.utc),
         "open": 100.0,
@@ -178,7 +187,8 @@ def test_p0_3_forward_paper_chronology_modes(tmp_path):
         "low": 98.0,
         "close": 102.0,
         "volume": 2_000_000,
-        "open_tick_price": 100.5,
+        "token": "9999",
+        "opening_tick": obs,
     }
     pending = {
         "signal_timestamp": datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc),
@@ -209,7 +219,7 @@ def test_p0_3_forward_paper_chronology_modes(tmp_path):
         "low": 98.0,
         "close": 102.0,
         "volume": 2_000_000,
-        "open_tick_price": None,
+        "token": "9999",
     }
     _, _, _, _, _, _, _, _, fill_missed, _, _, _ = engine._execute_pending(
         "session_missed", "TEST", bar_no_tick, pending, 100_000.0, 0.0, 0.0, 100_000.0, 100_000.0, 100_000.0,
@@ -594,6 +604,15 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
     db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 200, 205, 195, 202, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
 
     # Run with TRUE_NEXT_OPEN and live opening tick for RELIANCE at 103.5 (TCS has no opening tick)
+    from trading_stack.domain import OpeningTickObservation
+    obs_rel = OpeningTickObservation(
+        symbol="RELIANCE",
+        token="2885",
+        exchange="NSE",
+        price=103.5,
+        exchange_timestamp=datetime(2026, 1, 1, 9, 15, tzinfo=timezone.utc),
+        received_at_utc=datetime(2026, 1, 1, 9, 15, 1, tzinfo=timezone.utc),
+    )
     res2 = engine.run(
         strategy_name="cross_sectional_momentum",
         approved_run_id="RUN_PREV",
@@ -603,7 +622,7 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
         timeframe="1d",
         parameters=params,
         execution_mode="TRUE_NEXT_OPEN",
-        opening_ticks={"RELIANCE": 103.5},
+        opening_observations={"RELIANCE": obs_rel},
         as_of=datetime(2026, 1, 1, 16, 0, tzinfo=timezone.utc),
     )
     assert res2.status == "PROCESSED"
@@ -766,10 +785,19 @@ def test_e10_run_certification_service_and_promotion_engine(tmp_path):
     db.conn.execute("INSERT INTO walk_forward_round_trips (trade_id, run_id, fold_id, symbol, entry_timestamp, exit_timestamp, quantity, entry_price, exit_price, entry_cost, exit_cost, gross_pnl, net_pnl, holding_period_days, entry_reason, exit_reason, exit_classification) VALUES ('t1', 'RUN_CERT_TEST', 'fold1', 'RELIANCE', '2026-01-01', '2026-01-05', 10, 100, 110, 1, 1, 100, 98, 4, 'ENTRY', 'SIGNAL', 'WIN');")
     # Seed raw dataset and certification
     db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_rel', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'raw1', 'VERIFIED', 'CANONICAL_PROMOTED');")
-    db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_rel', 'ds_rel', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_rel', 'ds_rel', 'validator-v1', 6, 0, '{\"dataset_content_hash\": \"raw1\"}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
     for i, check in enumerate(["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"], start=1):
         db.conn.execute("INSERT INTO quality_report (id, symbol, timeframe, dataset_id, check_type, issue_count, details, checked_at, certification_id) VALUES (?, 'RELIANCE', '1d', 'ds_rel', ?, 0, '{}', CURRENT_TIMESTAMP, 'cert_rel');", [i, check])
-    db.conn.execute("INSERT INTO research_frame_certifications (frame_certification_id, research_frame_hash, contributing_dataset_ids_json, symbol, timeframe, row_count, basis, validator_version, status, verified_at) VALUES ('rfc1', 'h1', '[\"ds_rel\"]', 'RELIANCE', '1d', 1, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP);")
+    db.conn.execute("""
+        INSERT INTO research_frame_certifications (
+            frame_certification_id, research_frame_hash, contributing_dataset_ids_json, symbol, timeframe,
+            row_count, basis, validator_version, status, verified_at,
+            dataset_evidence_json, dq_certification_ids_json, pit_evidence_hash
+        ) VALUES (
+            'rfc1', 'h1', '[\"ds_rel\"]', 'RELIANCE', '1d', 1, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP,
+            '{\"ds_rel\": \"raw1\"}', '[\"cert_rel\"]', null
+        );
+    """)
     # Seed historical candles
     db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds_rel', CURRENT_TIMESTAMP);")
     # Seed strategy equity curve

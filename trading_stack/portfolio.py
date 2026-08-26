@@ -305,36 +305,67 @@ class PortfolioEventBacktester:
             row = day.loc[symbol]
             open_tick_missing = False
             observation = row.get("open_tick_observation")
-            if observation is not None and hasattr(observation, "price"):
-                expected_exchange = str(row.get("exchange") or "").upper()
-                expected_token = str(row.get("token") or "")
-                identity_matches = (
-                    str(getattr(observation, "symbol", "")) == symbol
-                    and (not expected_exchange or str(getattr(observation, "exchange", "")).upper() == expected_exchange)
-                    and (not expected_token or str(getattr(observation, "token", "")) == expected_token)
-                )
-                if (
-                    identity_matches
-                    and getattr(observation, "quality_state", "") == "TRUSTED"
-                    and getattr(observation, "received_at_utc", None) is not None
-                    and float(observation.price) > 0
-                ):
-                    base_price = float(observation.price)
-                    execution_timestamp = pd.Timestamp(observation.received_at_utc)
-                    source_seq = getattr(observation, "sequence_number", None)
-                    execution_source = "OBSERVED_TICK"
+            if (execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN"):
+                if observation is not None and hasattr(observation, "price"):
+                    expected_exchange = str(row.get("exchange") or "NSE").upper()
+                    expected_token = str(row.get("token") or "")
+                    db = getattr(self, "db", None)
+                    if not expected_token and db is not None:
+                        try:
+                            token_row = db.conn.execute(
+                                "SELECT token FROM instrument_master WHERE symbol = ? AND exch_seg = ? LIMIT 1",
+                                [symbol, expected_exchange],
+                            ).fetchone()
+                            if token_row and token_row[0]:
+                                expected_token = str(token_row[0])
+                            else:
+                                snap_row = db.conn.execute(
+                                    "SELECT token FROM universe_snapshot_members WHERE symbol = ? LIMIT 1",
+                                    [symbol],
+                                ).fetchone()
+                                if snap_row and snap_row[0]:
+                                    expected_token = str(snap_row[0])
+                                else:
+                                    candle_row = db.conn.execute(
+                                        "SELECT token FROM historical_candles WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
+                                        [symbol],
+                                    ).fetchone()
+                                    if candle_row and candle_row[0]:
+                                        expected_token = str(candle_row[0])
+                        except Exception:
+                            pass
+                    identity_matches = (
+                        str(getattr(observation, "symbol", "")) == symbol
+                        and (not expected_exchange or str(getattr(observation, "exchange", "")).upper() == expected_exchange)
+                        and (not expected_token or str(getattr(observation, "token", "")) == expected_token)
+                    )
+                    if (
+                        identity_matches
+                        and getattr(observation, "quality_state", "") == "TRUSTED"
+                        and getattr(observation, "received_at_utc", None) is not None
+                        and float(observation.price) > 0
+                    ):
+                        base_price = float(observation.price)
+                        execution_timestamp = pd.Timestamp(observation.received_at_utc)
+                        source_seq = getattr(observation, "sequence_number", None)
+                        execution_source = "OBSERVED_TICK"
+                    else:
+                        open_tick_missing = True
+                        base_price = float(row.get("open") or row.get("close") or 1.0)
+                        execution_timestamp = date
+                        source_seq = None
+                        execution_source = "UNAVAILABLE"
                 else:
                     open_tick_missing = True
                     base_price = float(row.get("open") or row.get("close") or 1.0)
                     execution_timestamp = date
                     source_seq = None
                     execution_source = "UNAVAILABLE"
-            elif mode == "paper" and (execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN"):
-                open_tick_missing = True
-                base_price = float(row.get("open") or row.get("close") or 1.0)
-                execution_timestamp = date
-                source_seq = None
-                execution_source = "UNAVAILABLE"
+            elif observation is not None and hasattr(observation, "price"):
+                base_price = float(observation.price)
+                execution_timestamp = pd.Timestamp(getattr(observation, "received_at_utc", None) or getattr(observation, "timestamp", date))
+                source_seq = getattr(observation, "sequence_number", None)
+                execution_source = "OBSERVED_TICK"
             elif mode == "paper" and (execution_mode == PaperExecutionMode.EOD_BATCH.value or execution_mode == "EOD_BATCH"):
                 base_price = float(row.get("close") or row.get("price") or row.get("open") or 0.0)
                 execution_timestamp = date

@@ -167,20 +167,21 @@ class ForwardPaperSessionEngine:
                 obs_ts = obs_ts.tz_localize("UTC") if obs_ts.tzinfo is None else obs_ts
                 if obs_ts.tz_convert(self.calendar.zone).date() == bar_session_date:
                     bar["open_tick_observation"] = opening_observation
-            elif execution_mode != PaperExecutionMode.TRUE_NEXT_OPEN.value and open_tick_price is not None:
-                if open_tick_timestamp is not None:
-                    ts_val = pd.Timestamp(open_tick_timestamp)
-                    ts_val = ts_val.tz_localize("UTC") if ts_val.tzinfo is None else ts_val
-                    if ts_val.tz_convert(self.calendar.zone).date() == bar_session_date:
+            elif execution_mode not in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN"):
+                if open_tick_price is not None:
+                    if open_tick_timestamp is not None:
+                        ts_val = pd.Timestamp(open_tick_timestamp)
+                        ts_val = ts_val.tz_localize("UTC") if ts_val.tzinfo is None else ts_val
+                        if ts_val.tz_convert(self.calendar.zone).date() == bar_session_date:
+                            bar["open_tick_price"] = open_tick_price
+                            bar["open_tick_timestamp"] = open_tick_timestamp
+                    elif len(new_bars) == 1 and bar_timestamp == pd.Timestamp(new_bars.iloc[-1]["timestamp"]).tz_convert("UTC"):
                         bar["open_tick_price"] = open_tick_price
-                        bar["open_tick_timestamp"] = open_tick_timestamp
-                elif len(new_bars) == 1 and bar_timestamp == pd.Timestamp(new_bars.iloc[-1]["timestamp"]).tz_convert("UTC"):
-                    bar["open_tick_price"] = open_tick_price
 
             if daily_start_date != bar_session_date:
                 daily_start_equity = cash + quantity * float(bar["open"])
-                daily_start_date = bar_session_date
-            if pending is not None and pd.Timestamp(pending["signal_timestamp"]) < bar_timestamp:
+            pending_ts = pending.get("signal_timestamp") or pending.get("timestamp") if pending else None
+            if pending is not None and pending_ts is not None and pd.Timestamp(pending_ts) < bar_timestamp:
                 (
                     cash, quantity, average_cost, entry_timestamp, entry_reason,
                     entry_cost_pool, entry_execution_cost_pool,
@@ -270,10 +271,34 @@ class ForwardPaperSessionEngine:
             price = float(bar.get("close") or bar.get("price") or 0.0)
             execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
         elif execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN":
-            obs = bar.get("open_tick_observation")
+            obs = bar.get("open_tick_observation") or bar.get("opening_tick") or bar.get("opening_tick_observation")
             if obs is not None and hasattr(obs, "price"):
-                expected_exchange = str(bar.get("exchange") or "").upper()
+                expected_exchange = str(bar.get("exchange") or "NSE").upper()
                 expected_token = str(bar.get("token") or "")
+                if not expected_token:
+                    try:
+                        token_row = self.db.conn.execute(
+                            "SELECT token FROM instrument_master WHERE symbol = ? AND exch_seg = ? LIMIT 1",
+                            [symbol, expected_exchange],
+                        ).fetchone()
+                        if token_row and token_row[0]:
+                            expected_token = str(token_row[0])
+                        else:
+                            snap_row = self.db.conn.execute(
+                                "SELECT token FROM universe_snapshot_members WHERE symbol = ? LIMIT 1",
+                                [symbol],
+                            ).fetchone()
+                            if snap_row and snap_row[0]:
+                                expected_token = str(snap_row[0])
+                            else:
+                                candle_row = self.db.conn.execute(
+                                    "SELECT token FROM historical_candles WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
+                                    [symbol],
+                                ).fetchone()
+                                if candle_row and candle_row[0]:
+                                    expected_token = str(candle_row[0])
+                    except Exception:
+                        pass
                 identity_matches = (
                     str(getattr(obs, "symbol", "")) == symbol
                     and (not expected_exchange or str(getattr(obs, "exchange", "")).upper() == expected_exchange)
@@ -286,9 +311,7 @@ class ForwardPaperSessionEngine:
                     and float(obs.price) > 0
                 ):
                     price = float(obs.price)
-                    execution_timestamp = pd.Timestamp(
-                        getattr(obs, "received_at_utc", None) or getattr(obs, "timestamp", None)
-                    ).to_pydatetime()
+                    execution_timestamp = pd.Timestamp(obs.received_at_utc).to_pydatetime()
                     source_seq = getattr(obs, "sequence_number", None)
                     execution_source = "OBSERVED_TICK"
                 else:
@@ -318,8 +341,8 @@ class ForwardPaperSessionEngine:
             execution_timestamp = pd.Timestamp(bar["timestamp"]).to_pydatetime()
         target = max(0.0, min(float(pending["target_position"]), 1.0))
         current_equity = cash + quantity * price
-        position_limit = starting_capital * self.risk_engine.policy.max_position_pct
-        target_notional = min(target * starting_capital, position_limit)
+        position_limit = current_equity * self.risk_engine.policy.max_position_pct
+        target_notional = min(target * current_equity, position_limit)
         unconstrained_quantity = math.floor(target_notional / max(price, 1e-9))
         requested_delta = unconstrained_quantity - quantity
         if abs(requested_delta) < 1e-9:
@@ -335,12 +358,12 @@ class ForwardPaperSessionEngine:
 
         vol = float(bar.get("volume", 0.0) or 0.0)
         daily_turnover_crore = (vol * price / 10_000_000.0) if (vol > 0 and price > 0) else None
-        est_var_pct = 1.65 * 0.02 * (requested_notional / max(starting_capital, 1e-9)) if starting_capital > 0 else None
+        est_var_pct = 1.65 * 0.02 * (requested_notional / max(current_equity, 1e-9)) if current_equity > 0 else None
 
         proposal = TradeProposal(
             symbol=symbol,
             requested_notional=requested_notional,
-            capital=starting_capital,
+            capital=current_equity,
             current_position_notional=current_position_notional,
             order_side=side,
             current_gross_exposure=abs(current_position_notional),
@@ -368,7 +391,7 @@ class ForwardPaperSessionEngine:
             run_id=session_id, symbol=symbol, side=side, quantity=abs(delta) if abs(delta) >= 1 else abs(requested_delta),
             price=price, timestamp=execution_timestamp,
             metadata={
-                "signal_timestamp": str(pending["signal_timestamp"]),
+                "signal_timestamp": str(pending.get("signal_timestamp") or pending.get("timestamp") or ""),
                 "reason": pending.get("reason", "signal"),
                 "execution_source": execution_source,
                 "source_exchange_timestamp": str(getattr(obs, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,

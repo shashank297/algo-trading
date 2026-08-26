@@ -782,6 +782,12 @@ class DuckDBManager:
         run_df = pd.DataFrame([run_payload])
         if "starting_capital" not in run_df.columns:
             run_df["starting_capital"] = 100_000.0
+        if "frame_certification_id" not in run_df.columns:
+            run_df["frame_certification_id"] = None
+        if "notes" not in run_df.columns:
+            run_df["notes"] = None
+        if "finished_at" not in run_df.columns:
+            run_df["finished_at"] = None
         metrics_dict = metrics.__dict__ if hasattr(metrics, "__dict__") else dict(metrics)
         metric_rows = [
             {
@@ -1556,24 +1562,36 @@ class DuckDBManager:
             self.conn.execute("BEGIN TRANSACTION;")
             try:
                 # 1. Insert into market_datasets with RAW_RECORDED
+                declared_adj = raw.declared_adjustment.value if raw.declared_adjustment else "UNADJUSTED"
+                timezone_val = raw.timezone_name or "Asia/Kolkata"
                 self.conn.execute(
                     """
                     INSERT OR REPLACE INTO market_datasets (
-                        dataset_id, dataset_stage, symbol, exchange, timeframe,
-                        provider_name, provider_symbol, provider_token, declared_adjustment,
-                        lifecycle_status, raw_hash, hash_algorithm, hash_version, row_count,
-                        created_at, updated_at
-                    ) VALUES (?, 'RAW', ?, ?, ?, ?, ?, ?, ?, 'RAW_RECORDED', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        dataset_id, parent_dataset_id, dataset_stage, symbol, canonical_symbol, exchange, timeframe,
+                        provider_name, provider_symbol, provider_token, declared_adjustment, adjustment, timezone,
+                        retrieved_at, lifecycle_status, status, raw_hash, transformation_hash, hash_algorithm, hash_version, row_count,
+                        metadata_json, created_at, updated_at
+                    ) VALUES (
+                        ?, NULL, 'RAW', ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?,
+                        ?, 'RAW_RECORDED', 'VALID', ?, ?, ?, ?, ?,
+                        '{}', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                    )
                     """,
                     [
                         raw.raw_dataset_id,
+                        raw.symbol,
                         raw.symbol,
                         raw.exchange,
                         raw.timeframe,
                         raw.provider_name,
                         raw.provider_symbol,
                         raw.provider_token,
-                        raw.declared_adjustment.value if raw.declared_adjustment else None,
+                        declared_adj,
+                        declared_adj,
+                        timezone_val,
+                        raw.retrieved_at,
+                        raw.raw_hash,
                         raw.raw_hash,
                         raw.hash_algorithm,
                         raw.hash_version,
@@ -1593,12 +1611,17 @@ class DuckDBManager:
                     self.conn.execute(
                         """
                         INSERT OR REPLACE INTO raw_bar_observations (
-                            raw_dataset_id, source_row_number, symbol, exchange, timeframe,
-                            provider_name, timestamp_raw, open_raw, high_raw, low_raw,
-                            close_raw, volume_raw, raw_row_json, retrieved_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            raw_dataset_id, dataset_id, source_row_number, symbol, exchange, timeframe,
+                            provider_name, timestamp_raw, open_raw, high_raw, low_raw, close_raw, volume_raw,
+                            raw_row_json, retrieved_at
+                        ) VALUES (
+                            ?, ?, ?, ?, ?, ?,
+                            ?, ?, ?, ?, ?, ?, ?,
+                            ?, ?
+                        )
                         """,
                         [
+                            raw.raw_dataset_id,
                             raw.raw_dataset_id,
                             row_num,
                             raw.symbol,

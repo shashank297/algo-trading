@@ -1,4 +1,3 @@
-import React from 'react';
 import { Activity, Clock, CheckCircle2, XCircle } from 'lucide-react';
 
 interface RunSummary {

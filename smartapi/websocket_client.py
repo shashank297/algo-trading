@@ -653,16 +653,11 @@ class SmartAPIWebSocketClient:
                 logger.error("Failed to send WebSocket payload: {}", exc)
 
     def _trigger_stream_resync(self, exchange: str, token: str) -> None:
-        """Initiate sequence resynchronization by replaying subscription for stream re-anchoring."""
+        """Trigger connection reset so a fresh socket generation is established."""
         try:
-            active_keys = [
-                key for key in self.registry.desired_subscriptions
-                if str(key.token) == str(token)
-            ]
-            if active_keys and self._ws is not None:
-                payloads = self.registry.build_action_payloads(active_keys, action=1)
-                for p in payloads:
-                    self._send_json(p)
-                logger.info("Re-synced subscription for exchange={} token={}", exchange, token)
+            ws = self._ws
+            if ws is not None:
+                ws.close()
+                logger.info("Closed socket to initiate fresh connection generation for exchange={} token={}", exchange, token)
         except Exception as exc:
-            logger.warning("Stream resync warning for {}:{}: {}", exchange, token, exc)
+            logger.warning("Stream resync close warning for {}:{}: {}", exchange, token, exc)

@@ -398,19 +398,47 @@ class SynchronizedPanelBuilder:
             dq_certification_ids: list[str] = []
             for dataset_id in contributing_ids:
                 row = self.db.conn.execute(
-                    "SELECT transformation_hash, raw_hash FROM market_datasets WHERE dataset_id = ?",
+                    "SELECT transformation_hash, raw_hash, status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
                     [dataset_id],
                 ).fetchone()
-                if not row or not (row[0] or row[1]):
+                if not row or str(row[2]) != "VERIFIED" or str(row[3]) != "CANONICAL_PROMOTED":
+                    raise DataQualityError(
+                        f"Dataset {dataset_id} has status={row[2] if row else 'NONE'}, "
+                        f"lifecycle={row[3] if row else 'NONE'}; must be VERIFIED and CANONICAL_PROMOTED."
+                    )
+                if not (row[0] or row[1]):
                     raise DataQualityError(f"Dataset {dataset_id} has no immutable content hash.")
-                dataset_hashes[dataset_id] = str(row[0] or row[1])
-                cert = self.db.conn.execute(
-                    "SELECT certification_id FROM data_quality_certifications WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0 ORDER BY completed_at DESC LIMIT 1",
+                ds_hash = str(row[0] or row[1])
+                dataset_hashes[dataset_id] = ds_hash
+
+                certs = self.db.conn.execute(
+                    """SELECT certification_id, validator_version, checks_json 
+                       FROM data_quality_certifications 
+                       WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0 
+                       ORDER BY completed_at DESC""",
                     [dataset_id],
-                ).fetchone()
-                if not cert:
-                    raise DataQualityError(f"Dataset {dataset_id} has no certified DQ evidence.")
-                dq_certification_ids.append(str(cert[0]))
+                ).fetchall()
+                matched_cert_id = None
+                for c in certs:
+                    c_id, val_ver, checks_json_str = str(c[0]), str(c[1] or "").strip(), str(c[2] or "{}")
+                    if not val_ver:
+                        continue
+                    try:
+                        checks_data = json.loads(checks_json_str)
+                    except Exception:
+                        checks_data = {}
+                    if checks_data.get("dataset_content_hash") == ds_hash:
+                        quality_rows = self.db.conn.execute(
+                            "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
+                            [c_id],
+                        ).fetchall()
+                        observed = {r[0] for r in quality_rows if int(r[1]) == 0}
+                        if observed == REQUIRED_AUTHORITATIVE_DQ_CHECKS and len(quality_rows) == 6:
+                            matched_cert_id = c_id
+                            break
+                if not matched_cert_id:
+                    raise DataQualityError(f"Dataset {dataset_id} has no certified DQ evidence bound to content hash {ds_hash}.")
+                dq_certification_ids.append(matched_cert_id)
             pit_evidence_hash = self._pit_evidence_hash(universe_name) if universe_name else None
             frame_certification_id = str(uuid.uuid4())
             self.db.conn.execute(
@@ -443,7 +471,12 @@ class SynchronizedPanelBuilder:
 
     def _pit_evidence_hash(self, universe_name: str) -> str:
         rows = self.db.conn.execute(
-            "SELECT symbol, effective_from, effective_until FROM index_constituents_pit WHERE UPPER(universe_name) = ? ORDER BY symbol, effective_from, effective_until",
+            """SELECT universe_name, instrument_id, symbol, token, exchange, 
+                      effective_from, effective_until, known_from, weight, 
+                      inclusion_reason, exclusion_reason 
+               FROM index_constituents_pit 
+               WHERE UPPER(universe_name) = ? 
+               ORDER BY symbol, effective_from, effective_until, instrument_id""",
             [universe_name.upper()],
         ).fetchall()
         return hashlib.sha256(json.dumps(rows, default=str, separators=(",", ":")).encode()).hexdigest()
@@ -512,30 +545,45 @@ class SynchronizedPanelBuilder:
                     )
                 for ds_id in contributing_dataset_ids:
                     ds_record = self.db.conn.execute(
-                        "SELECT status, lifecycle_status FROM market_datasets WHERE dataset_id = ?",
+                        "SELECT status, lifecycle_status, transformation_hash, raw_hash FROM market_datasets WHERE dataset_id = ?",
                         [ds_id],
                     ).fetchone()
                     if not ds_record or ds_record[0] != "VERIFIED" or ds_record[1] != "CANONICAL_PROMOTED":
                         raise DataQualityError(
                             f"DataQualityError: Dataset {ds_id} contributing to {symbol} {timeframe} in panel build has status={ds_record[0] if ds_record else 'NONE'}; must be VERIFIED and CANONICAL_PROMOTED."
                         )
-                    cert_record = self.db.conn.execute(
-                        "SELECT certification_id, status, issue_count FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                    ds_hash = str(ds_record[2] or ds_record[3] or "")
+                    if not ds_hash:
+                        raise DataQualityError(f"DataQualityError: Dataset {ds_id} has no immutable content hash.")
+                    
+                    certs = self.db.conn.execute(
+                        """SELECT certification_id, validator_version, checks_json 
+                           FROM data_quality_certifications 
+                           WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0 
+                           ORDER BY completed_at DESC""",
                         [ds_id],
-                    ).fetchone()
-                    if not cert_record or cert_record[1] != "CERTIFIED" or int(cert_record[2]) > 0:
-                        raise DataQualityError(
-                            f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} in panel build lacks active CERTIFIED batch in data_quality_certifications."
-                        )
-                    quality_rows = self.db.conn.execute(
-                        "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
-                        [cert_record[0]],
                     ).fetchall()
-                    observed_checks = {r[0] for r in quality_rows if int(r[1]) == 0}
-                    missing_checks = REQUIRED_AUTHORITATIVE_DQ_CHECKS - observed_checks
-                    if missing_checks:
+                    matched_cert_id = None
+                    for c in certs:
+                        c_id, val_ver, checks_json_str = str(c[0]), str(c[1] or "").strip(), str(c[2] or "{}")
+                        if not val_ver:
+                            continue
+                        try:
+                            checks_data = json.loads(checks_json_str)
+                        except Exception:
+                            checks_data = {}
+                        if checks_data.get("dataset_content_hash") == ds_hash:
+                            quality_rows = self.db.conn.execute(
+                                "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
+                                [c_id],
+                            ).fetchall()
+                            observed = {r[0] for r in quality_rows if int(r[1]) == 0}
+                            if observed == REQUIRED_AUTHORITATIVE_DQ_CHECKS and len(quality_rows) == 6:
+                                matched_cert_id = c_id
+                                break
+                    if not matched_cert_id:
                         raise DataQualityError(
-                            f"DataQualityError: Incomplete DQ certification for dataset {ds_id} ({symbol} {timeframe}) in panel build: missing {sorted(missing_checks)}."
+                            f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} in panel build lacks active CERTIFIED batch bound to hash {ds_hash}."
                         )
         return frame
 

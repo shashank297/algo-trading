@@ -49,6 +49,8 @@ def test_portfolio_certification_fails_without_snapshot_evidence(tmp_path):
 
 
 def test_portfolio_certification_checks_members_dq_and_pit(tmp_path):
+    import hashlib
+    import json
     db = DuckDBManager(str(tmp_path / "portfolio-cert-checks.duckdb"))
     try:
         seed_run(db, "portfolio-run", "PORTFOLIO:SNAP", '{"frame_certification_id":"frame"}')
@@ -58,6 +60,8 @@ def test_portfolio_certification_checks_members_dq_and_pit(tmp_path):
         db.conn.execute(
             "INSERT INTO universe_snapshot_members VALUES ('SNAP', 'TEST', 'TEST', '1', 'Test', 'IT', 'NSE', '2020-01-01', '2030-01-01', true, true, true)"
         )
+        pit_rows = [('TEST', '1', 'TEST', '1', 'NSE', '2020-01-01', '2030-01-01', '2020-01-01', 1.0, 'IN', None)]
+        pit_hash = hashlib.sha256(json.dumps(pit_rows, default=str, separators=(",", ":")).encode()).hexdigest()
         db.conn.execute(
             "INSERT INTO index_constituents_pit VALUES ('TEST', '1', 'TEST', '1', 'NSE', '2020-01-01', '2030-01-01', '2020-01-01', 1.0, 'IN', null, CURRENT_TIMESTAMP)"
         )
@@ -65,10 +69,18 @@ def test_portfolio_certification_checks_members_dq_and_pit(tmp_path):
             "INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds', 'TEST', 'TEST', 'NSE', '1d', 'ANGEL', 'raw', 'VERIFIED', 'CANONICAL_PROMOTED')"
         )
         db.conn.execute(
-            "INSERT INTO data_quality_certifications VALUES ('cert', 'ds', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+            "INSERT INTO data_quality_certifications VALUES ('cert', 'ds', 'validator-v1', 6, 0, '{\"dataset_content_hash\": \"raw\"}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
         )
+        for i, check in enumerate(["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"], start=1):
+            db.conn.execute("INSERT INTO quality_report (id, symbol, timeframe, dataset_id, check_type, issue_count, details, checked_at, certification_id) VALUES (?, 'TEST', '1d', 'ds', ?, 0, '{}', CURRENT_TIMESTAMP, 'cert')", [i, check])
         db.conn.execute(
-            "INSERT INTO research_frame_certifications (frame_certification_id, research_frame_hash, contributing_dataset_ids_json, symbol, timeframe, row_count, basis, validator_version, status, verified_at) VALUES ('frame', 'hash', '[\"ds\"]', 'PORTFOLIO:SNAP', '1d', 1, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP)"
+            """INSERT INTO research_frame_certifications (
+                   frame_certification_id, research_frame_hash, contributing_dataset_ids_json, symbol,
+                   timeframe, row_count, basis, validator_version, status, verified_at,
+                   dataset_evidence_json, dq_certification_ids_json, pit_evidence_hash
+               ) VALUES ('frame', 'hash', '[\"ds\"]', 'PORTFOLIO:SNAP', '1d', 1, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP,
+                         '{\"ds\": \"raw\"}', '[\"cert\"]', ?)""",
+            [pit_hash],
         )
         bundle_id = RunCertificationService(db).certify("portfolio-run")
         statuses = dict(db.conn.execute(
@@ -132,7 +144,10 @@ def test_certification_rejects_mismatched_frame_certificate(tmp_path):
     try:
         seed_run(db, "run-frame", "TEST", '{"frame_certification_id":"frame"}')
         db.conn.execute(
-            "INSERT INTO research_frame_certifications VALUES ('frame', 'different-hash', '[]', 'TEST', '1d', 0, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP)"
+            """INSERT INTO research_frame_certifications
+               (frame_certification_id, research_frame_hash, contributing_dataset_ids_json,
+                symbol, timeframe, row_count, basis, validator_version, status, verified_at)
+               VALUES ('frame', 'different-hash', '[]', 'TEST', '1d', 0, 'SPLIT_ADJUSTED', 'v1', 'CERTIFIED', CURRENT_TIMESTAMP)"""
         )
         bundle_id = RunCertificationService(db).certify("run-frame")
         status = db.conn.execute(

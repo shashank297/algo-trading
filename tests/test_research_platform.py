@@ -92,7 +92,7 @@ class ResearchPlatformTests(unittest.TestCase):
         self.frame = self._bars(30)
         self.db.upsert_candles(self.frame, "NIFTY", "26000", "NSE", "1d", adjustment="UNADJUSTED", dataset_id="ds_nifty")
         self.db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_nifty', 'NIFTY', 'NIFTY', 'NSE', '1d', 'ANGEL', 'h1', 'VERIFIED', 'CANONICAL_PROMOTED');")
-        self.db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_nifty', 'ds_nifty', 'validator-v1', 6, 0, '{}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
+        self.db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_nifty', 'ds_nifty', 'validator-v1', 6, 0, '{\"dataset_content_hash\": \"h1\"}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
         for i, check in enumerate(["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"], start=1):
             self.db.conn.execute("INSERT INTO quality_report (id, symbol, timeframe, dataset_id, check_type, issue_count, details, checked_at, certification_id) VALUES (?, 'NIFTY', '1d', 'ds_nifty', ?, 0, '{}', CURRENT_TIMESTAMP, 'cert_nifty');", [i, check])
 

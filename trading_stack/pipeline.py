@@ -112,10 +112,12 @@ class StrategyPipeline:
                             "Authoritative research requires every row to belong to a verified, certified dataset."
                         )
 
+                    dataset_hashes: dict[str, str] = {}
+                    dq_certification_ids: list[str] = []
                     for ds_id in contributing_dataset_ids:
                         # 1. Verify dataset in market_datasets
                         ds_record = self.db.conn.execute(
-                            "SELECT status, lifecycle_status, transformation_hash FROM market_datasets WHERE dataset_id = ?",
+                            "SELECT status, lifecycle_status, transformation_hash, raw_hash FROM market_datasets WHERE dataset_id = ?",
                             [ds_id],
                         ).fetchone()
                         if not ds_record or ds_record[0] != "VERIFIED" or ds_record[1] != "CANONICAL_PROMOTED":
@@ -123,38 +125,42 @@ class StrategyPipeline:
                                 f"DataQualityError: Dataset {ds_id} contributing to {symbol} {timeframe} has status={ds_record[0] if ds_record else 'NONE'}, "
                                 f"lifecycle={ds_record[1] if ds_record else 'NONE'}; must be VERIFIED and CANONICAL_PROMOTED."
                             )
+                        ds_hash = str(ds_record[2] or ds_record[3] or "")
+                        if not ds_hash:
+                            raise DataQualityError(f"DataQualityError: Dataset {ds_id} has no immutable content hash.")
+                        dataset_hashes[ds_id] = ds_hash
 
-                        # 2. Verify atomic certification batch in data_quality_certifications
-                        cert_record = self.db.conn.execute(
-                            "SELECT certification_id, status, issue_count, checks_json FROM data_quality_certifications WHERE dataset_id = ? ORDER BY completed_at DESC LIMIT 1",
+                        # 2. Verify exact matching certification batch in data_quality_certifications
+                        certs = self.db.conn.execute(
+                            """SELECT certification_id, validator_version, checks_json 
+                               FROM data_quality_certifications 
+                               WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0 
+                               ORDER BY completed_at DESC""",
                             [ds_id],
-                        ).fetchone()
-                        if not cert_record or cert_record[1] != "CERTIFIED" or int(cert_record[2]) > 0:
-                            raise DataQualityError(
-                                f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} does not possess an active CERTIFIED batch in data_quality_certifications."
-                            )
-                        try:
-                            cert_payload = json.loads(str(cert_record[3] or "{}"))
-                        except json.JSONDecodeError:
-                            cert_payload = {}
-                        if ds_record[2] and cert_payload.get("dataset_content_hash") != ds_record[2]:
-                            raise DataQualityError(
-                                f"DataQualityError: Certification for dataset {ds_id} is not bound to its current content hash."
-                            )
-
-                        cert_id = cert_record[0]
-                        # 3. Verify exact 6 child checks in quality_report
-                        quality_rows = self.db.conn.execute(
-                            "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
-                            [cert_id],
                         ).fetchall()
-                        observed_checks = {r[0] for r in quality_rows if int(r[1]) == 0}
-                        missing_checks = REQUIRED_AUTHORITATIVE_DQ_CHECKS - observed_checks
-                        if missing_checks:
+                        matched_cert_id = None
+                        for c in certs:
+                            c_id, val_ver, checks_json_str = str(c[0]), str(c[1] or "").strip(), str(c[2] or "{}")
+                            if not val_ver:
+                                continue
+                            try:
+                                checks_data = json.loads(checks_json_str)
+                            except Exception:
+                                checks_data = {}
+                            if checks_data.get("dataset_content_hash") == ds_hash:
+                                quality_rows = self.db.conn.execute(
+                                    "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?",
+                                    [c_id],
+                                ).fetchall()
+                                observed = {r[0] for r in quality_rows if int(r[1]) == 0}
+                                if observed == REQUIRED_AUTHORITATIVE_DQ_CHECKS and len(quality_rows) == 6:
+                                    matched_cert_id = c_id
+                                    break
+                        if not matched_cert_id:
                             raise DataQualityError(
-                                f"DataQualityError: Incomplete DQ certification for dataset {ds_id} ({symbol} {timeframe}). "
-                                f"Missing required check categories: {sorted(missing_checks)}."
+                                f"DataQualityError: Contributing dataset {ds_id} for {symbol} {timeframe} lacks active CERTIFIED batch bound to hash {ds_hash}."
                             )
+                        dq_certification_ids.append(matched_cert_id)
 
                     # Composed research frame validation
                     # Timestamp duplicates
@@ -187,12 +193,16 @@ class StrategyPipeline:
                         """
                         INSERT INTO research_frame_certifications (
                             frame_certification_id, research_frame_hash, contributing_dataset_ids_json,
-                            symbol, timeframe, row_count, basis, validator_version, status, verified_at
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            symbol, timeframe, row_count, basis, validator_version, status, verified_at,
+                            dataset_evidence_json, dq_certification_ids_json, pit_evidence_hash
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             frame_cert_id, frame_hash, json.dumps(contributing_dataset_ids),
                             symbol, timeframe, len(frame), str(adj_enum.value), "validator-v1", "CERTIFIED", now_utc,
+                            json.dumps(dataset_hashes, sort_keys=True),
+                            json.dumps(sorted(dq_certification_ids)),
+                            None,
                         ],
                     )
                     self._last_frame_certification_id = frame_cert_id
@@ -245,7 +255,7 @@ class StrategyPipeline:
         strategy = StrategyRegistry.create(strategy_name, **parameters)
         execution_model = self._execution_model(cost_model)
         if mode == "vectorized":
-            result = self.vector_backtester.run(
+            result = VectorizedBacktester(execution_model=execution_model).run(
                 strategy=strategy,
                 bars=featured,
                 symbol=symbol,

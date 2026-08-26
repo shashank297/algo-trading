@@ -11,7 +11,7 @@ import hashlib
 import json
 import uuid
 from collections import Counter
-from datetime import date, datetime, time as time_value, timedelta
+from datetime import date, datetime, time as time_value, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -568,12 +568,15 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         )
 
     def on_stream_reanchored(exchange: str, token: str, symbol: str, epoch: int) -> None:
+        reanchor_time = datetime.now(timezone.utc)
+        aggregator.close_degraded_interval(symbol or token, reanchor_time)
         logger.info(
-            "Stream re-anchored for exchange={} token={} symbol={} epoch={}",
+            "Stream re-anchored for exchange={} token={} symbol={} epoch={} at {}",
             exchange,
             token,
             symbol,
             epoch,
+            reanchor_time,
         )
 
     client.on_stream_degraded = on_stream_degraded
@@ -1044,6 +1047,8 @@ def main(argv: list[str] | None = None) -> int:
                         )
                         if repair_res.bars is not None:
                             repaired += len(repair_res.bars)
+                            if repair_res.canonical_dataset_id:
+                                ds_id = str(repair_res.canonical_dataset_id)
                     if repaired:
                         project_logger.info("✅ {} {}: repaired {} missing daily bars.", symbol, label, repaired)
                         report = validator.run_all_checks(db, symbol, dataset_id=ds_id, persist_atomic_certification=True)

@@ -55,8 +55,12 @@ class OpeningTickObservation:
     quality_state: str = "TRUSTED"
 
     def __post_init__(self) -> None:
-        if not self.symbol.strip() or not self.exchange.strip() or not self.token.strip():
-            raise ValueError("Opening tick observations require non-empty symbol, exchange, and token.")
+        if not self.symbol or not self.symbol.strip():
+            raise ValueError("Opening tick observations require non-empty symbol.")
+        if not self.exchange or not self.exchange.strip():
+            raise ValueError("Opening tick observations require non-empty exchange.")
+        if not self.token or not self.token.strip():
+            raise ValueError("Opening tick observations require non-empty token.")
         if not math.isfinite(self.price) or self.price <= 0:
             raise ValueError("Opening tick price must be finite and greater than zero.")
         ts = self.exchange_timestamp
@@ -79,6 +83,8 @@ class OpeningTickObservation:
     @property
     def timestamp(self) -> datetime:
         """Compatibility alias for exchange time; never receipt-time evidence."""
+        if self.exchange_timestamp is None:
+            raise ValueError("Opening tick observations require an exchange timestamp.")
         return self.exchange_timestamp
 
 

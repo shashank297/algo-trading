@@ -2,11 +2,10 @@
 
 import argparse
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import duckdb
-from dateutil.relativedelta import relativedelta  # type: ignore[import-untyped]
 from loguru import logger
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -30,7 +29,7 @@ def archive_data(months_old: int, *, delete_after_verify: bool = False) -> None:
     archive_dir = PROJECT_ROOT / "data" / "archive"
     archive_dir.mkdir(parents=True, exist_ok=True)
     
-    cutoff_date = datetime.now() - relativedelta(months=months_old)
+    cutoff_date = datetime.now() - timedelta(days=30 * months_old)
     cutoff_iso = cutoff_date.strftime("%Y-%m-%d %H:%M:%S")
     
     logger.info("📦 Archiving data older than {} months (cutoff: {})", months_old, cutoff_iso)

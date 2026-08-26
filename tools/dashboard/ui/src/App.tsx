@@ -1,11 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, Fragment } from 'react'
 import {
   LayoutDashboard, ChevronRight, ArrowLeft, Search, X,
   Activity, BarChart3, TrendingUp, TrendingDown, Target,
   BookOpen, Lightbulb, Shield, Clock, Zap, AlertCircle,
   CheckCircle2, Filter,
 } from 'lucide-react'
-import { EquityCurveChart } from './components/EquityCurveChart'
 import { PaperReconciliationTab } from './components/PaperReconciliationTab'
 import { AnalyticsTab } from './components/AnalyticsTab'
 import { getStrategyInfo, type StrategyInfo } from './lib/strategyKnowledge'
@@ -72,7 +71,7 @@ function Breadcrumb({ items }: { items: { label: string; onClick: () => void }[]
   return (
     <nav className="flex items-center gap-1 text-sm text-slate-400 flex-wrap mb-4">
       {items.map((item, i) => (
-        <React.Fragment key={i}>
+        <Fragment key={i}>
           {i > 0 && <ChevronRight className="w-3.5 h-3.5 text-slate-600 flex-shrink-0" />}
           <button
             onClick={item.onClick}
@@ -82,7 +81,7 @@ function Breadcrumb({ items }: { items: { label: string; onClick: () => void }[]
           >
             {item.label}
           </button>
-        </React.Fragment>
+        </Fragment>
       ))}
     </nav>
   )
@@ -159,7 +158,7 @@ function StrategiesView({
 
       {/* Cards grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-        {filtered.map(({ strategy_name, total_stocks, avg_return, avg_win_rate, avg_profit_factor, avg_max_drawdown, _info }) => (
+        {filtered.map(({ strategy_name, total_stocks, avg_return, avg_win_rate, avg_profit_factor, _info }) => (
           <button
             key={strategy_name}
             onClick={() => onDrill(strategy_name)}

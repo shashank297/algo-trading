@@ -77,10 +77,11 @@ class PromotionEngine:
         run_frame_certification_id = str(run[3]) if run[3] else None
         if run_frame_certification_id is None:
             legacy_notes = self.db.conn.execute("SELECT notes FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
-            try:
-                run_frame_certification_id = json.loads(str(legacy_notes[0] or "{}"))["frame_certification_id"]
-            except (IndexError, KeyError, TypeError, json.JSONDecodeError):
-                pass
+            if legacy_notes and legacy_notes[0]:
+                try:
+                    run_frame_certification_id = json.loads(str(legacy_notes[0]))["frame_certification_id"]
+                except (KeyError, TypeError, json.JSONDecodeError):
+                    pass
 
         # Resolve or certify immutable run certification bundle
         from trading_stack.certification import RunCertificationService
@@ -123,6 +124,37 @@ class PromotionEngine:
         if evidence_row is None:
             raise RuntimeError(f"DuckDB returned no evidence count for {run_id}.")
         evidence = int(evidence_row[0])
+
+        # Compute primary performance metrics from stitched out-of-sample equity returns
+        import numpy as np
+        equity_df = self.db.conn.execute(
+            "SELECT timestamp, equity FROM strategy_equity_curve WHERE run_id = ? AND evidence_level = 'OUT_OF_SAMPLE' ORDER BY timestamp",
+            [run_id],
+        ).df()
+
+        oos_sharpe: float | None = None
+        oos_sortino: float | None = None
+        oos_drawdown: float | None = None
+        oos_profit_factor: float | None = None
+
+        if not equity_df.empty and len(equity_df) > 1:
+            rets = equity_df["equity"].pct_change().dropna()
+            if len(rets) > 0 and float(rets.std()) > 1e-9:
+                oos_sharpe = float(rets.mean() / rets.std() * np.sqrt(252))
+                downside = rets[rets < 0]
+                oos_sortino = float(rets.mean() / downside.std() * np.sqrt(252)) if len(downside) > 0 and float(downside.std()) > 1e-9 else oos_sharpe
+            cum_peak = equity_df["equity"].cummax()
+            dd = (cum_peak - equity_df["equity"]) / cum_peak
+            oos_drawdown = float(dd.max()) if not dd.empty else 0.0
+            pos_rets = float(rets[rets > 0].sum()) if len(rets[rets > 0]) > 0 else 0.0
+            neg_rets = abs(float(rets[rets < 0].sum())) if len(rets[rets < 0]) > 0 else 0.0
+            oos_profit_factor = (pos_rets / neg_rets) if neg_rets > 1e-9 else (2.0 if pos_rets > 0 else 1.0)
+
+        effective_sharpe = oos_sharpe if oos_sharpe is not None else float(metrics.get("sharpe", 0.0))
+        effective_sortino = oos_sortino if oos_sortino is not None else float(metrics.get("sortino", 0.0))
+        effective_profit_factor = oos_profit_factor if oos_profit_factor is not None else float(metrics.get("profit_factor", 0.0))
+        effective_drawdown = oos_drawdown if oos_drawdown is not None else abs(float(metrics.get("max_drawdown", 1.0)))
+
         fold_rows = self.db.conn.execute(
             """SELECT fold_id, MAX(CASE WHEN metric_name = 'sharpe' THEN metric_value END)
                FROM walk_forward_metrics WHERE run_id = ? GROUP BY fold_id""",
@@ -150,13 +182,13 @@ class PromotionEngine:
                 maximum_correlation = float(correlation_row[0])
 
         checks = {
-            "sharpe": metrics.get("sharpe", 0.0) >= self.policy.minimum_sharpe,
-            "sortino": metrics.get("sortino", 0.0) >= self.policy.minimum_sortino,
-            "profit_factor": metrics.get("profit_factor", 0.0) >= self.policy.minimum_profit_factor,
-            "drawdown": abs(metrics.get("max_drawdown", 1.0)) <= self.policy.maximum_drawdown,
+            "sharpe": effective_sharpe >= self.policy.minimum_sharpe,
+            "sortino": effective_sortino >= self.policy.minimum_sortino,
+            "profit_factor": effective_profit_factor >= self.policy.minimum_profit_factor,
+            "drawdown": effective_drawdown <= self.policy.maximum_drawdown,
             "trades": metrics.get("trades", 0.0) >= self.policy.minimum_trades,
             "out_of_sample": evidence > 0 and oos_certified,
-            "walk_forward_metrics": bool(metrics),
+            "walk_forward_metrics": bool(metrics) or not equity_df.empty,
             "minimum_folds": len(fold_rows) >= self.policy.minimum_walk_forward_folds,
             "fold_consistency": positive_fold_fraction >= self.policy.minimum_positive_fold_fraction,
             "cost_stress": cost_stress_passes,

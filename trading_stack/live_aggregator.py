@@ -108,10 +108,32 @@ class RealtimeBarAggregator:
                 self._untrusted_windows[symbol] = []
             self._untrusted_windows[symbol].append((start_time, end_time))
 
+    def close_degraded_interval(self, symbol: str, reanchor_time: datetime) -> None:
+        """Close open-ended untrusted intervals at re-anchor timestamp while preserving historical gap interval."""
+        with self._lock:
+            if symbol in self._untrusted_windows:
+                updated: list[tuple[datetime, datetime | None]] = []
+                for start_time, end_time in self._untrusted_windows[symbol]:
+                    if end_time is None:
+                        updated.append((start_time, reanchor_time))
+                    else:
+                        updated.append((start_time, end_time))
+                self._untrusted_windows[symbol] = updated
+
+    def repair_gap(self, symbol: str, from_time: datetime, to_time: datetime | None = None) -> None:
+        """Remove or resolve historical untrusted interval upon verified backfill."""
+        with self._lock:
+            if symbol in self._untrusted_windows:
+                self._untrusted_windows[symbol] = [
+                    (st, et) for st, et in self._untrusted_windows[symbol]
+                    if not (st == from_time and (to_time is None or et == to_time or et is None))
+                ]
+
     def load_unresolved_gaps(self, db: Any) -> None:
         """Reload unrepaired stream gaps from DuckDB into untrusted window registry."""
         with self._lock:
             try:
+                # Check stream_gap_events first
                 rows = db.conn.execute(
                     "SELECT symbol, start_time, end_time FROM stream_gap_events WHERE status = 'UNREPAIRED'"
                 ).fetchall()
@@ -119,7 +141,20 @@ class RealtimeBarAggregator:
                     if sym not in self._untrusted_windows:
                         self._untrusted_windows[sym] = []
                     self._untrusted_windows[sym].append((st, et))
-                logger.info("Loaded {} unrepaired stream gaps into aggregator.", len(rows))
+                logger.info("Loaded {} unrepaired stream gaps from stream_gap_events into aggregator.", len(rows))
+            except Exception:
+                pass
+            try:
+                # Also check stream_gaps
+                gap_rows = db.conn.execute(
+                    "SELECT symbol, detected_at, repaired_at FROM stream_gaps WHERE gap_status = 'UNREPAIRED'"
+                ).fetchall()
+                for sym, dt, rep in gap_rows:
+                    if sym and sym not in self._untrusted_windows:
+                        self._untrusted_windows[sym] = []
+                    if sym:
+                        self._untrusted_windows[sym].append((dt, rep))
+                logger.info("Loaded {} unrepaired stream gaps from stream_gaps into aggregator.", len(gap_rows))
             except Exception as exc:
                 logger.debug("Could not load unresolved stream gaps: {}", exc)
 
