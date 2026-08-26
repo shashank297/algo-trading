@@ -1,6 +1,6 @@
 # Requirements & Invariants Traceability Matrix
 
-This matrix maps every architectural audit finding (P0-1 through P2-25) and operational hardening requirement (E-1 through E-15) to its code implementation and verification test, verified at Commit A SHA `3cb3cb65126888833d4d2492811fffdc5809efa7`.
+This matrix maps every architectural audit finding (P0-1 through P2-25), operational hardening requirement (E-1 through E-15), and deep architecture remediation requirement (D-1 through D-7) to its code implementation and verification test, verified at Commit A SHA `98ad8fe`.
 
 | Requirement ID | Description | Primary Implementation | Verification Test | Status |
 |---|---|---|---|---|
@@ -44,3 +44,10 @@ This matrix maps every architectural audit finding (P0-1 through P2-25) and oper
 | **E-13** | Database backup, checksum verification & atomic restore | [operations/backup.py](../operations/backup.py) | `tests/test_operations.py` | ✅ Complete |
 | **E-14** | Fail-closed forensic database integrity validator | [storage/integrity.py](../storage/integrity.py) | `tests/test_causality_and_invariants.py::test_e14_database_integrity_validator` | ✅ Complete |
 | **E-15** | Centralized dashboard database path resolution | [tools/dashboard/api/main.py](../tools/dashboard/api/main.py) | `tests/test_dashboard_api.py` | ✅ Complete |
+| **D-1** | Single-asset walk-forward exact lineage & slice evidence preservation | [experiments/walk_forward.py](../experiments/walk_forward.py) | `tests/test_deep_architecture_remediation.py::test_single_asset_walk_forward_lineage_and_slicing` | ✅ Complete |
+| **D-2** | Pure stitched out-of-sample promotion metrics (fail-closed, zero in-sample fallback) | [trading_stack/promotion.py](../trading_stack/promotion.py) | `tests/test_deep_architecture_remediation.py::test_promotion_engine_pure_oos_rejection_without_fallback` | ✅ Complete |
+| **D-3** | TRUE_NEXT_OPEN fail-closed token identity verification across authoritative tables | [trading_stack/paper.py](../trading_stack/paper.py), [trading_stack/portfolio.py](../trading_stack/portfolio.py) | `tests/test_deep_architecture_remediation.py::test_paper_engine_token_identity_unresolved_fails_closed`, `tests/test_deep_architecture_remediation.py::test_paper_engine_token_resolution_and_untrusted_tick_rejection` | ✅ Complete |
+| **D-4** | Paper dynamic parametric VaR scaling with rolling return volatility | [trading_stack/paper.py](../trading_stack/paper.py), [trading_stack/portfolio_paper.py](../trading_stack/portfolio_paper.py) | `tests/test_deep_architecture_remediation.py::test_paper_engine_var_scales_with_return_volatility` | ✅ Complete |
+| **D-5** | Independent paper ledger reconciliation and position drift detection | [trading_stack/paper.py](../trading_stack/paper.py), [trading_stack/portfolio_paper.py](../trading_stack/portfolio_paper.py) | `tests/test_deep_architecture_remediation.py::test_paper_reconciliation_detects_real_drift` | ✅ Complete |
+| **D-6** | AI research trade proposal risk state completeness contract | [ai_research/workflow.py](../ai_research/workflow.py) | `tests/test_deep_architecture_remediation.py::test_ai_workflow_risk_proposal_has_complete_state` | ✅ Complete |
+| **D-7** | Monotonic ratcheting ATR trailing stop (strictly non-decreasing for long positions) | [trading_stack/strategy_library/single_asset.py](../trading_stack/strategy_library/single_asset.py) | `tests/test_deep_architecture_remediation.py::test_monotonic_atr_trailing_stop` | ✅ Complete |

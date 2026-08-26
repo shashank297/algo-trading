@@ -1,8 +1,8 @@
 # Production Readiness & Architecture Invariants
 
 Audit date: 2026-08-26  
-Audit Scope: **Comprehensive Final Audit Remediation (Speckit Flow)**  
-Verified Implementation Commit (Commit A): `3cb3cb65126888833d4d2492811fffdc5809efa7`  
+Audit Scope: **Deep Architecture Audit Remediation & Invariant Enforcement**  
+Verified Implementation Commit (Commit A): `98ad8fe`  
 
 Current decision: **READY for NIFTY 200 daily historical research; READY for forward paper trading with EOD_BATCH and TRUE_NEXT_OPEN execution modes; NOT READY for unverified minute live trading without dedicated broker feed validation and paper incubation.**
 
@@ -12,20 +12,22 @@ The deterministic research and paper execution stack is operational with compreh
 
 ## 1. Verified Architecture Invariants & Audit Remediation Summary
 
-### Core Data Platform & Lineage (P0-1, P0-4, P1-9, E-10, E-14)
+### Core Data Platform & Lineage (P0-1, P0-4, P1-9, E-10, E-14, D-1)
 - **Canonical Split-Adjusted Basis**: Split-adjusted price basis is the default throughout all backtesting, research, and paper trading. Every dataset tracks immutable `source_basis`, `canonical_basis`, and `research_basis` lineage.
 - **Point-in-Time Universe Isolation**: `SynchronizedPanelBuilder` verifies date-range PIT coverage and applies point-in-time constituent masking before cross-sectional score ranking, preventing survivorship bias.
-- **Authoritative Exact Data Quality & Lineage Gate (P1-9)**: Eliminated all latest-cert fallbacks (`ORDER BY completed_at DESC LIMIT 1`). Research frame creation requires exact dataset content hash match and zero-issue certification across 6 child checks (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`). Persists full `dataset_evidence_json`, `dq_certification_ids_json`, and `pit_evidence_hash` on frame records.
+- **Authoritative Exact Data Quality & Lineage Gate (P1-9, D-1)**: Eliminated all latest-cert fallbacks (`ORDER BY completed_at DESC LIMIT 1`). Research frame creation requires exact dataset content hash match and zero-issue certification across 6 child checks (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`). Persists full `dataset_evidence_json`, `dq_certification_ids_json`, and `pit_evidence_hash` on frame records. Single-asset walk forward evaluations strictly preserve all 5 exact lineage fields across train/test splits.
 - **Forensic Relational Integrity**: `DatabaseIntegrityValidator` enforces foreign keys across fills, orders, costs, snapshot members, and dataset lineage fail-closed.
 
-### Execution Realism & Risk Management (P0-2, P0-3, P1-8, P1-11, P2-22)
+### Execution Realism & Risk Management (P0-2, P0-3, P1-8, P1-11, P2-22, D-3, D-4, D-5, D-6, D-7)
 - **Causal Lagged ADV**: ADV calculations strictly lag Day $T+1$ execution by 1 bar per symbol (`shift(1).rolling(20)`), preventing future volume lookahead.
-- **Strictly Typed Forward Paper Execution Modes (P0-3)**:
+- **Strictly Typed Forward Paper Execution Modes (P0-3, D-3)**:
   - `EOD_BATCH`: Signals execute strictly at Day $T+1$ completed candle `close`. Mutating Day $T+1$ `open` has zero impact on execution price or size.
-  - `TRUE_NEXT_OPEN`: Signals execute against strictly typed `OpeningTickObservation` (`received_at_utc >= exchange_timestamp`, non-negative sequence number and stream epoch). Missing opening ticks reject with `MISSED_LIVE_OPEN_PRICE` without fallback to completed bar open or legacy float price.
+  - `TRUE_NEXT_OPEN`: Signals execute against strictly typed `OpeningTickObservation` (`received_at_utc >= exchange_timestamp`, non-negative sequence number and stream epoch). Enforces strict fail-closed token identity matching against resolved authoritative `instrument_master`, `universe_snapshot_members`, `index_constituents_pit`, or `historical_candles` records. Unresolved or mismatched tokens reject immediately with `MISSED_LIVE_OPEN_PRICE`.
 - **Cost Model & Vectorized Parity**: `StrategyPipeline.run(mode='vectorized')` enforces execution cost schedules via `VectorizedBacktester(execution_model=execution_model)`.
-- **Dynamic Single-Asset Paper Sizing & VaR**: Single-asset paper engine sizes targets against real-time `current_equity = cash + quantity * price` and computes parametric Value-at-Risk using asset return volatility.
-- **Mandatory Risk State Contract**: `RequiredRiskStateValidator` requires all core risk dimensions (`capital`, `current_gross_exposure`, `daily_pnl`, `current_drawdown`, `current_sector_exposure`, `open_position_count`, `daily_turnover_crore`, `estimated_portfolio_var_pct`), eliminating synthetic risk manufacture.
+- **Dynamic Single-Asset Paper Sizing & Parametric VaR (D-4)**: Single-asset and portfolio paper engines size targets against real-time `current_equity = cash + quantity * price` and compute dynamic parametric Value-at-Risk using asset return volatility (`pct_change().tail(20).std()`).
+- **Independent Paper Ledger Reconciliation (D-5)**: Paper reconciliation verifies target desired quantities against independent ledger positions (`paper_positions` / `strategy_metrics`), reporting real numerical position drift.
+- **Mandatory Risk State Contract (D-6)**: `RequiredRiskStateValidator` requires all core risk dimensions (`capital`, `current_gross_exposure`, `daily_pnl`, `current_drawdown`, `current_sector_exposure`, `open_position_count`, `daily_turnover_crore`, `estimated_portfolio_var_pct`), eliminating synthetic risk manufacture across research and AI workflows.
+- **Monotonic ATR Trailing Stop Ratchet (D-7)**: Strategy ATR stops track highest high since entry and ratchet strictly upward for long positions, never loosening stop levels.
 - **Live Calendar Metric Annualization**: Metric calculations dynamically derive trading days and session minutes from the active `MarketCalendar`.
 - **Date-Effective Delivery Cost Schedules**: Transaction costs dynamically resolve historical statutory and broker rate schedules back to 2010 based on fill timestamp.
 
@@ -37,20 +39,20 @@ The deterministic research and paper execution stack is operational with compreh
 - **Durable Raw Packet Persistence**: WebSocket binary packets pipe directly to `market_raw_packets` with atomic batch writes and dead-letter spooling.
 - **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 010) fail-closed against tampering.
 
-### Certification & Stitched OOS Promotion (E-10)
+### Certification & Stitched OOS Promotion (E-10, D-2)
 - **Exact Run Certification**: `RunCertificationService` evaluates 5 categories (`DATA_LINEAGE`, `DATA_QUALITY`, `CAUSALITY`, `PIT_SURVIVORSHIP`, `OOS_WALK_FORWARD`), verifies exact frame certification and DQ certificates without latest-dataset fallback, and writes atomic certification bundles.
-- **Stitched Out-of-Sample Returns Evaluation**: `PromotionEngine` calculates primary Sharpe ratio and Maximum Drawdown exclusively from concatenated out-of-sample equity returns (`evidence_level = 'OUT_OF_SAMPLE'`).
+- **Pure Stitched Out-of-Sample Returns Evaluation (D-2)**: `PromotionEngine` calculates primary Sharpe ratio and Maximum Drawdown exclusively from concatenated out-of-sample equity returns (`evidence_level = 'OUT_OF_SAMPLE'`). Fails closed on missing or insufficient out-of-sample data with zero in-sample metric fallbacks.
 
 ---
 
 ## 2. Verification Summary
 
-- **Verified Commit A SHA**: `3cb3cb65126888833d4d2492811fffdc5809efa7`
-- **Deterministic Test Suite**: 387 passed tests across the repository.
+- **Verified Commit A SHA**: `98ad8fe`
+- **Deterministic Test Suite**: 397 passed tests across the repository.
 - **Global Test Coverage**: 85% repository-wide line coverage (exceeds 80% CI threshold).
 - **Critical Path Module Coverage**: 95% critical line coverage across execution, risk, streaming, aggregation, and certification modules (exceeds 95% CI threshold).
 - **Static Analysis & Type Checking**:
-  - `mypy`: 0 issues across 85 source files (including cross-platform `scheduler.py`).
+  - `mypy`: 0 issues across 85 source files.
   - `pyright`: 0 errors.
   - `ruff`: 0 lint errors across repository.
   - `compileall`: 100% clean compilation.
@@ -59,7 +61,7 @@ The deterministic research and paper execution stack is operational with compreh
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-# Output: 387 passed in 80.63s
+# Output: 397 passed in 80.01s
 
 .\venv\Scripts\python.exe -m coverage report --fail-under=80
 # Output: TOTAL 85% line coverage
@@ -74,7 +76,7 @@ The deterministic research and paper execution stack is operational with compreh
 # Output: Success: no issues found in 85 source files
 
 npx pyright
-# Output: 0 errors, 441 warnings, 0 informations
+# Output: 0 errors, 450 warnings, 0 informations
 
 .\venv\Scripts\python.exe -m compileall -q main.py research.py scheduler.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
 # Output: Exit code 0
