@@ -39,6 +39,8 @@ def _stateful(
     """
     position = 0.0
     entry_price = 0.0
+    highest_price = 0.0
+    trailing_stop = 0.0
     targets: list[float] = []
     reasons: list[str] = []
     sizes: list[float] = []
@@ -48,12 +50,16 @@ def _stateful(
         reason = ""
         current_close = float(closes[i])
         current_atr = float(atrs[i]) if atrs is not None and i < len(atrs) and not pd.isna(atrs[i]) else None
-        # --- ATR trailing stop-loss ---
+        # --- ATR trailing stop-loss (monotonic ratcheting) ---
         if position > 0.0 and current_atr is not None and current_atr > 0 and entry_price > 0:
-            stop_price = entry_price - stop_atr_mult * current_atr
-            if current_close <= stop_price:
+            highest_price = max(highest_price, current_close)
+            candidate_stop = highest_price - stop_atr_mult * current_atr
+            trailing_stop = max(trailing_stop, candidate_stop)
+            if current_close <= trailing_stop:
                 position = 0.0
                 entry_price = 0.0
+                highest_price = 0.0
+                trailing_stop = 0.0
                 reason = "atr_stop_loss"
                 targets.append(position)
                 reasons.append(reason)
@@ -63,10 +69,14 @@ def _stateful(
         if position == 0.0 and should_enter:
             position = 1.0
             entry_price = current_close
+            highest_price = current_close
+            trailing_stop = current_close - (stop_atr_mult * current_atr if current_atr and current_atr > 0 else 0.0)
             reason = entry_reason
         elif position > 0.0 and should_exit:
             position = 0.0
             entry_price = 0.0
+            highest_price = 0.0
+            trailing_stop = 0.0
             reason = exit_reason
         # --- ATR-based fractional sizing ---
         size = 0.0

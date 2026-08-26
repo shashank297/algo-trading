@@ -124,21 +124,56 @@ class WalkForwardEvaluator:
                 benchmark_symbol=spec.benchmark_symbol,
                 minimum_lookback=lookback,
             )
-        bars = self.db.conn.execute(
-            """SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume,
-                      adjustment, provider_name, dataset_id
-               FROM historical_candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp""",
-            [spec.universe[0], spec.timeframe],
-        ).df()
+        from trading_stack.pipeline import StrategyPipeline
+        pipeline = StrategyPipeline(
+            self.db,
+            require_authoritative_certification=spec.require_authoritative_certification,
+            strict_calendar=self.india_calendar is not None,
+        )
+        symbol = spec.universe[0]
+        bars = pipeline.load_candles(symbol, spec.timeframe)
         if bars.empty:
-            raise ValueError(f"No candles found for {spec.universe[0]} {spec.timeframe}.")
+            raise ValueError(f"No candles found for {symbol} {spec.timeframe}.")
         if self.india_calendar is not None:
             validation = self.india_calendar.validate_bars(bars["timestamp"], spec.timeframe)
             if validation.out_of_session_count:
                 raise ValueError("Walk-forward source contains bars outside the verified NSE calendar.")
         panel = FeatureFactory().build(bars, timezone_name="Asia/Kolkata")
-        panel["symbol"] = spec.universe[0]
-        return ResearchDataset(spec.universe_snapshot_id, {spec.universe[0]: None}, panel)
+        panel["symbol"] = symbol
+        frame_cert_id = getattr(pipeline, "_last_frame_certification_id", None)
+        contributing_dataset_ids = tuple(
+            str(x).strip() for x in bars["dataset_id"].dropna().unique() if str(x).strip()
+        ) if "dataset_id" in bars.columns else ()
+        dq_certs: list[str] = []
+        dataset_hashes: dict[str, str] = {}
+        pit_hash: str | None = None
+        if frame_cert_id:
+            row = self.db.conn.execute(
+                "SELECT dataset_evidence_json, dq_certification_ids_json, pit_evidence_hash FROM research_frame_certifications WHERE frame_certification_id = ?",
+                [frame_cert_id],
+            ).fetchone()
+            if row:
+                if row[0]:
+                    try:
+                        dataset_hashes = json.loads(str(row[0]))
+                    except Exception:
+                        pass
+                if row[1]:
+                    try:
+                        dq_certs = json.loads(str(row[1]))
+                    except Exception:
+                        pass
+                pit_hash = str(row[2]) if row[2] else None
+        return ResearchDataset(
+            universe_snapshot_id=spec.universe_snapshot_id,
+            dataset_snapshot_ids={symbol: contributing_dataset_ids[0] if contributing_dataset_ids else None},
+            panel=panel,
+            frame_certification_id=frame_cert_id,
+            contributing_dataset_ids=contributing_dataset_ids,
+            dq_certification_ids=tuple(dq_certs),
+            dataset_content_hashes=dataset_hashes,
+            pit_evidence_hash=pit_hash,
+        )
 
     def _candidates(
         self,
@@ -233,6 +268,16 @@ class WalkForwardEvaluator:
             benchmark_relationship=source.benchmark_relationship,
             exclusions=source.exclusions.copy(),
             survivorship_bias=source.survivorship_bias,
+            universe_name=source.universe_name,
+            source_basis=source.source_basis,
+            canonical_basis=source.canonical_basis,
+            research_basis=source.research_basis,
+            corporate_action_version=source.corporate_action_version,
+            frame_certification_id=source.frame_certification_id,
+            contributing_dataset_ids=source.contributing_dataset_ids,
+            dq_certification_ids=source.dq_certification_ids,
+            dataset_content_hashes=dict(source.dataset_content_hashes),
+            pit_evidence_hash=source.pit_evidence_hash,
         )
 
     def _persist_fold(

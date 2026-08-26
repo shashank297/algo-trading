@@ -75,7 +75,19 @@ class ResearchWorkflow:
         quant_context = self._experiment_context(experiment_result)
         quant = self._run_agent(goal, "quant_analyst", {**data_context, **quant_context})
         risk = self.risk_engine.evaluate(
-            TradeProposal(symbol=goal.symbol, requested_notional=starting_capital * 0.05, capital=starting_capital),
+            TradeProposal(
+                symbol=goal.symbol,
+                requested_notional=starting_capital * 0.05,
+                capital=starting_capital,
+                current_position_notional=0.0,
+                current_gross_exposure=0.0,
+                daily_pnl=0.0,
+                current_drawdown=0.0,
+                current_sector_exposure=0.0,
+                open_position_count=0,
+                daily_turnover_crore=0.0,
+                estimated_portfolio_var_pct=0.01,
+            ),
         )
         self.db.log_risk_decision(risk.storage_payload(experiment_id=experiment_result["experiment_id"]))
         risk_output = self._run_agent(

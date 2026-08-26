@@ -63,6 +63,7 @@ class ForwardPortfolioPaperSessionEngine:
             self.cost_schedule,
             max_position_weight=risk_engine.policy.max_position_pct,
             max_gross_exposure=risk_engine.policy.max_gross_exposure_pct,
+            db=self.db,
         )
 
     def run(
@@ -195,12 +196,16 @@ class ForwardPortfolioPaperSessionEngine:
             session_date = session_timestamp.tz_convert(self.calendar.zone).date()
 
             if opening_observations:
-                matching_obs = {
-                    sym: obs for sym, obs in opening_observations.items()
-                    if pd.Timestamp(obs.timestamp).tz_convert(self.calendar.zone).date() == session_date
-                }
+                matching_obs = {}
+                for sym, obs in opening_observations.items():
+                    ts = getattr(obs, "timestamp", None) or getattr(obs, "exchange_timestamp", None) or getattr(obs, "received_at_utc", None)
+                    if ts is not None:
+                        ts_val = pd.Timestamp(ts)
+                        ts_val = ts_val.tz_localize("UTC") if ts_val.tzinfo is None else ts_val
+                        if ts_val.tz_convert(self.calendar.zone).date() == session_date:
+                            matching_obs[str(sym)] = obs
                 if matching_obs:
-                    day["open_tick_observation"] = day["symbol"].map(matching_obs)
+                    day["open_tick_observation"] = [matching_obs.get(str(s)) for s in day.index]
             elif execution_mode not in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN") and opening_ticks:
                 matching_ticks = {}
                 matching_ts = {}
@@ -395,7 +400,8 @@ class ForwardPortfolioPaperSessionEngine:
             sym_vol = float(day.loc[symbol, "volume"]) if (symbol in day.index and "volume" in day.columns and pd.notna(day.loc[symbol, "volume"])) else 0.0
             lagged_val = float(day.loc[symbol, "lagged_traded_value"]) if ("lagged_traded_value" in day.columns and symbol in day.index and pd.notna(day.loc[symbol, "lagged_traded_value"])) else sym_vol * price
             turnover_crore = (lagged_val / 10_000_000.0) if lagged_val > 0 else None
-            est_port_var = 1.65 * 0.015 * math.sqrt(max(len(quantities) + 1, 1)) * (current_gross / max(capital, 1e-9)) if capital > 0 else None
+            vol_val = float(day.loc[symbol, "volatility_20"]) if (symbol in day.index and "volatility_20" in day.columns and pd.notna(day.loc[symbol, "volatility_20"])) else 0.015
+            est_port_var = 1.65 * vol_val * math.sqrt(max(len(quantities) + 1, 1)) * (current_gross / max(capital, 1e-9)) if capital > 0 else None
 
             decision = self.risk_engine.evaluate(TradeProposal(
                 symbol=symbol,
@@ -539,12 +545,28 @@ class ForwardPortfolioPaperSessionEngine:
         fills: list[dict[str, Any]],
         pnl: float,
         notes: str,
+        target_quantities: dict[str, float] | None = None,
+        actual_quantities: dict[str, float] | None = None,
     ) -> dict[str, Any]:
+        drift = 0.0
+        if target_quantities is not None and actual_quantities is not None:
+            all_syms = set(target_quantities) | set(actual_quantities)
+            drift = sum(abs(actual_quantities.get(s, 0.0) - target_quantities.get(s, 0.0)) for s in all_syms)
+        submitted_count = len(orders)
+        filled_count = len(fills)
+        rejected_count = sum(order.get("status") == "REJECTED" for order in orders)
+        expected_count = submitted_count
+
         summary = {
-            "run_id": session_id, "trade_date": as_of.date(), "expected_orders": len(orders),
-            "submitted_orders": len(orders), "filled_orders": len(fills),
-            "rejected_orders": sum(order["status"] == "REJECTED" for order in orders),
-            "pnl": pnl, "drift": 0.0, "notes": notes,
+            "run_id": session_id,
+            "trade_date": as_of.date(),
+            "expected_orders": expected_count,
+            "submitted_orders": submitted_count,
+            "filled_orders": filled_count,
+            "rejected_orders": rejected_count,
+            "pnl": pnl,
+            "drift": drift,
+            "notes": notes if drift == 0.0 else f"{notes}; portfolio_drift={drift:.4f}",
         }
         self.db.log_paper_reconciliation([summary])
         return summary

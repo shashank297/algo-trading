@@ -750,6 +750,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 spec = ExperimentSpec(
                     strategy_name="trend_following", universe=["TEST-EQ"], timeframe="1d",
                     mode="event-driven", benchmark_symbol=None,
+                    require_authoritative_certification=False,
                 )
                 evaluator = WalkForwardEvaluator(db)
                 evaluator.evaluate(outcome["result"].run_id, spec, train_size=80, test_size=40)

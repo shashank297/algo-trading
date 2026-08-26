@@ -182,6 +182,8 @@ class ForwardPaperSessionEngine:
                 daily_start_equity = cash + quantity * float(bar["open"])
             pending_ts = pending.get("signal_timestamp") or pending.get("timestamp") if pending else None
             if pending is not None and pending_ts is not None and pd.Timestamp(pending_ts) < bar_timestamp:
+                returns = completed["close"].pct_change().dropna()
+                recent_vol = float(returns.tail(20).std()) if len(returns.tail(20)) >= 2 and float(returns.tail(20).std()) > 1e-6 else 0.02
                 (
                     cash, quantity, average_cost, entry_timestamp, entry_reason,
                     entry_cost_pool, entry_execution_cost_pool,
@@ -189,8 +191,7 @@ class ForwardPaperSessionEngine:
                 ) = self._execute_pending(
                     session_id, symbol, bar, pending, cash, quantity, average_cost, starting_capital,
                     daily_start_equity, peak_equity, entry_timestamp, entry_reason,
-                    entry_cost_pool, entry_execution_cost_pool,
-                    execution_mode=execution_mode,
+                    entry_cost_pool, entry_execution_cost_pool, execution_mode=execution_mode, asset_volatility=recent_vol,
                 )
                 if order:
                     all_orders.append(order)
@@ -260,6 +261,7 @@ class ForwardPaperSessionEngine:
         entry_cost_pool: float = 0.0,
         entry_execution_cost_pool: float = 0.0,
         execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
+        asset_volatility: float = 0.02,
     ) -> tuple[
         float, float, float, pd.Timestamp | None, str | None, float, float,
         dict[str, Any] | None, dict[str, Any] | None,
@@ -273,8 +275,10 @@ class ForwardPaperSessionEngine:
         elif execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN":
             obs = bar.get("open_tick_observation") or bar.get("opening_tick") or bar.get("opening_tick_observation")
             if obs is not None and hasattr(obs, "price"):
-                expected_exchange = str(bar.get("exchange") or "NSE").upper()
-                expected_token = str(bar.get("token") or "")
+                raw_ex = bar.get("exchange")
+                expected_exchange = str(raw_ex).strip().upper() if (pd.notna(raw_ex) and str(raw_ex).strip() and str(raw_ex).strip().lower() != "nan") else "NSE"
+                raw_tok = bar.get("token")
+                expected_token = str(raw_tok).strip() if (pd.notna(raw_tok) and str(raw_tok).strip() and str(raw_tok).strip().lower() != "nan") else ""
                 if not expected_token:
                     try:
                         token_row = self.db.conn.execute(
@@ -282,27 +286,36 @@ class ForwardPaperSessionEngine:
                             [symbol, expected_exchange],
                         ).fetchone()
                         if token_row and token_row[0]:
-                            expected_token = str(token_row[0])
+                            expected_token = str(token_row[0]).strip()
                         else:
                             snap_row = self.db.conn.execute(
-                                "SELECT token FROM universe_snapshot_members WHERE symbol = ? LIMIT 1",
+                                "SELECT provider_token FROM universe_snapshot_members WHERE symbol = ? AND provider_token IS NOT NULL AND provider_token != '' LIMIT 1",
                                 [symbol],
                             ).fetchone()
                             if snap_row and snap_row[0]:
-                                expected_token = str(snap_row[0])
+                                expected_token = str(snap_row[0]).strip()
                             else:
-                                candle_row = self.db.conn.execute(
-                                    "SELECT token FROM historical_candles WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
+                                pit_row = self.db.conn.execute(
+                                    "SELECT token FROM index_constituents_pit WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
                                     [symbol],
                                 ).fetchone()
-                                if candle_row and candle_row[0]:
-                                    expected_token = str(candle_row[0])
+                                if pit_row and pit_row[0]:
+                                    expected_token = str(pit_row[0]).strip()
+                                else:
+                                    candle_row = self.db.conn.execute(
+                                        "SELECT token FROM historical_candles WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
+                                        [symbol],
+                                    ).fetchone()
+                                    if candle_row and candle_row[0]:
+                                        expected_token = str(candle_row[0]).strip()
                     except Exception:
                         pass
                 identity_matches = (
                     str(getattr(obs, "symbol", "")) == symbol
-                    and (not expected_exchange or str(getattr(obs, "exchange", "")).upper() == expected_exchange)
-                    and (not expected_token or str(getattr(obs, "token", "")) == expected_token)
+                    and bool(expected_exchange)
+                    and str(getattr(obs, "exchange", "")).upper() == expected_exchange
+                    and bool(expected_token)
+                    and str(getattr(obs, "token", "")) == expected_token
                 )
                 if (
                     identity_matches
@@ -358,7 +371,7 @@ class ForwardPaperSessionEngine:
 
         vol = float(bar.get("volume", 0.0) or 0.0)
         daily_turnover_crore = (vol * price / 10_000_000.0) if (vol > 0 and price > 0) else None
-        est_var_pct = 1.65 * 0.02 * (requested_notional / max(current_equity, 1e-9)) if current_equity > 0 else None
+        est_var_pct = 1.65 * asset_volatility * (requested_notional / max(current_equity, 1e-9)) if current_equity > 0 else None
 
         proposal = TradeProposal(
             symbol=symbol,
@@ -585,12 +598,34 @@ class ForwardPaperSessionEngine:
         fills: list[dict[str, Any]],
         pnl: float,
         notes: str,
+        desired_quantity: float | None = None,
+        observed_quantity: float | None = None,
     ) -> dict[str, Any]:
+        if observed_quantity is None:
+            try:
+                row = self.db.conn.execute(
+                    "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'current_quantity' ORDER BY rowid DESC LIMIT 1",
+                    [session_id],
+                ).fetchone()
+                observed_quantity = float(row[0]) if row and row[0] is not None else 0.0
+            except Exception:
+                observed_quantity = 0.0
+        drift = abs((desired_quantity if desired_quantity is not None else observed_quantity) - observed_quantity)
+        submitted_count = len(orders)
+        filled_count = len(fills)
+        rejected_count = sum(order.get("status") == "REJECTED" for order in orders)
+        expected_count = submitted_count
+
         summary = {
-            "run_id": session_id, "trade_date": as_of.date(), "expected_orders": len(orders),
-            "submitted_orders": len(orders), "filled_orders": len(fills),
-            "rejected_orders": sum(order["status"] == "REJECTED" for order in orders),
-            "pnl": pnl, "drift": 0.0, "notes": notes,
+            "run_id": session_id,
+            "trade_date": as_of.date(),
+            "expected_orders": expected_count,
+            "submitted_orders": submitted_count,
+            "filled_orders": filled_count,
+            "rejected_orders": rejected_count,
+            "pnl": pnl,
+            "drift": drift,
+            "notes": notes if drift == 0.0 else f"{notes}; position_drift={drift:.4f}",
         }
         self.db.log_paper_reconciliation([summary])
         return summary

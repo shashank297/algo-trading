@@ -139,21 +139,28 @@ class PromotionEngine:
 
         if not equity_df.empty and len(equity_df) > 1:
             rets = equity_df["equity"].pct_change().dropna()
-            if len(rets) > 0 and float(rets.std()) > 1e-9:
-                oos_sharpe = float(rets.mean() / rets.std() * np.sqrt(252))
+            if len(rets) > 0:
+                ret_std = float(rets.std())
+                ret_mean = float(rets.mean())
+                if ret_std > 1e-9:
+                    oos_sharpe = float(ret_mean / ret_std * np.sqrt(252))
+                elif ret_mean > 0:
+                    oos_sharpe = float(ret_mean / 1e-6 * np.sqrt(252))
+                else:
+                    oos_sharpe = 0.0
+
                 downside = rets[rets < 0]
-                oos_sortino = float(rets.mean() / downside.std() * np.sqrt(252)) if len(downside) > 0 and float(downside.std()) > 1e-9 else oos_sharpe
+                if len(downside) > 0 and float(downside.std()) > 1e-9:
+                    oos_sortino = float(ret_mean / downside.std() * np.sqrt(252))
+                else:
+                    oos_sortino = oos_sharpe
+
             cum_peak = equity_df["equity"].cummax()
             dd = (cum_peak - equity_df["equity"]) / cum_peak
             oos_drawdown = float(dd.max()) if not dd.empty else 0.0
             pos_rets = float(rets[rets > 0].sum()) if len(rets[rets > 0]) > 0 else 0.0
             neg_rets = abs(float(rets[rets < 0].sum())) if len(rets[rets < 0]) > 0 else 0.0
             oos_profit_factor = (pos_rets / neg_rets) if neg_rets > 1e-9 else (2.0 if pos_rets > 0 else 1.0)
-
-        effective_sharpe = oos_sharpe if oos_sharpe is not None else float(metrics.get("sharpe", 0.0))
-        effective_sortino = oos_sortino if oos_sortino is not None else float(metrics.get("sortino", 0.0))
-        effective_profit_factor = oos_profit_factor if oos_profit_factor is not None else float(metrics.get("profit_factor", 0.0))
-        effective_drawdown = oos_drawdown if oos_drawdown is not None else abs(float(metrics.get("max_drawdown", 1.0)))
 
         fold_rows = self.db.conn.execute(
             """SELECT fold_id, MAX(CASE WHEN metric_name = 'sharpe' THEN metric_value END)
@@ -182,12 +189,12 @@ class PromotionEngine:
                 maximum_correlation = float(correlation_row[0])
 
         checks = {
-            "sharpe": effective_sharpe >= self.policy.minimum_sharpe,
-            "sortino": effective_sortino >= self.policy.minimum_sortino,
-            "profit_factor": effective_profit_factor >= self.policy.minimum_profit_factor,
-            "drawdown": effective_drawdown <= self.policy.maximum_drawdown,
+            "sharpe": oos_sharpe is not None and oos_sharpe >= self.policy.minimum_sharpe,
+            "sortino": oos_sortino is not None and oos_sortino >= self.policy.minimum_sortino,
+            "profit_factor": oos_profit_factor is not None and oos_profit_factor >= self.policy.minimum_profit_factor,
+            "drawdown": oos_drawdown is not None and oos_drawdown <= self.policy.maximum_drawdown,
             "trades": metrics.get("trades", 0.0) >= self.policy.minimum_trades,
-            "out_of_sample": evidence > 0 and oos_certified,
+            "out_of_sample": evidence > 0 and oos_certified and oos_sharpe is not None and oos_drawdown is not None,
             "walk_forward_metrics": bool(metrics) or not equity_df.empty,
             "minimum_folds": len(fold_rows) >= self.policy.minimum_walk_forward_folds,
             "fold_consistency": positive_fold_fraction >= self.policy.minimum_positive_fold_fraction,

@@ -71,11 +71,13 @@ class PortfolioEventBacktester:
         max_position_weight: float = 0.05,
         max_gross_exposure: float = 0.20,
         max_sector_exposure: float = 0.10,
+        db: Any = None,
     ) -> None:
         self.cost_schedule = cost_schedule or IndianDeliveryCostSchedule()
         self.max_position_weight = max_position_weight
         self.max_gross_exposure = max_gross_exposure
         self.max_sector_exposure = max_sector_exposure
+        self.db = db
 
     def run(
         self,
@@ -303,12 +305,21 @@ class PortfolioEventBacktester:
             if symbol not in day.index:
                 continue
             row = day.loc[symbol]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
             open_tick_missing = False
-            observation = row.get("open_tick_observation")
+            observation = row.get("open_tick_observation") if hasattr(row, "get") else getattr(row, "open_tick_observation", None)
+            if isinstance(observation, pd.Series):
+                non_null = observation.dropna()
+                observation = non_null.iloc[-1] if not non_null.empty else None
+            elif pd.isna(observation) if observation is not None else False:
+                observation = None
             if (execution_mode == PaperExecutionMode.TRUE_NEXT_OPEN.value or execution_mode == "TRUE_NEXT_OPEN"):
                 if observation is not None and hasattr(observation, "price"):
-                    expected_exchange = str(row.get("exchange") or "NSE").upper()
-                    expected_token = str(row.get("token") or "")
+                    raw_ex = row.get("exchange") if hasattr(row, "get") else getattr(row, "exchange", None)
+                    expected_exchange = str(raw_ex).strip().upper() if (pd.notna(raw_ex) and str(raw_ex).strip() and str(raw_ex).strip().lower() != "nan") else "NSE"
+                    raw_tok = row.get("token") if hasattr(row, "get") else getattr(row, "token", None)
+                    expected_token = str(raw_tok).strip() if (pd.notna(raw_tok) and str(raw_tok).strip() and str(raw_tok).strip().lower() != "nan") else ""
                     db = getattr(self, "db", None)
                     if not expected_token and db is not None:
                         try:
@@ -317,27 +328,36 @@ class PortfolioEventBacktester:
                                 [symbol, expected_exchange],
                             ).fetchone()
                             if token_row and token_row[0]:
-                                expected_token = str(token_row[0])
+                                expected_token = str(token_row[0]).strip()
                             else:
                                 snap_row = db.conn.execute(
-                                    "SELECT token FROM universe_snapshot_members WHERE symbol = ? LIMIT 1",
+                                    "SELECT provider_token FROM universe_snapshot_members WHERE symbol = ? AND provider_token IS NOT NULL AND provider_token != '' LIMIT 1",
                                     [symbol],
                                 ).fetchone()
                                 if snap_row and snap_row[0]:
-                                    expected_token = str(snap_row[0])
+                                    expected_token = str(snap_row[0]).strip()
                                 else:
-                                    candle_row = db.conn.execute(
-                                        "SELECT token FROM historical_candles WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
+                                    pit_row = db.conn.execute(
+                                        "SELECT token FROM index_constituents_pit WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
                                         [symbol],
                                     ).fetchone()
-                                    if candle_row and candle_row[0]:
-                                        expected_token = str(candle_row[0])
+                                    if pit_row and pit_row[0]:
+                                        expected_token = str(pit_row[0]).strip()
+                                    else:
+                                        candle_row = db.conn.execute(
+                                            "SELECT token FROM historical_candles WHERE symbol = ? AND token IS NOT NULL AND token != '' LIMIT 1",
+                                            [symbol],
+                                        ).fetchone()
+                                        if candle_row and candle_row[0]:
+                                            expected_token = str(candle_row[0]).strip()
                         except Exception:
                             pass
                     identity_matches = (
                         str(getattr(observation, "symbol", "")) == symbol
-                        and (not expected_exchange or str(getattr(observation, "exchange", "")).upper() == expected_exchange)
-                        and (not expected_token or str(getattr(observation, "token", "")) == expected_token)
+                        and bool(expected_exchange)
+                        and str(getattr(observation, "exchange", "")).upper() == expected_exchange
+                        and bool(expected_token)
+                        and str(getattr(observation, "token", "")) == expected_token
                     )
                     if (
                         identity_matches
