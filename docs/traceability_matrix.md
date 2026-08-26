@@ -1,6 +1,6 @@
 # Requirements & Invariants Traceability Matrix
 
-This matrix maps every architectural audit finding (P0-1 through P2-25) and operational hardening requirement (E-1 through E-15) to its code implementation and verification test, verified at Commit A SHA `1bf12dd4d126798bfd3cab19f99b4917197de5fe`.
+This matrix maps every architectural audit finding (P0-1 through P2-25) and operational hardening requirement (E-1 through E-15) to its code implementation and verification test, verified at Commit A SHA `3cb3cb65126888833d4d2492811fffdc5809efa7`.
 
 | Requirement ID | Description | Primary Implementation | Verification Test | Status |
 |---|---|---|---|---|

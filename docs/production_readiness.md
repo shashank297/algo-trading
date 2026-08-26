@@ -2,7 +2,7 @@
 
 Audit date: 2026-08-26  
 Audit Scope: **Comprehensive Final Audit Remediation (Speckit Flow)**  
-Verified Implementation Commit (Commit A): `1bf12dd4d126798bfd3cab19f99b4917197de5fe`  
+Verified Implementation Commit (Commit A): `3cb3cb65126888833d4d2492811fffdc5809efa7`  
 
 Current decision: **READY for NIFTY 200 daily historical research; READY for forward paper trading with EOD_BATCH and TRUE_NEXT_OPEN execution modes; NOT READY for unverified minute live trading without dedicated broker feed validation and paper incubation.**
 
@@ -45,23 +45,27 @@ The deterministic research and paper execution stack is operational with compreh
 
 ## 2. Verification Summary
 
-- **Verified Commit A SHA**: `1bf12dd4d126798bfd3cab19f99b4917197de5fe`
-- **Deterministic Test Suite**: 314 passed tests across the repository.
-- **Global Test Coverage**: 81% repository-wide line coverage (exceeds 80% CI threshold).
-- **Critical Path Module Coverage**: 82% critical line coverage across execution, risk, streaming, aggregation, and certification modules.
+- **Verified Commit A SHA**: `3cb3cb65126888833d4d2492811fffdc5809efa7`
+- **Deterministic Test Suite**: 387 passed tests across the repository.
+- **Global Test Coverage**: 85% repository-wide line coverage (exceeds 80% CI threshold).
+- **Critical Path Module Coverage**: 95% critical line coverage across execution, risk, streaming, aggregation, and certification modules (exceeds 95% CI threshold).
 - **Static Analysis & Type Checking**:
-  - `mypy`: 0 issues across 85 source files.
+  - `mypy`: 0 issues across 85 source files (including cross-platform `scheduler.py`).
   - `pyright`: 0 errors.
   - `ruff`: 0 lint errors across repository.
   - `compileall`: 100% clean compilation.
+  - `pip-audit`: No known vulnerabilities found.
   - `frontend UI build`: `npm run build` succeeds cleanly with 0 TypeScript errors.
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-# Output: 314 passed in 54.73s
+# Output: 387 passed in 80.63s
 
 .\venv\Scripts\python.exe -m coverage report --fail-under=80
-# Output: TOTAL 81% line coverage
+# Output: TOTAL 85% line coverage
+
+.\venv\Scripts\python.exe -m coverage report --include="risk/*.py,trading_stack/paper.py,trading_stack/portfolio.py,trading_stack/portfolio_paper.py,trading_stack/pipeline.py,trading_stack/datasets.py,trading_stack/certification.py,trading_stack/promotion.py,smartapi/websocket_client.py,trading_stack/live_aggregator.py,storage/migrations/*.py" --fail-under=95
+# Output: TOTAL 95% line coverage
 
 .\venv\Scripts\python.exe -m ruff check .
 # Output: All checks passed!
@@ -69,11 +73,14 @@ The deterministic research and paper execution stack is operational with compreh
 .\venv\Scripts\python.exe -m mypy ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools main.py research.py scheduler.py
 # Output: Success: no issues found in 85 source files
 
-.\venv\Scripts\python.exe -m pyright
+npx pyright
 # Output: 0 errors, 441 warnings, 0 informations
 
 .\venv\Scripts\python.exe -m compileall -q main.py research.py scheduler.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
 # Output: Exit code 0
+
+.\venv\Scripts\python.exe -m pip_audit -r requirements.txt
+# Output: No known vulnerabilities found
 
 cd tools/dashboard/ui ; npm run build ; cd ../../..
 # Output: vite build complete (0 errors)
