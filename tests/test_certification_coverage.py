@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+import json
 
 import pytest
 
@@ -7,11 +8,12 @@ from trading_stack.certification import RunCertificationService
 
 
 def seed_run(db, run_id: str, symbol: str = "TEST", notes: str | None = None) -> None:
+    frame_id = json.loads(notes).get("frame_certification_id") if notes else None
     db.conn.execute(
         """INSERT INTO strategy_runs
-           (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at, notes)
-           VALUES (?, 'trend_following', 'INDIA_EQUITY', ?, '1d', 'event-driven', '{}', 'hash', 'COMPLETED', ?, ?)""",
-        [run_id, symbol, datetime.now(timezone.utc), notes],
+           (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at, notes, frame_certification_id)
+           VALUES (?, 'trend_following', 'INDIA_EQUITY', ?, '1d', 'event-driven', '{}', 'hash', 'COMPLETED', ?, ?, ?)""",
+        [run_id, symbol, datetime.now(timezone.utc), notes, frame_id],
     )
 
 

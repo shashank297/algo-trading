@@ -75,13 +75,7 @@ class PromotionEngine:
         strategy_name = str(run[0])
         run_data_hash = str(run[2])
         run_frame_certification_id = str(run[3]) if run[3] else None
-        if run_frame_certification_id is None:
-            legacy_notes = self.db.conn.execute("SELECT notes FROM strategy_runs WHERE run_id = ?", [run_id]).fetchone()
-            if legacy_notes and legacy_notes[0]:
-                try:
-                    run_frame_certification_id = json.loads(str(legacy_notes[0]))["frame_certification_id"]
-                except (KeyError, TypeError, json.JSONDecodeError):
-                    pass
+        has_authoritative_frame = run_frame_certification_id is not None
 
         # Resolve or certify immutable run certification bundle
         from trading_stack.certification import RunCertificationService
@@ -113,7 +107,7 @@ class PromotionEngine:
             raise RuntimeError(f"Certification bundle {certification_bundle_id} is incomplete for run {run_id}.")
         cert_map = {str(row[0]): str(row[1]) for row in cert_rows}
 
-        lineage_certified = (cert_map.get("DATA_LINEAGE") == "PASS")
+        lineage_certified = has_authoritative_frame and cert_map.get("DATA_LINEAGE") == "PASS"
         dq_certified = (cert_map.get("DATA_QUALITY") == "PASS")
         causality_certified = (cert_map.get("CAUSALITY") == "PASS")
         pit_certified = (cert_map.get("PIT_SURVIVORSHIP") == "PASS")

@@ -14,7 +14,7 @@ from experiments.manager import ExperimentManager
 from experiments.models import ExperimentSpec
 from orchestration.engine import TaskOrchestrator
 from risk.engine import RiskEngine
-from risk.models import TradeProposal
+from risk.models import RiskAction, RiskDecision, TradeProposal
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.features import FeatureFactory
 
@@ -74,21 +74,7 @@ class ResearchWorkflow:
         assert experiment_result is not None
         quant_context = self._experiment_context(experiment_result)
         quant = self._run_agent(goal, "quant_analyst", {**data_context, **quant_context})
-        risk = self.risk_engine.evaluate(
-            TradeProposal(
-                symbol=goal.symbol,
-                requested_notional=starting_capital * 0.05,
-                capital=starting_capital,
-                current_position_notional=0.0,
-                current_gross_exposure=0.0,
-                daily_pnl=0.0,
-                current_drawdown=0.0,
-                current_sector_exposure=0.0,
-                open_position_count=0,
-                daily_turnover_crore=0.0,
-                estimated_portfolio_var_pct=0.01,
-            ),
-        )
+        risk = self._authoritative_risk_decision(goal, starting_capital)
         self.db.log_risk_decision(risk.storage_payload(experiment_id=experiment_result["experiment_id"]))
         risk_output = self._run_agent(
             goal,
@@ -112,8 +98,64 @@ class ResearchWorkflow:
             "risk": risk_output,
             "synthesis": synthesis,
             "experiment_id": experiment_result["experiment_id"],
-            "paper_eligible": bool(goal.paper_approved and risk.approved_notional > 0),
+            "paper_eligible": bool(goal.paper_approved and goal.paper_session_id and risk.approved_notional > 0),
         }
+
+    def _authoritative_risk_decision(self, goal: ResearchGoal, starting_capital: float) -> RiskDecision:
+        """Use an explicitly bound paper ledger or make the result non-executable."""
+        if not goal.paper_session_id:
+            return RiskDecision(
+                symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
+                approved_notional=0.0, reasons=["MISSING_AUTHORITATIVE_PAPER_SESSION"], policy=self.risk_engine.policy,
+            )
+        row = self.db.conn.execute(
+            """SELECT cash, quantity, peak_equity, daily_start_equity, last_processed_timestamp, status
+               FROM paper_sessions WHERE session_id = ? AND symbol = ?""",
+            [goal.paper_session_id, goal.symbol],
+        ).fetchone()
+        if not row or str(row[5]) != "ACTIVE" or row[4] is None:
+            return RiskDecision(
+                symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
+                approved_notional=0.0, reasons=["MISSING_OR_INACTIVE_AUTHORITATIVE_RISK_STATE"], policy=self.risk_engine.policy,
+            )
+        price_row = self.db.conn.execute(
+            "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+            [goal.symbol, row[4]],
+        ).fetchone()
+        if not price_row or float(price_row[0]) <= 0:
+            return RiskDecision(
+                symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
+                approved_notional=0.0, reasons=["MISSING_AUTHORITATIVE_MARK_PRICE"], policy=self.risk_engine.policy,
+            )
+        price = float(price_row[0])
+        equity = float(row[0]) + float(row[1]) * price
+        closes = self.db.conn.execute(
+            "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 21",
+            [goal.symbol, row[4]],
+        ).fetchall()
+        if len(closes) < 21:
+            return RiskDecision(
+                symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
+                approved_notional=0.0, reasons=["INSUFFICIENT_AUTHORITATIVE_VAR_HISTORY"], policy=self.risk_engine.policy,
+            )
+        prices = [float(value[0]) for value in reversed(closes)]
+        returns = [(prices[index] / prices[index - 1]) - 1.0 for index in range(1, len(prices))]
+        mean = sum(returns) / len(returns)
+        volatility = (sum((value - mean) ** 2 for value in returns) / len(returns)) ** 0.5
+        turnover = self.db.conn.execute(
+            "SELECT COALESCE(SUM(ABS(quantity * price)), 0) FROM strategy_fills WHERE run_id = ? AND CAST(timestamp AS DATE) = CAST(? AS DATE)",
+            [goal.paper_session_id, row[4]],
+        ).fetchone()
+        return self.risk_engine.evaluate(TradeProposal(
+            symbol=goal.symbol, requested_notional=equity * 0.05, capital=equity,
+            current_position_notional=float(row[1]) * price,
+            current_gross_exposure=abs(float(row[1]) * price),
+            daily_pnl=equity - float(row[3] or equity),
+            current_drawdown=max((float(row[2] or equity) - equity) / max(float(row[2] or equity), 1e-12), 0.0),
+            current_sector_exposure=abs(float(row[1]) * price), open_position_count=int(abs(float(row[1])) > 0),
+            daily_turnover_crore=float(turnover[0] or 0.0) / 10_000_000.0 if turnover else 0.0,
+            estimated_portfolio_var_pct=1.65 * volatility,
+        ))
 
     def _data_context(self, goal: ResearchGoal) -> dict[str, Any]:
         frame = self.db.get_candles(goal.symbol, goal.timeframe.lower())

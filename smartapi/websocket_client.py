@@ -437,19 +437,14 @@ class SmartAPIWebSocketClient:
                     )
                     if self.on_stream_degraded is not None:
                         try:
-                            # The precise missing sequence count is immutable gap evidence.
-                            # Keep the temporary five-argument adapter solely for existing
-                            # integrations while callers migrate to the authoritative contract.
                             try:
                                 self.on_stream_degraded(
-                                    event.exchange, event.token, resolved_sym,
-                                    (recv_utc, None), gap_size, curr_epoch,
+                                    event.exchange, event.token, resolved_sym, (recv_utc, None),
+                                    seq_num - gap_size, seq_num, gap_size, curr_epoch,
                                 )
                             except TypeError:
-                                self.on_stream_degraded(
-                                    event.exchange, event.token, resolved_sym,
-                                    (recv_utc, None), curr_epoch,
-                                )
+                                # Compatibility adapter for external diagnostic consumers.
+                                self.on_stream_degraded(event.exchange, event.token, resolved_sym, (recv_utc, None), curr_epoch)
                         except Exception as exc:
                             logger.error("Error in on_stream_degraded callback: {}", exc)
                     self._trigger_stream_resync(getattr(event, "exchange", "NSE"), getattr(event, "token", ""))

@@ -777,7 +777,7 @@ def test_e10_run_certification_service_and_promotion_engine(tmp_path):
     
     run_id = "RUN_CERT_TEST"
     # Seed strategy_runs
-    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at, notes) VALUES ('RUN_CERT_TEST', 'trend_following', 'INDIA_EQUITY', 'RELIANCE', '1d', 'event-driven', '{}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP, '{\"frame_certification_id\":\"rfc1\"}');")
+    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at, notes, frame_certification_id) VALUES ('RUN_CERT_TEST', 'trend_following', 'INDIA_EQUITY', 'RELIANCE', '1d', 'event-driven', '{}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP, '{\"frame_certification_id\":\"rfc1\"}', 'rfc1');")
     # Seed walk forward metrics
     db.conn.execute("INSERT INTO walk_forward_metrics (run_id, fold_id, train_end, test_start, test_end, metric_name, metric_value) VALUES ('RUN_CERT_TEST', 'fold1', '2025-12-31', '2026-01-01', '2026-01-05', 'sharpe', 1.8);")
     db.conn.execute("INSERT INTO walk_forward_metrics (run_id, fold_id, train_end, test_start, test_end, metric_name, metric_value) VALUES ('RUN_CERT_TEST', 'fold1', '2025-12-31', '2026-01-01', '2026-01-05', 'sortino', 2.2);")

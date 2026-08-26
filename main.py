@@ -549,27 +549,35 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
         token: str,
         symbol: str,
         gap: tuple[datetime, datetime | None],
+        expected_sequence: int,
+        received_sequence: int,
         gap_size: int,
         epoch: int,
     ) -> None:
         start_time, end_time = gap
-        aggregator.mark_untrusted(symbol, start_time, end_time)
-        stream_db.conn.execute(
-            """INSERT INTO stream_gap_events
-               (gap_id, exchange, token, symbol, start_time, end_time, gap_size, epoch, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UNREPAIRED')""",
-            [str(uuid.uuid4()), exchange, token, symbol, start_time, end_time, gap_size, epoch],
+        stream_db.record_stream_gap(
+            gap_id=str(uuid.uuid4()), exchange=exchange, token=token, symbol=symbol or token,
+            expected_sequence=expected_sequence, received_sequence=received_sequence,
+            gap_size=gap_size, stream_epoch=epoch, detected_at=start_time,
         )
+        aggregator.mark_untrusted(symbol or token, start_time, end_time)
 
     def on_gap_repaired(exchange: str, token: str, symbol: str, gap_id: str) -> None:
-        stream_db.conn.execute(
-            "UPDATE stream_gap_events SET status = 'REPAIRED' WHERE gap_id = ? AND exchange = ? AND token = ?",
-            [gap_id, exchange, token],
+        repaired_symbol, start_time, end_time = stream_db.repair_stream_gap(
+            gap_id=gap_id,
+            repaired_at=datetime.now(timezone.utc),
+            evidence={"exchange": exchange, "token": token, "requested_symbol": symbol},
         )
+        aggregator.repair_gap(repaired_symbol, start_time, end_time)
 
     def on_stream_reanchored(exchange: str, token: str, symbol: str, epoch: int) -> None:
         reanchor_time = datetime.now(timezone.utc)
-        aggregator.close_degraded_interval(symbol or token, reanchor_time)
+        rows = stream_db.reanchor_stream_gap(
+            exchange=exchange, token=token, stream_epoch=epoch, reanchored_at=reanchor_time,
+            evidence={"exchange": exchange, "token": token, "symbol": symbol, "stream_epoch": epoch},
+        )
+        for _, affected_symbol, _, _ in rows:
+            aggregator.close_degraded_interval(affected_symbol, reanchor_time)
         logger.info(
             "Stream re-anchored for exchange={} token={} symbol={} epoch={} at {}",
             exchange,

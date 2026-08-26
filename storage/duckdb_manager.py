@@ -329,6 +329,76 @@ class DuckDBManager:
             else:
                 self.conn.execute("COMMIT")
 
+    def record_stream_gap(
+        self,
+        *,
+        gap_id: str,
+        exchange: str,
+        token: str,
+        symbol: str,
+        expected_sequence: int,
+        received_sequence: int,
+        gap_size: int,
+        stream_epoch: int,
+        detected_at: datetime,
+    ) -> None:
+        """Persist one unrepaired stream discontinuity in the canonical gap ledger."""
+        if min(expected_sequence, received_sequence, gap_size, stream_epoch) < 0 or gap_size <= 0:
+            raise ValueError("Stream gap evidence requires non-negative bounds and positive gap_size.")
+        with self.transaction():
+            self.conn.execute(
+                """INSERT INTO stream_gaps (
+                       gap_id, token, symbol, exchange, expected_sequence, received_sequence,
+                       gap_size, stream_epoch, detected_at, gap_status, gap_start
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'UNREPAIRED', ?)""",
+                [gap_id, token, symbol, exchange, expected_sequence, received_sequence,
+                 gap_size, stream_epoch, detected_at, detected_at],
+            )
+
+    def reanchor_stream_gap(
+        self, *, exchange: str, token: str, stream_epoch: int, reanchored_at: datetime, evidence: dict[str, Any],
+    ) -> list[tuple[str, str, datetime, datetime | None]]:
+        """Durably close matching unrepaired ranges before trusted dispatch resumes."""
+        with self.transaction():
+            rows = self.conn.execute(
+                """SELECT gap_id, symbol, gap_start, gap_end FROM stream_gaps
+                   WHERE exchange = ? AND token = ? AND stream_epoch <= ? AND gap_status = 'UNREPAIRED'""",
+                [exchange, token, stream_epoch],
+            ).fetchall()
+            self.conn.execute(
+                """UPDATE stream_gaps SET gap_end = COALESCE(gap_end, ?), reanchored_at = ?,
+                       reanchor_evidence_json = ?
+                   WHERE exchange = ? AND token = ? AND stream_epoch <= ? AND gap_status = 'UNREPAIRED'""",
+                [reanchored_at, reanchored_at, json.dumps(evidence, sort_keys=True, default=str),
+                 exchange, token, stream_epoch],
+            )
+        return [(str(row[0]), str(row[1] or token), row[2], row[3]) for row in rows]
+
+    def repair_stream_gap(self, *, gap_id: str, evidence: dict[str, Any], repaired_at: datetime) -> tuple[str, datetime, datetime | None]:
+        """Mark a specific historical range repaired and return its interval for memory projection."""
+        with self.transaction():
+            row = self.conn.execute(
+                "SELECT symbol, gap_start, gap_end FROM stream_gaps WHERE gap_id = ? AND gap_status = 'UNREPAIRED'",
+                [gap_id],
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"No unrepaired canonical stream gap exists for {gap_id}.")
+            self.conn.execute(
+                """UPDATE stream_gaps SET gap_status = 'REPAIRED', repaired_at = ?, repair_evidence_json = ?
+                   WHERE gap_id = ?""",
+                [repaired_at, json.dumps(evidence, sort_keys=True, default=str), gap_id],
+            )
+        return str(row[0]), row[1], row[2]
+
+    def load_unrepaired_stream_gaps(self) -> list[tuple[str, datetime, datetime | None]]:
+        """Load canonical unresolved intervals; database failure is intentionally propagated."""
+        rows = self.conn.execute(
+            "SELECT symbol, gap_start, gap_end FROM stream_gaps WHERE gap_status = 'UNREPAIRED'"
+        ).fetchall()
+        if any(not row[0] or row[1] is None for row in rows):
+            raise RuntimeError("Canonical stream gap ledger contains an invalid unresolved interval.")
+        return [(str(row[0]), row[1], row[2]) for row in rows]
+
     def upsert_instrument_master(self, df: pd.DataFrame) -> int:
         """Upsert the instrument master into DuckDB.
 

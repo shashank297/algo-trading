@@ -132,31 +132,11 @@ class RealtimeBarAggregator:
     def load_unresolved_gaps(self, db: Any) -> None:
         """Reload unrepaired stream gaps from DuckDB into untrusted window registry."""
         with self._lock:
-            try:
-                # Check stream_gap_events first
-                rows = db.conn.execute(
-                    "SELECT symbol, start_time, end_time FROM stream_gap_events WHERE status = 'UNREPAIRED'"
-                ).fetchall()
-                for sym, st, et in rows:
-                    if sym not in self._untrusted_windows:
-                        self._untrusted_windows[sym] = []
-                    self._untrusted_windows[sym].append((st, et))
-                logger.info("Loaded {} unrepaired stream gaps from stream_gap_events into aggregator.", len(rows))
-            except Exception:
-                pass
-            try:
-                # Also check stream_gaps
-                gap_rows = db.conn.execute(
-                    "SELECT symbol, detected_at, repaired_at FROM stream_gaps WHERE gap_status = 'UNREPAIRED'"
-                ).fetchall()
-                for sym, dt, rep in gap_rows:
-                    if sym and sym not in self._untrusted_windows:
-                        self._untrusted_windows[sym] = []
-                    if sym:
-                        self._untrusted_windows[sym].append((dt, rep))
-                logger.info("Loaded {} unrepaired stream gaps from stream_gaps into aggregator.", len(gap_rows))
-            except Exception as exc:
-                logger.debug("Could not load unresolved stream gaps: {}", exc)
+            self._untrusted_windows.clear()
+            rows = db.load_unrepaired_stream_gaps()
+            for sym, start_time, end_time in rows:
+                self._untrusted_windows.setdefault(sym, []).append((start_time, end_time))
+            logger.info("Loaded {} canonical unrepaired stream gaps into aggregator.", len(rows))
 
     @property
     def _open_bars(self) -> dict[str, dict[str, Any]]:

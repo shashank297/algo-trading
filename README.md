@@ -110,7 +110,7 @@ algo-trading/
 ```powershell
 python -m venv venv
 .\venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.lock -r requirements-dev.txt
 ```
 
 ### Configuration

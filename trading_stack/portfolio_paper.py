@@ -400,8 +400,11 @@ class ForwardPortfolioPaperSessionEngine:
             sym_vol = float(day.loc[symbol, "volume"]) if (symbol in day.index and "volume" in day.columns and pd.notna(day.loc[symbol, "volume"])) else 0.0
             lagged_val = float(day.loc[symbol, "lagged_traded_value"]) if ("lagged_traded_value" in day.columns and symbol in day.index and pd.notna(day.loc[symbol, "lagged_traded_value"])) else sym_vol * price
             turnover_crore = (lagged_val / 10_000_000.0) if lagged_val > 0 else None
-            vol_val = float(day.loc[symbol, "volatility_20"]) if (symbol in day.index and "volatility_20" in day.columns and pd.notna(day.loc[symbol, "volatility_20"])) else 0.015
-            est_port_var = 1.65 * vol_val * math.sqrt(max(len(quantities) + 1, 1)) * (current_gross / max(capital, 1e-9)) if capital > 0 else None
+            vol_val = float(day.loc[symbol, "volatility_20"]) if (symbol in day.index and "volatility_20" in day.columns and pd.notna(day.loc[symbol, "volatility_20"])) else None
+            est_port_var = (
+                1.65 * vol_val * math.sqrt(max(len(quantities) + 1, 1)) * (current_gross / max(capital, 1e-9))
+                if capital > 0 and vol_val is not None and vol_val > 0 else None
+            )
 
             decision = self.risk_engine.evaluate(TradeProposal(
                 symbol=symbol,

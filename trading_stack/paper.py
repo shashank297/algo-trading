@@ -91,6 +91,8 @@ class ForwardPaperSessionEngine:
             starting_capital, self.execution_model, self.risk_engine.policy,
         )
         state = self._load_state(session_id)
+        if state is not None and str(state.get("status")) != "ACTIVE":
+            raise RuntimeError(f"Paper session {session_id} is not executable: {state.get('status')}")
         latest_timestamp = pd.Timestamp(completed["timestamp"].max()).tz_convert("UTC")
         if state is None:
             pending = self._signal_at_or_before(signals, latest_timestamp)
@@ -182,8 +184,9 @@ class ForwardPaperSessionEngine:
                 daily_start_equity = cash + quantity * float(bar["open"])
             pending_ts = pending.get("signal_timestamp") or pending.get("timestamp") if pending else None
             if pending is not None and pending_ts is not None and pd.Timestamp(pending_ts) < bar_timestamp:
-                returns = completed["close"].pct_change().dropna()
-                recent_vol = float(returns.tail(20).std()) if len(returns.tail(20)) >= 2 and float(returns.tail(20).std()) > 1e-6 else 0.02
+                available = completed.loc[pd.to_datetime(completed["timestamp"], utc=True) < bar_timestamp]
+                returns = available["close"].pct_change().dropna()
+                recent_vol = float(returns.tail(20).std()) if len(returns.tail(20)) >= 20 else None
                 (
                     cash, quantity, average_cost, entry_timestamp, entry_reason,
                     entry_cost_pool, entry_execution_cost_pool,
@@ -236,8 +239,10 @@ class ForwardPaperSessionEngine:
             self._persist_run_state(session_id, strategy_name, symbol, timeframe, parameters, pd.Timestamp(new_bars["timestamp"].max()), equity, quantity, starting_capital=starting_capital)
             summary = self._reconcile(
                 session_id, as_of, all_orders, all_fills, equity - starting_capital,
-                "forward-only paper reconciliation",
+                "forward-only paper reconciliation", desired_quantity=quantity,
             )
+            if summary["drift"] > 1e-9:
+                self.db.conn.execute("UPDATE paper_sessions SET status = 'RECONCILIATION_FAILED' WHERE session_id = ?", [session_id])
         return ForwardPaperResult(
             session_id, "PROCESSED", strategy_name, symbol, timeframe, len(new_bars),
             tuple(all_orders), tuple(all_fills), cash, quantity, equity,
@@ -261,7 +266,7 @@ class ForwardPaperSessionEngine:
         entry_cost_pool: float = 0.0,
         entry_execution_cost_pool: float = 0.0,
         execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
-        asset_volatility: float = 0.02,
+        asset_volatility: float | None = 0.02,
     ) -> tuple[
         float, float, float, pd.Timestamp | None, str | None, float, float,
         dict[str, Any] | None, dict[str, Any] | None,
@@ -371,7 +376,10 @@ class ForwardPaperSessionEngine:
 
         vol = float(bar.get("volume", 0.0) or 0.0)
         daily_turnover_crore = (vol * price / 10_000_000.0) if (vol > 0 and price > 0) else None
-        est_var_pct = 1.65 * asset_volatility * (requested_notional / max(current_equity, 1e-9)) if current_equity > 0 else None
+        est_var_pct = (
+            1.65 * asset_volatility * (requested_notional / max(current_equity, 1e-9))
+            if current_equity > 0 and asset_volatility is not None and asset_volatility > 0 else None
+        )
 
         proposal = TradeProposal(
             symbol=symbol,
@@ -407,6 +415,7 @@ class ForwardPaperSessionEngine:
                 "signal_timestamp": str(pending.get("signal_timestamp") or pending.get("timestamp") or ""),
                 "reason": pending.get("reason", "signal"),
                 "execution_source": execution_source,
+                "desired_quantity": desired_quantity,
                 "source_exchange_timestamp": str(getattr(obs, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,
                 "source_received_at_utc": str(getattr(obs, "received_at_utc", "")) if execution_source == "OBSERVED_TICK" else None,
                 "source_sequence_number": source_seq,

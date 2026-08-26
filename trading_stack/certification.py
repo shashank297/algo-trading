@@ -44,16 +44,11 @@ class RunCertificationService:
         if run_row is None:
             raise ValueError(f"Cannot certify unknown run_id: {run_id}")
 
-        _, symbol_str, timeframe, mode, data_hash, notes, stored_frame_certification_id = (
+        _, symbol_str, timeframe, mode, data_hash, _, stored_frame_certification_id = (
             str(run_row[0]), str(run_row[1]), str(run_row[2]), str(run_row[3]), str(run_row[4]), str(run_row[5] or ""), run_row[6]
         )
-        try:
-            run_metadata = json.loads(notes) if notes else {}
-        except json.JSONDecodeError:
-            run_metadata = {}
-        # The run column is authoritative. Notes are retained only for
-        # readability and must not select evidence for a new run.
-        frame_certification_id = str(stored_frame_certification_id) if stored_frame_certification_id else run_metadata.get("frame_certification_id")
+        # The dedicated run column is the sole authoritative lineage binding.
+        frame_certification_id = str(stored_frame_certification_id) if stored_frame_certification_id else None
 
         bundle_id = str(uuid.uuid4())
         now_utc = datetime.now(timezone.utc)
@@ -118,7 +113,12 @@ class RunCertificationService:
                         lineage_details["unverified_dataset"] = ds_id
                         break
                     current_hash = str(ds[2] or ds[3] or "")
-                    if dataset_hashes and dataset_hashes.get(ds_id) and dataset_hashes.get(ds_id) != current_hash:
+                    expected_hash = dataset_hashes.get(ds_id)
+                    if not expected_hash or not current_hash:
+                        lineage_status = "FAIL"
+                        lineage_details["missing_dataset_hash"] = ds_id
+                        break
+                    if expected_hash != current_hash:
                         lineage_status = "FAIL"
                         lineage_details["hash_mismatch"] = f"Dataset {ds_id} hash {current_hash} != frame hash {dataset_hashes.get(ds_id)}"
                         break
@@ -164,7 +164,12 @@ class RunCertificationService:
                     except Exception:
                         checks_payload = {}
                     expected_hash = dataset_hashes.get(cert_ds_id)
-                    if expected_hash and checks_payload.get("dataset_content_hash") and checks_payload.get("dataset_content_hash") != expected_hash:
+                    certification_hash = checks_payload.get("dataset_content_hash")
+                    if not expected_hash or not certification_hash:
+                        dq_status = "FAIL"
+                        dq_details["missing_content_hash"] = cert_id
+                        break
+                    if certification_hash != expected_hash:
                         dq_status = "FAIL"
                         dq_details["cert_content_hash_mismatch"] = cert_id
                         break

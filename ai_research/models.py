@@ -55,6 +55,7 @@ class ResearchGoal(BaseModel):
     max_cost_usd: float = Field(default=1.0, gt=0)
     max_tokens: int = Field(default=20_000, ge=1_000, le=1_000_000)
     paper_approved: bool = False
+    paper_session_id: str | None = None
 
     @field_validator("symbol", "timeframe", "strategy_name")
     @classmethod
