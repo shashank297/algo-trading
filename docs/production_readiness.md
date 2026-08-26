@@ -1,52 +1,100 @@
 # Production Readiness & Architecture Invariants
 
-Audit date: 2026-08-20
+Audit date: 2026-08-26  
+Audit Scope: **Comprehensive Final Audit Remediation (Speckit Flow)**  
+Verified Implementation Commit (Commit A): `1bf12dd4d126798bfd3cab19f99b4917197de5fe`  
 
-Current decision: **READY for NIFTY 200 daily historical research; READY for forward paper trading with EOD_BATCH and TRUE_NEXT_OPEN execution modes; NOT READY for unverified minute live trading.**
+Current decision: **READY for NIFTY 200 daily historical research; READY for forward paper trading with EOD_BATCH and TRUE_NEXT_OPEN execution modes; NOT READY for unverified minute live trading without dedicated broker feed validation and paper incubation.**
 
-The deterministic research and paper execution stack is operational with comprehensive anti-lookahead and fail-closed data quality invariants. Live order routing remains unavailable by design.
+The deterministic research and paper execution stack is operational with comprehensive anti-lookahead, fail-closed data quality invariants, exact frame lineage, generation-isolated stream recovery, and stitched out-of-sample promotion gates. Live order routing remains unavailable by design.
 
 ---
 
-## 1. Verified Architecture Invariants
+## 1. Verified Architecture Invariants & Audit Remediation Summary
 
 ### Core Data Platform & Lineage (P0-1, P0-4, P1-9, E-10, E-14)
 - **Canonical Split-Adjusted Basis**: Split-adjusted price basis is the default throughout all backtesting, research, and paper trading. Every dataset tracks immutable `source_basis`, `canonical_basis`, and `research_basis` lineage.
 - **Point-in-Time Universe Isolation**: `SynchronizedPanelBuilder` verifies date-range PIT coverage and applies point-in-time constituent masking before cross-sectional score ranking, preventing survivorship bias.
-- **Authoritative Data Quality Gate**: `load_candles()` strictly verifies `market_datasets` status (`VERIFIED` & `CANONICAL_PROMOTED`) and positive check certification across all required categories (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`).
+- **Authoritative Exact Data Quality & Lineage Gate (P1-9)**: Eliminated all latest-cert fallbacks (`ORDER BY completed_at DESC LIMIT 1`). Research frame creation requires exact dataset content hash match and zero-issue certification across 6 child checks (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`). Persists full `dataset_evidence_json`, `dq_certification_ids_json`, and `pit_evidence_hash` on frame records.
 - **Forensic Relational Integrity**: `DatabaseIntegrityValidator` enforces foreign keys across fills, orders, costs, snapshot members, and dataset lineage fail-closed.
 
 ### Execution Realism & Risk Management (P0-2, P0-3, P1-8, P1-11, P2-22)
 - **Causal Lagged ADV**: ADV calculations strictly lag Day $T+1$ execution by 1 bar per symbol (`shift(1).rolling(20)`), preventing future volume lookahead.
-- **Causal Paper Execution Modes**:
+- **Strictly Typed Forward Paper Execution Modes (P0-3)**:
   - `EOD_BATCH`: Signals execute strictly at Day $T+1$ completed candle `close`. Mutating Day $T+1$ `open` has zero impact on execution price or size.
-  - `TRUE_NEXT_OPEN`: Signals execute against observed opening ticks; missing opening ticks reject with `MISSED_LIVE_OPEN_PRICE` without fallback to completed bar open.
+  - `TRUE_NEXT_OPEN`: Signals execute against strictly typed `OpeningTickObservation` (`received_at_utc >= exchange_timestamp`, non-negative sequence number and stream epoch). Missing opening ticks reject with `MISSED_LIVE_OPEN_PRICE` without fallback to completed bar open or legacy float price.
+- **Cost Model & Vectorized Parity**: `StrategyPipeline.run(mode='vectorized')` enforces execution cost schedules via `VectorizedBacktester(execution_model=execution_model)`.
+- **Dynamic Single-Asset Paper Sizing & VaR**: Single-asset paper engine sizes targets against real-time `current_equity = cash + quantity * price` and computes parametric Value-at-Risk using asset return volatility.
 - **Mandatory Risk State Contract**: `RequiredRiskStateValidator` requires all core risk dimensions (`capital`, `current_gross_exposure`, `daily_pnl`, `current_drawdown`, `current_sector_exposure`, `open_position_count`, `daily_turnover_crore`, `estimated_portfolio_var_pct`), eliminating synthetic risk manufacture.
 - **Live Calendar Metric Annualization**: Metric calculations dynamically derive trading days and session minutes from the active `MarketCalendar`.
 - **Date-Effective Delivery Cost Schedules**: Transaction costs dynamically resolve historical statutory and broker rate schedules back to 2010 based on fill timestamp.
 
-### Realtime Streaming & Orchestration (P1-14, P1-16, P2-25, E-1, E-8)
+### Realtime Streaming & Gap Recovery (P1-14, P1-16, P2-25, E-1, E-8)
+- **Generation-Isolated WebSocket Client (E-8)**: Enforces WebSocket reconnection across fresh socket instances (`ws.close()`) rather than replaying subscriptions on degraded sockets. Propagates actual detected gap size to callbacks and quarantines malformed or out-of-order ticks to durable store.
+- **Aggregator Re-Anchor & Gap Quarantine**: `RealtimeBarAggregator.on_stream_reanchored()` closes open-ended untrusted intervals at re-anchor time while keeping historical gaps marked as untrusted until explicit backfill repair.
 - **Multi-Window Watermark Live Aggregator**: Buffers active tick windows and advances event-time watermarks (`max_event_time - allowed_lateness`), handling out-of-order ticks within tolerance.
 - **Non-Overlapping Worker Retries**: Task execution timeout tracks live threads and aborts retries if the previous worker remains alive, guaranteeing `max_concurrent == 1`.
 - **Durable Raw Packet Persistence**: WebSocket binary packets pipe directly to `market_raw_packets` with atomic batch writes and dead-letter spooling.
-- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts fail-closed against tampering.
+- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 010) fail-closed against tampering.
+
+### Certification & Stitched OOS Promotion (E-10)
+- **Exact Run Certification**: `RunCertificationService` evaluates 5 categories (`DATA_LINEAGE`, `DATA_QUALITY`, `CAUSALITY`, `PIT_SURVIVORSHIP`, `OOS_WALK_FORWARD`), verifies exact frame certification and DQ certificates without latest-dataset fallback, and writes atomic certification bundles.
+- **Stitched Out-of-Sample Returns Evaluation**: `PromotionEngine` calculates primary Sharpe ratio and Maximum Drawdown exclusively from concatenated out-of-sample equity returns (`evidence_level = 'OUT_OF_SAMPLE'`).
 
 ---
 
 ## 2. Verification Summary
 
-- **Verified Commit A SHA**: `4af6964d977d128661dd7ce5697fac95c5c2fc67`
-- **Audit Completion**: All 25 architectural findings (P0-1 to P2-25) and 15 operational invariants (E-1 to E-15) verified and signed off.
-- **Deterministic Test Suite**: 290 passed tests across the repository.
-- **Global Test Coverage**: 80% repository-wide line coverage meeting CI gating criteria.
+- **Verified Commit A SHA**: `1bf12dd4d126798bfd3cab19f99b4917197de5fe`
+- **Deterministic Test Suite**: 314 passed tests across the repository.
+- **Global Test Coverage**: 81% repository-wide line coverage (exceeds 80% CI threshold).
+- **Critical Path Module Coverage**: 82% critical line coverage across execution, risk, streaming, aggregation, and certification modules.
+- **Static Analysis & Type Checking**:
+  - `mypy`: 0 issues across 85 source files.
+  - `pyright`: 0 errors.
+  - `ruff`: 0 lint errors across repository.
+  - `compileall`: 100% clean compilation.
+  - `frontend UI build`: `npm run build` succeeds cleanly with 0 TypeScript errors.
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-290 passed in test suite
+# Output: 314 passed in 54.73s
 
-.\venv\Scripts\coverage.exe report
-TOTAL: 80% line coverage
+.\venv\Scripts\python.exe -m coverage report --fail-under=80
+# Output: TOTAL 81% line coverage
 
-.\venv\Scripts\python.exe -m compileall -q main.py research.py trading_stack tests storage smartapi data_platform risk validators tools operations orchestration experiments ai_research
-Exit code 0
+.\venv\Scripts\python.exe -m ruff check .
+# Output: All checks passed!
+
+.\venv\Scripts\python.exe -m mypy ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools main.py research.py scheduler.py
+# Output: Success: no issues found in 85 source files
+
+.\venv\Scripts\python.exe -m pyright
+# Output: 0 errors, 441 warnings, 0 informations
+
+.\venv\Scripts\python.exe -m compileall -q main.py research.py scheduler.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
+# Output: Exit code 0
+
+cd tools/dashboard/ui ; npm run build ; cd ../../..
+# Output: vite build complete (0 errors)
 ```
+
+---
+
+## 3. Operational Invariants & Production Deployment Prerequisites
+
+Before enabling live market data or executing paper trading in production environments, the following operational requirements must be satisfied:
+
+1. **Authentication & Secret Management**:
+   - `config/config.yaml` must not be checked into version control.
+   - Angel One credentials (`api_key`, `client_code`, `pin`, `totp_secret`) must be supplied via secure environment variables or vault.
+2. **Network & Clock Synchronization**:
+   - Trading host system clock must be synchronized via NTP with < 100ms drift.
+   - Network connectivity to Angel One WebSocket endpoints (`wss://smartapisocket.angelone.in/smart-stream`) must provide dedicated throughput without packet loss.
+3. **Database Concurrency & Persistence**:
+   - DuckDB operates under single-writer locking. Only one primary ingestion or orchestration process may write to `market_data.duckdb` at a time.
+   - Research, backtest, and dashboard processes access the database in read-only mode or via transactional locks.
+4. **Paper Trading Incubation**:
+   - Strategies seeking promotion must undergo a minimum of 20 consecutive trading days of forward paper execution under `EOD_BATCH` or `TRUE_NEXT_OPEN` modes with zero reconciliation discrepancies before live capital consideration.
+5. **Human Oversight & Kill Switches**:
+   - Emergency kill switch (`risk.kill_switch_active = true`) must be accessible to operators at all times.
