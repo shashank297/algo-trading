@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-import os
+import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -181,12 +181,16 @@ class ProcessLock:
         try:
             self.lock_path.parent.mkdir(parents=True, exist_ok=True)
             self._file = open(self.lock_path, "a+")
-            if os.name == "nt":
+            if sys.platform == "win32":
                 import msvcrt
-                msvcrt.locking(self._file.fileno(), msvcrt.LK_NBLCK, 1)
+
+                locking_fn = getattr(msvcrt, "locking")
+                mode = getattr(msvcrt, "LK_NBLCK")
+                locking_fn(self._file.fileno(), mode, 1)
             else:
                 import fcntl
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)  # type: ignore[attr-defined]
+
+                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             return True
         except (IOError, OSError):
             return False
@@ -194,12 +198,16 @@ class ProcessLock:
     def release(self) -> None:
         if self._file is not None:
             try:
-                if os.name == "nt":
+                if sys.platform == "win32":
                     import msvcrt
-                    msvcrt.locking(self._file.fileno(), msvcrt.LK_UNLCK, 1)
+
+                    locking_fn = getattr(msvcrt, "locking")
+                    mode = getattr(msvcrt, "LK_UNLCK")
+                    locking_fn(self._file.fileno(), mode, 1)
                 else:
                     import fcntl
-                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)  # type: ignore[attr-defined]
+
+                    fcntl.flock(self._file.fileno(), fcntl.LOCK_UN)
                 self._file.close()
             except Exception:
                 pass
