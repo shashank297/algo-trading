@@ -82,4 +82,4 @@
 
 - [x] **Task 7.1**: Commit changes (`feat(research): complete immutable research trial registry`).
 - [x] **Task 7.2**: Push branch `phase2/2.1-research-trial-registry` to origin.
-- [ ] **Task 7.3**: Monitor and verify GitHub Actions CI on exact pushed SHA until 100% green.
+- [x] **Task 7.3**: Monitor and verify GitHub Actions CI on exact pushed SHA until 100% green.
