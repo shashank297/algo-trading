@@ -29,7 +29,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--command",
         default="backtest",
-        choices=["backtest", "experiment", "portfolio-experiment", "mass-research", "agent-research", "paper", "rca", "promote", "inspect", "universe-status", "benchmark-register"],
+        choices=["backtest", "experiment", "portfolio-experiment", "mass-research", "agent-research", "paper", "rca", "promote", "inspect", "universe-status", "benchmark-register", "research-trials"],
         help="Workflow to run. Existing calls default to backtest.",
     )
     parser.add_argument("--strategy", default="trend_following", choices=StrategyRegistry.available())
@@ -55,6 +55,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--benchmark-source", default="operator-configured")
     parser.add_argument("--approve-benchmark", action="store_true")
     parser.add_argument("--risk-override-max-pos", type=float, default=None, help="Override max position percentage in risk policy")
+    parser.add_argument("--experiment-family-id", default=None, help="Experiment family ID for research trial registry")
+    parser.add_argument("--trial-id", default=None, help="Research trial ID for inspection")
+    parser.add_argument("--status", default=None, help="Filter research trials by status (e.g. PLANNED, RUNNING, SUCCEEDED, FAILED, INVALIDATED, CANCELLED)")
     return parser
 
 
@@ -133,6 +136,39 @@ def main(argv: list[str] | None = None) -> int:
             )
             print(json.dumps(readiness.as_dict(), default=str, indent=2))
             return 0
+        if args.command == "research-trials":
+            if args.trial_id:
+                trial = db.get_research_trial(args.trial_id)
+                if not trial:
+                    raise ValueError(f"Research trial '{args.trial_id}' not found.")
+                print(json.dumps(trial, default=str, indent=2))
+                return 0
+            if args.experiment_family_id:
+                summary = db.research_trial_summary(args.experiment_family_id)
+                trials = db.list_research_trials(
+                    family_id=args.experiment_family_id,
+                    strategy=args.strategy if args.strategy != "trend_following" or (argv and "--strategy" in argv) else None,
+                    status=args.status,
+                )
+                print(json.dumps({
+                    "family_id": args.experiment_family_id,
+                    "summary": summary,
+                    "trials": trials,
+                }, default=str, indent=2))
+                return 0
+            families = db.list_experiment_families()
+            trials = db.list_research_trials(
+                family_id=None,
+                strategy=args.strategy if args.strategy != "trend_following" or (argv and "--strategy" in argv) else None,
+                status=args.status,
+            )
+            print(json.dumps({
+                "families": families,
+                "trials": trials,
+                "total_families": len(families),
+                "total_trials": len(trials),
+            }, default=str, indent=2))
+            return 0
         if args.command == "inspect":
             rows = db.conn.execute(
                 """
@@ -171,6 +207,7 @@ def main(argv: list[str] | None = None) -> int:
                     cost_model=cost_model or research_config.get("indian_delivery_costs", {}),
                     cost_model_version=str(research_config.get("indian_delivery_costs", {}).get("version", "angel-nse-delivery-2026-04")),
                     max_workers=args.max_workers,
+                    experiment_family_id=args.experiment_family_id,
                 ),
                 starting_capital=args.capital,
             )
@@ -225,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
                     cost_model=experiment_costs,
                     universe_snapshot_id=args.universe_snapshot,
                     benchmark_symbol=args.benchmark or None,
+                    experiment_family_id=args.experiment_family_id,
                 ),
                 starting_capital=args.capital,
             )

@@ -27,6 +27,7 @@ class ExperimentSpec(BaseModel):
     fold_id: str | None = None
     cost_model_version: str = "legacy-bps-v1"
     require_authoritative_certification: bool = True
+    experiment_family_id: str | None = None
 
 
 class MassExperimentSpec(BaseModel):
@@ -48,6 +49,7 @@ class MassExperimentSpec(BaseModel):
     walk_forward_train_size: int = Field(default=252, ge=20)
     walk_forward_test_size: int = Field(default=63, ge=5)
     require_authoritative_certification: bool = True
+    experiment_family_id: str | None = None
 
     @field_validator("universe")
     @classmethod

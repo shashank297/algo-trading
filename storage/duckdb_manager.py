@@ -1226,6 +1226,277 @@ class DuckDBManager:
         row = {"benchmark_symbol": None, "data_hash": None, "finished_at": None, "notes": None, **payload}
         self._replace_rows("experiments", [row])
 
+    def register_experiment_family(self, family: Any) -> None:
+        """Persist an immutable pre-registered research family."""
+        payload = family.model_dump(mode="json")
+        existing = self.conn.execute(
+            "SELECT definition_hash FROM experiment_families WHERE experiment_family_id = ?",
+            [family.experiment_family_id],
+        ).fetchone()
+        if existing is not None:
+            if str(existing[0]) != family.definition_hash:
+                raise ValueError("Experiment family material definition is immutable.")
+            return
+        self.conn.execute(
+            "INSERT INTO experiment_families VALUES (?, ?, ?, ?, ?, NULL)",
+            [family.experiment_family_id, family.definition_hash, json.dumps(payload, sort_keys=True), family.maximum_trials, family.created_at],
+        )
+
+    def get_experiment_family(self, family_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            """
+            SELECT f.definition_json, f.maximum_trials, f.created_at,
+                   COALESCE(f.started_at, (SELECT MIN(t.created_at) FROM research_trials_log t WHERE t.experiment_family_id = f.experiment_family_id))
+            FROM experiment_families f
+            WHERE f.experiment_family_id = ?
+            """,
+            [family_id],
+        ).fetchone()
+        if row is None:
+            return None
+        value = json.loads(str(row[0]))
+        value.update({"maximum_trials": int(row[1]), "created_at": row[2], "started_at": row[3]})
+        return value
+
+    def list_experiment_families(self) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT f.experiment_family_id, f.definition_json, f.maximum_trials, f.created_at,
+                   COALESCE(f.started_at, (SELECT MIN(t.created_at) FROM research_trials_log t WHERE t.experiment_family_id = f.experiment_family_id))
+            FROM experiment_families f
+            ORDER BY f.created_at
+            """
+        ).fetchall()
+        result = []
+        for r in rows:
+            val = json.loads(str(r[1]))
+            val.update({"experiment_family_id": r[0], "maximum_trials": int(r[2]), "created_at": r[3], "started_at": r[4]})
+            result.append(val)
+        return result
+
+    def create_research_trial(self, trial: Any) -> str:
+        """Atomically reserve an immutable trial slot before execution."""
+        max_retries = 10
+        for attempt in range(max_retries):
+            try:
+                with self.transaction():
+                    family = self.conn.execute(
+                        "SELECT maximum_trials FROM experiment_families WHERE experiment_family_id = ?",
+                        [trial.experiment_family_id],
+                    ).fetchone()
+                    if family is None:
+                        raise ValueError("Research trial requires a pre-registered experiment family.")
+                    
+                    # Check if this exact trial already exists (for idempotency / resume)
+                    existing_trial = self.conn.execute(
+                        "SELECT trial_id, status FROM research_trials_log WHERE trial_id = ?",
+                        [trial.trial_id],
+                    ).fetchone()
+                    if existing_trial is not None:
+                        return str(existing_trial[0])
+
+                    consumed_row = self.conn.execute(
+                        "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ?",
+                        [trial.experiment_family_id],
+                    ).fetchone()
+                    consumed = int(_scalar(consumed_row, "research trial count"))
+                    if int(consumed) >= int(family[0]):
+                        raise RuntimeError("Experiment family trial budget exhausted.")
+
+                    # Serialize concurrent reservations for the same family via write lock on family row
+                    self.conn.execute(
+                        "UPDATE experiment_families SET started_at = ? WHERE experiment_family_id = ?",
+                        [trial.created_at, trial.experiment_family_id],
+                    )
+
+                    self.conn.execute(
+                        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, created_at) VALUES (?, ?, ?, ?, ?)",
+                        [trial.trial_id, trial.experiment_family_id, trial.status.value if hasattr(trial.status, "value") else str(trial.status), json.dumps(trial.model_dump(mode="json"), sort_keys=True, default=str), trial.created_at],
+                    )
+                return trial.trial_id
+            except (RuntimeError, ValueError):
+                raise
+            except Exception as exc:
+                if ("Conflict on update" in str(exc) or "TransactionContext Error" in str(exc)) and attempt < max_retries - 1:
+                    time.sleep(0.01 * (attempt + 1))
+                    continue
+                raise
+        raise RuntimeError("Failed to reserve research trial slot due to concurrent transaction contention.")
+
+    def reserve_research_trial(self, trial: Any) -> str:
+        """Alias for create_research_trial."""
+        return self.create_research_trial(trial)
+
+    def get_research_trial(self, trial_id: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT trial_id, status, trial_json, metrics_json, error_message, invalidation_reason, selected, created_at, started_at, finished_at, invalidated_at, parent_trial_id FROM research_trials_log WHERE trial_id = ?",
+            [trial_id],
+        ).fetchone()
+        if row is None:
+            return None
+        trial_data = json.loads(str(row[2]))
+        trial_data.update({
+            "trial_id": row[0],
+            "status": row[1],
+            "metrics": json.loads(str(row[3])) if row[3] else None,
+            "error_message": row[4],
+            "invalidation_reason": row[5],
+            "selected": bool(row[6]),
+            "created_at": row[7],
+            "started_at": row[8],
+            "finished_at": row[9],
+            "invalidated_at": row[10],
+            "parent_trial_id": row[11],
+        })
+        return trial_data
+
+    def find_exact_reusable_trial(self, trial_id: str) -> dict[str, Any] | None:
+        """Find an exact SUCCEEDED trial that can be reused deterministically without consuming budget."""
+        trial = self.get_research_trial(trial_id)
+        if trial is not None and trial.get("status") == "SUCCEEDED" and not trial.get("invalidated"):
+            return trial
+        return None
+
+    def transition_research_trial(
+        self,
+        trial_id: str,
+        status: str,
+        *,
+        metrics: dict[str, Any] | None = None,
+        error_message: str | None = None,
+        invalidation_reason: str | None = None,
+    ) -> None:
+        """Append lifecycle evidence without deleting or replacing the trial."""
+        row = self.conn.execute("SELECT status FROM research_trials_log WHERE trial_id = ?", [trial_id]).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown research trial {trial_id}.")
+        current_status = str(row[0])
+        # If already in terminal state and transitioning to the same terminal state, allow idempotency
+        if current_status in {"SUCCEEDED", "FAILED", "INVALIDATED", "CANCELLED"} and status == current_status:
+            return
+        if current_status in {"SUCCEEDED", "FAILED", "INVALIDATED", "CANCELLED"} and status != "INVALIDATED":
+            raise ValueError(f"Invalid immutable research-trial transition from {current_status} to {status}.")
+        now = datetime.now(timezone.utc)
+        self.conn.execute(
+            """
+            UPDATE research_trials_log
+            SET status=?,
+                started_at=CASE WHEN ?='RUNNING' THEN COALESCE(started_at, ?) ELSE started_at END,
+                finished_at=CASE WHEN ? IN ('SUCCEEDED','FAILED','CANCELLED','INVALIDATED') THEN COALESCE(finished_at, ?) ELSE finished_at END,
+                metrics_json=COALESCE(?, metrics_json),
+                metrics_hash=COALESCE(?, metrics_hash),
+                error_message=COALESCE(?, error_message),
+                invalidation_reason=COALESCE(?, invalidation_reason),
+                invalidated_at=CASE WHEN ?='INVALIDATED' THEN COALESCE(invalidated_at, ?) ELSE invalidated_at END
+            WHERE trial_id=?
+            """,
+            [
+                status,
+                status,
+                now,
+                status,
+                now,
+                json.dumps(metrics, sort_keys=True, default=str) if metrics is not None else None,
+                hashlib.sha256(json.dumps(metrics, sort_keys=True, default=str).encode()).hexdigest() if metrics is not None else None,
+                error_message,
+                invalidation_reason,
+                status,
+                now,
+                trial_id,
+            ],
+        )
+
+    def mark_trial_selected(self, trial_id: str, selected: bool = True) -> None:
+        """Mark whether this trial's candidate was selected as winning/optimal."""
+        self.conn.execute(
+            "UPDATE research_trials_log SET selected = ? WHERE trial_id = ?",
+            [selected, trial_id],
+        )
+
+    def invalidate_trial(self, trial_id: str, reason: str) -> None:
+        """Forensically invalidate a research trial while preserving its full history."""
+        self.transition_research_trial(trial_id, "INVALIDATED", invalidation_reason=reason)
+
+    def remaining_trial_budget(self, family_id: str) -> int:
+        family = self.get_experiment_family(family_id)
+        if family is None:
+            raise ValueError(f"Unknown experiment family {family_id}.")
+        consumed_row = self.conn.execute(
+            "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ?",
+            [family_id],
+        ).fetchone()
+        consumed = int(_scalar(consumed_row, "research trial count"))
+        return max(int(family["maximum_trials"]) - consumed, 0)
+
+    def list_research_trials(
+        self,
+        family_id: str | None = None,
+        strategy: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        rows = self.conn.execute(
+            """
+            SELECT trial_id, status, trial_json, metrics_json, error_message, invalidation_reason,
+                   selected, created_at, started_at, finished_at, invalidated_at, parent_trial_id
+            FROM research_trials_log
+            WHERE (? IS NULL OR experiment_family_id=?)
+              AND (? IS NULL OR trial_json LIKE ?)
+              AND (? IS NULL OR status=?)
+            ORDER BY created_at
+            """,
+            [family_id, family_id, strategy, f'%"strategy_name": "{strategy}"%' if strategy else None, status, status],
+        ).fetchall()
+        return [
+            {
+                **json.loads(str(row[2])),
+                "trial_id": row[0],
+                "status": row[1],
+                "metrics": json.loads(str(row[3])) if row[3] else None,
+                "error_message": row[4],
+                "invalidation_reason": row[5],
+                "selected": bool(row[6]),
+                "created_at": row[7],
+                "started_at": row[8],
+                "finished_at": row[9],
+                "invalidated_at": row[10],
+                "parent_trial_id": row[11],
+            }
+            for row in rows
+        ]
+
+    def research_trial_summary(self, family_id: str) -> dict[str, Any]:
+        family = self.get_experiment_family(family_id)
+        if family is None:
+            raise ValueError(f"Unknown experiment family {family_id}.")
+        rows = self.conn.execute(
+            "SELECT status, COUNT(*) FROM research_trials_log WHERE experiment_family_id=? GROUP BY status",
+            [family_id],
+        ).fetchall()
+        counts = {str(status): int(count) for status, count in rows}
+        consumed = sum(counts.values())
+        selected_count_row = self.conn.execute(
+            "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id=? AND selected=TRUE",
+            [family_id],
+        ).fetchone()
+        selected_count = int(_scalar(selected_count_row, "selected trial count"))
+        return {
+            "family": family,
+            "counts": counts,
+            "consumed": consumed,
+            "remaining": max(int(family["maximum_trials"]) - consumed, 0),
+            "selected_count": selected_count,
+        }
+
+    def recover_interrupted_research_trials(self) -> int:
+        now = datetime.now(timezone.utc)
+        result = self.conn.execute(
+            "UPDATE research_trials_log SET status='FAILED', finished_at=?, error_message=COALESCE(error_message, 'INTERRUPTED_PROCESS') WHERE status='RUNNING'",
+            [now],
+        )
+        row = result.fetchone() if result.description else None
+        return int(row[0]) if row is not None else 0
+
+
     def link_experiment_run(self, experiment_id: str, run_id: str, dataset_id: str | None, role: str = "primary") -> None:
         """Link a persisted deterministic strategy run to an experiment."""
 

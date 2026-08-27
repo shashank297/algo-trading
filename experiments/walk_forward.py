@@ -10,7 +10,9 @@ from typing import Any
 
 import pandas as pd
 
+from experiments.manager import source_revision
 from experiments.models import ExperimentSpec
+from experiments.trials import ResearchTrial, TrialStatus, canonical_hash
 from storage import DuckDBManager
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, _compute_metrics
 from trading_stack.calendars import MarketCalendar
@@ -87,7 +89,7 @@ class WalkForwardEvaluator:
                 pass  # Table might not exist yet
 
             selected, training_score = self._select(
-                spec, metadata.scope, train_source, candidates, starting_capital,
+                spec, metadata.scope, train_source, candidates, starting_capital, fold_id=fold_id,
             )
             replay_source = self._slice(source, train_dates[0], test_dates[-1])
             replay = self._run(spec, metadata.scope, replay_source, selected, starting_capital)
@@ -198,18 +200,74 @@ class WalkForwardEvaluator:
         source: ResearchDataset,
         candidates: list[dict[str, Any]],
         capital: float,
+        fold_id: str | None = None,
     ) -> tuple[dict[str, Any], float]:
+        from pathlib import Path
+        metadata = StrategyRegistry.metadata(spec.strategy_name)
+        revision = source_revision(Path(__file__).resolve().parent.parent)
+        train_start = pd.to_datetime(source.panel["timestamp"], utc=True).min() if not source.panel.empty else None
+        train_end = pd.to_datetime(source.panel["timestamp"], utc=True).max() if not source.panel.empty else None
+        candidate_trial_ids: dict[str, str] = {}
         ranked: list[tuple[float, float, str, dict[str, Any]]] = []
+
         for parameters in candidates:
-            replay = self._run(spec, scope, source, parameters, capital)
-            result = replay.run if hasattr(replay, "run") else replay
-            ranked.append((
-                float(result.metrics.sharpe),
-                float(result.metrics.max_drawdown),
-                json.dumps(parameters, sort_keys=True, default=str),
-                parameters,
-            ))
+            trial_id: str | None = None
+            if spec.experiment_family_id:
+                trial = ResearchTrial(
+                    experiment_family_id=spec.experiment_family_id,
+                    strategy_name=spec.strategy_name,
+                    strategy_version=metadata.version,
+                    scope=scope.value,
+                    symbol=spec.universe[0] if scope == StrategyScope.SINGLE_ASSET else None,
+                    universe_snapshot_id=spec.universe_snapshot_id,
+                    timeframe=spec.timeframe,
+                    parameters=parameters,
+                    source_revision=revision,
+                    data_hash=source.data_hash,
+                    cost_model_hash=canonical_hash(spec.cost_model),
+                    cost_model_version=spec.cost_model_version,
+                    feature_version=spec.feature_version,
+                    frame_certification_id=source.frame_certification_id,
+                    fold_id=fold_id,
+                    train_start=train_start.to_pydatetime() if train_start is not None and hasattr(train_start, "to_pydatetime") else None,
+                    train_end=train_end.to_pydatetime() if train_end is not None and hasattr(train_end, "to_pydatetime") else None,
+                    status=TrialStatus.PLANNED,
+                )
+                # Atomically reserve budget BEFORE candidate execution
+                trial_id = self.db.create_research_trial(trial)
+                self.db.transition_research_trial(trial_id, "RUNNING")
+
+            try:
+                replay = self._run(spec, scope, source, parameters, capital)
+                result = replay.run if hasattr(replay, "run") else replay
+                param_key = json.dumps(parameters, sort_keys=True, default=str)
+                if trial_id:
+                    metrics_dict = {
+                        "sharpe": float(result.metrics.sharpe) if getattr(result.metrics, "sharpe", None) is not None else None,
+                        "max_drawdown": float(result.metrics.max_drawdown) if getattr(result.metrics, "max_drawdown", None) is not None else None,
+                        "cagr": float(result.metrics.cagr) if getattr(result.metrics, "cagr", None) is not None else None,
+                        "total_return": float(result.metrics.total_return) if getattr(result.metrics, "total_return", None) is not None else None,
+                        "run_id": getattr(result, "run_id", None),
+                    }
+                    self.db.transition_research_trial(trial_id, "SUCCEEDED", metrics=metrics_dict)
+                    candidate_trial_ids[param_key] = trial_id
+                ranked.append((
+                    float(result.metrics.sharpe),
+                    float(result.metrics.max_drawdown),
+                    param_key,
+                    parameters,
+                ))
+            except Exception as exc:
+                if trial_id:
+                    self.db.transition_research_trial(trial_id, "FAILED", error_message=str(exc))
+                raise
+
+        if not ranked:
+            raise RuntimeError("No candidate evaluations succeeded during walk-forward parameter selection.")
         best = max(ranked, key=lambda value: (value[0], value[1], value[2]))
+        best_key = json.dumps(best[3], sort_keys=True, default=str)
+        if spec.experiment_family_id and best_key in candidate_trial_ids:
+            self.db.mark_trial_selected(candidate_trial_ids[best_key], True)
         return dict(best[3]), best[0]
 
     def _run(

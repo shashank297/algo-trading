@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from experiments.models import ExperimentSpec
+from experiments.trials import ResearchTrial, TrialStatus, canonical_hash
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.calendars import MarketCalendar
@@ -64,6 +65,30 @@ class ExperimentManager:
                     raise ValueError(
                         f"Experiment universe specification contains symbols {invalid_members} not present in snapshot '{spec.universe_snapshot_id}'."
                     )
+
+        revision = source_revision(self.project_root)
+        trial_id: str | None = None
+        if spec.experiment_family_id:
+            trial = ResearchTrial(
+                experiment_family_id=spec.experiment_family_id,
+                strategy_name=spec.strategy_name,
+                strategy_version=metadata.version,
+                scope=metadata.scope.value,
+                symbol=spec.universe[0] if metadata.scope == StrategyScope.SINGLE_ASSET else None,
+                universe_snapshot_id=spec.universe_snapshot_id,
+                timeframe=spec.timeframe,
+                parameters=spec.parameters,
+                source_revision=revision,
+                data_hash=hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest(),
+                cost_model_hash=canonical_hash(spec.cost_model),
+                cost_model_version=spec.cost_model_version,
+                feature_version=spec.feature_version,
+                fold_id=spec.fold_id,
+                status=TrialStatus.PLANNED,
+            )
+            trial_id = self.db.create_research_trial(trial)
+            self.db.transition_research_trial(trial_id, "RUNNING")
+
         started_at = datetime.now(timezone.utc)
         self.db.log_experiment(
             {
@@ -77,7 +102,7 @@ class ExperimentManager:
                 "feature_version": spec.feature_version,
                 "cost_model_json": json.dumps(spec.cost_model, sort_keys=True),
                 "benchmark_symbol": spec.benchmark_symbol,
-                "source_revision": source_revision(self.project_root),
+                "source_revision": revision,
                 "llm_config_json": json.dumps(spec.llm_config, sort_keys=True),
                 "status": "RUNNING",
                 "started_at": started_at,
@@ -148,7 +173,7 @@ class ExperimentManager:
                     "cost_model_json": json.dumps(spec.cost_model, sort_keys=True),
                     "benchmark_symbol": spec.benchmark_symbol,
                     "data_hash": result.data_hash,
-                    "source_revision": source_revision(self.project_root),
+                    "source_revision": revision,
                     "llm_config_json": json.dumps(spec.llm_config, sort_keys=True),
                     "status": "SUCCEEDED",
                     "started_at": started_at,
@@ -156,8 +181,21 @@ class ExperimentManager:
                     "notes": spec.notes,
                 },
             )
+            if trial_id:
+                metrics_dict = None
+                if hasattr(result, "metrics") and result.metrics is not None:
+                    metrics_dict = {
+                        "sharpe": float(result.metrics.sharpe) if getattr(result.metrics, "sharpe", None) is not None else None,
+                        "max_drawdown": float(result.metrics.max_drawdown) if getattr(result.metrics, "max_drawdown", None) is not None else None,
+                        "cagr": float(result.metrics.cagr) if getattr(result.metrics, "cagr", None) is not None else None,
+                        "total_return": float(result.metrics.total_return) if getattr(result.metrics, "total_return", None) is not None else None,
+                        "run_id": result.run_id,
+                    }
+                self.db.transition_research_trial(trial_id, "SUCCEEDED", metrics=metrics_dict)
             return {"experiment_id": spec.experiment_id, "outcome": outcome}
         except Exception as exc:
+            if trial_id:
+                self.db.transition_research_trial(trial_id, "FAILED", error_message=str(exc))
             self.db.log_experiment(
                 {
                     "experiment_id": spec.experiment_id,
@@ -170,7 +208,7 @@ class ExperimentManager:
                     "feature_version": spec.feature_version,
                     "cost_model_json": json.dumps(spec.cost_model, sort_keys=True),
                     "benchmark_symbol": spec.benchmark_symbol,
-                    "source_revision": source_revision(self.project_root),
+                    "source_revision": revision,
                     "llm_config_json": json.dumps(spec.llm_config, sort_keys=True),
                     "status": "FAILED",
                     "started_at": started_at,

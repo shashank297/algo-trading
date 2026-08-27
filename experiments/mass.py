@@ -114,6 +114,7 @@ class MassExperimentManager:
                     universe_snapshot_id=spec.universe_snapshot_id, cost_model=spec.cost_model,
                     cost_model_version=spec.cost_model_version,
                     require_authoritative_certification=spec.require_authoritative_certification,
+                    experiment_family_id=spec.experiment_family_id,
                 )
                 result = ExperimentManager(self.db, india_calendar=self.india_calendar).run(
                     experiment_spec, starting_capital=capital,
