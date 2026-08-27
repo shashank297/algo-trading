@@ -10,6 +10,41 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+class ResearchIntegrityError(RuntimeError):
+    """Base error for a failure that must stop governed research."""
+
+
+class ResearchLineageError(ResearchIntegrityError):
+    """Raised when authoritative dataset or frame lineage is unavailable."""
+
+
+class ResearchCertificationError(ResearchIntegrityError):
+    """Raised when required research certification evidence is invalid."""
+
+
+class ResearchCausalityError(ResearchIntegrityError):
+    """Raised when research causality evidence is invalid."""
+
+
+def is_research_governance_error(error: BaseException) -> bool:
+    """Return whether an error must abort a governed candidate search.
+
+    Candidate-local strategy failures deliberately remain outside this list.
+    """
+
+    from trading_stack.pipeline import DataQualityError as PipelineDataQualityError
+    from validators.data_quality import DataQualityError as ValidatorDataQualityError
+
+    return isinstance(
+        error,
+        (
+            ResearchIntegrityError,
+            PipelineDataQualityError,
+            ValidatorDataQualityError,
+        ),
+    )
+
+
 def canonical_hash(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
 
@@ -78,4 +113,3 @@ class ResearchTrial(BaseModel):
     @property
     def trial_id(self) -> str:
         return canonical_hash(self.model_dump(mode="json", exclude={"status", "created_at"}))
-

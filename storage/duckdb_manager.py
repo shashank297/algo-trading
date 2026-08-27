@@ -1399,10 +1399,17 @@ class DuckDBManager:
         invalidation_reason: str | None = None,
     ) -> None:
         """Append lifecycle evidence without deleting or replacing the trial."""
-        row = self.conn.execute("SELECT status FROM research_trials_log WHERE trial_id = ?", [trial_id]).fetchone()
+        row = self.conn.execute(
+            "SELECT status, trial_json FROM research_trials_log WHERE trial_id = ?",
+            [trial_id],
+        ).fetchone()
         if row is None:
             raise ValueError(f"Unknown research trial {trial_id}.")
         current_status = str(row[0])
+        if status == "SUCCEEDED" and not self._has_authoritative_trial_lineage(str(row[1])):
+            raise ValueError(
+                "Governed research trials require a resolved data hash and frame certification before SUCCEEDED."
+            )
         # If already in terminal state and transitioning to the same terminal state, allow idempotency
         if current_status in {"SUCCEEDED", "FAILED", "INVALIDATED", "CANCELLED"} and status == current_status:
             return
@@ -1440,6 +1447,17 @@ class DuckDBManager:
 
     def mark_trial_selected(self, trial_id: str, selected: bool = True) -> None:
         """Mark whether this trial's candidate was selected as winning/optimal."""
+        if selected:
+            row = self.conn.execute(
+                "SELECT status, trial_json FROM research_trials_log WHERE trial_id = ?",
+                [trial_id],
+            ).fetchone()
+            if row is None:
+                raise ValueError(f"Unknown research trial {trial_id}.")
+            if str(row[0]) != "SUCCEEDED" or not self._has_authoritative_trial_lineage(str(row[1])):
+                raise ValueError(
+                    "Only SUCCEEDED trials with resolved data and frame lineage may be selected."
+                )
         self.conn.execute(
             "UPDATE research_trials_log SET selected = ? WHERE trial_id = ?",
             [selected, trial_id],
@@ -1529,6 +1547,18 @@ class DuckDBManager:
                 [now],
             )
         return count
+
+    @staticmethod
+    def _has_authoritative_trial_lineage(trial_json: str) -> bool:
+        """Validate immutable governed lineage before terminal success or selection."""
+
+        try:
+            trial = json.loads(trial_json)
+        except json.JSONDecodeError:
+            return False
+        data_hash = str(trial.get("data_hash") or "").strip()
+        frame_certification_id = str(trial.get("frame_certification_id") or "").strip()
+        return bool(data_hash and not data_hash.startswith("unresolved:") and frame_certification_id)
 
 
     def link_experiment_run(self, experiment_id: str, run_id: str, dataset_id: str | None, role: str = "primary") -> None:

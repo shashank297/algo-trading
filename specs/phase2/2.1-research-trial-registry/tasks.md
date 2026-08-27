@@ -83,3 +83,9 @@
 - [x] **Task 7.1**: Commit changes (`feat(research): complete immutable research trial registry`).
 - [x] **Task 7.2**: Push branch `phase2/2.1-research-trial-registry` to origin.
 - [x] **Task 7.3**: Monitor and verify GitHub Actions CI on exact pushed SHA until 100% green.
+
+## Phase 8: Governance Hardening
+
+- [x] **Task 8.1**: Require resolved authoritative lineage for governed trials; retain unresolved attempts as failed and prohibit their success/selection transitions.
+- [x] **Task 8.2**: Classify walk-forward failures so only candidate-local errors continue; certification, DQ, causality, lineage, and integrity failures abort the active search and are terminal for mass-job retries.
+- [x] **Task 8.3**: Add migration 015, adversarial lineage, durable-ledger, and governance-abort regression coverage.

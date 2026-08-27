@@ -132,6 +132,13 @@ Trials transition through strict lifecycle states:
 ### Losing & Failed Candidate Retention
 Losing candidates are retained with `status = 'SUCCEEDED'` and `selected = False`. Failed evaluations are retained with `status = 'FAILED'`. **No trial rows are ever deleted.**
 
+### Governed Lineage and Failure Classification
+An execution with an `experiment_family_id` is governed research. It always requires a resolved authoritative dataset hash and research-frame certification, even when a caller requests relaxed certification. A governed trial with an empty, missing, or `unresolved:*` data hash can be retained only as `FAILED`; the durable ledger rejects both `SUCCEEDED` and `selected` transitions for it.
+
+Walk-forward failures are classified deliberately. Ordinary candidate-local strategy/runtime exceptions are retained as `FAILED` and the next candidate continues. `ResearchLineageError`, `ResearchCertificationError`, `ResearchCausalityError`, `ResearchIntegrityError`, and either authoritative `DataQualityError` are governance failures: the failed candidate is retained and the active candidate search aborts. Mass jobs treat those failures as terminal and do not retry them.
+
+Migration `015_invalidate_unresolved_research_trials.sql` forensically invalidates historical `SUCCEEDED` ledger rows with `unresolved:*` hashes and clears their selection flag while preserving all prior evidence.
+
 ### Forensic Invalidation
 When backtest outputs are invalidated, `invalidate_trial(trial_id, reason)` records:
 - `invalidated = True`

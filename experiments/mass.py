@@ -11,6 +11,7 @@ from tqdm import tqdm
 
 from experiments.manager import ExperimentManager, source_revision
 from experiments.models import ExperimentSpec, MassExperimentSpec
+from experiments.trials import is_research_governance_error
 from experiments.walk_forward import WalkForwardEvaluator
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.domain import StrategyScope
@@ -130,7 +131,7 @@ class MassExperimentManager:
                 })
                 return {"job_key": job["job_key"], "state": "SUCCEEDED", "run_id": run_id, "folds": folds, "resumed": attempt > 0}
             except Exception as exc:
-                terminal = attempt >= spec.max_retries
+                terminal = is_research_governance_error(exc) or attempt >= spec.max_retries
                 self.db.log_experiment_job({
                     **base, "state": "FAILED" if terminal else "RETRYING",
                     "retry_count": attempt, "error_message": str(exc),

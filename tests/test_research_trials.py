@@ -13,11 +13,17 @@ import pytest
 
 from experiments.manager import ExperimentManager
 from experiments.models import ExperimentSpec
-from experiments.trials import ExperimentFamilySpec, ResearchTrial
+from experiments.trials import (
+    ExperimentFamilySpec,
+    ResearchIntegrityError,
+    ResearchLineageError,
+    ResearchTrial,
+)
 from experiments.walk_forward import WalkForwardEvaluator
 from research import main as research_cli_main
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.domain import StrategyScope
+from trading_stack.pipeline import DataQualityError as PipelineDataQualityError
 
 
 @pytest.fixture
@@ -149,6 +155,7 @@ def test_research_trial_lifecycle_and_invalidation(test_db: DuckDBManager, sampl
         source_revision="rev-12345",
         data_hash="data-hash-01",
         cost_model_hash="cost-hash-01",
+        frame_certification_id="frame-cert-01",
     )
     
     trial_id = test_db.create_research_trial(trial)
@@ -310,6 +317,7 @@ def test_interrupted_process_recovery(test_db: DuckDBManager, sample_family: Exp
         source_revision="rev-12345",
         data_hash="d1",
         cost_model_hash="c1",
+        frame_certification_id="frame-cert-cli",
     )
     trial_id = test_db.create_research_trial(trial)
     test_db.transition_research_trial(trial_id, "RUNNING")
@@ -505,6 +513,7 @@ def test_research_trials_cli(test_db: DuckDBManager, sample_family: ExperimentFa
         source_revision="rev-12345",
         data_hash="d1",
         cost_model_hash="c1",
+        frame_certification_id="frame-cert-cli",
     )
     trial_id = test_db.create_research_trial(trial)
     test_db.transition_research_trial(trial_id, "SUCCEEDED", metrics={"sharpe": 1.25})
@@ -786,6 +795,7 @@ def test_failed_trial_retry_and_exact_succeeded_resume_semantics(test_db: DuckDB
         source_revision="rev-retry-test",
         data_hash="data-retry-hash",
         cost_model_hash="cost-retry-hash",
+        frame_certification_id="frame-cert-retry",
     )
 
     # 1. Attempt 1: created, runs, and fails
@@ -918,3 +928,128 @@ def test_experiment_manager_successful_execution_and_metrics_linkage(test_db: Du
     assert trial["finished_at"] is not None
 
 
+def test_governed_lineage_failure_is_retained_without_execution(
+    test_db: DuckDBManager, sample_family: ExperimentFamilySpec,
+) -> None:
+    """A later executable result cannot turn an unresolved governed attempt into success."""
+
+    test_db.register_experiment_family(sample_family)
+    manager = ExperimentManager(test_db)
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["RELIANCE"],
+        timeframe="1d",
+        parameters={"lookback": 20},
+        experiment_family_id=sample_family.experiment_family_id,
+        require_authoritative_certification=False,
+    )
+    pipeline = MagicMock()
+    pipeline.load_candles.side_effect = PipelineDataQualityError("missing certified dataset")
+    pipeline.run.return_value = {"result": MockRunResult(sharpe=3.0, run_id="must-not-run")}
+
+    with patch("experiments.manager.StrategyPipeline", return_value=pipeline):
+        with pytest.raises(ResearchLineageError, match="lineage resolution failed"):
+            manager.run(spec)
+
+    assert pipeline.run.call_count == 0
+    trials = test_db.list_research_trials(sample_family.experiment_family_id)
+    assert len(trials) == 1
+    assert trials[0]["status"] == "FAILED"
+    assert str(trials[0]["data_hash"]).startswith("unresolved:")
+
+
+def test_storage_rejects_unresolved_or_missing_lineage_success(
+    test_db: DuckDBManager, sample_family: ExperimentFamilySpec,
+) -> None:
+    """The ledger independently blocks fail-open success and selection transitions."""
+
+    test_db.register_experiment_family(sample_family)
+    unresolved = ResearchTrial(
+        experiment_family_id=sample_family.experiment_family_id,
+        strategy_name="trend_following", strategy_version="1.0.0", scope="SINGLE_ASSET",
+        timeframe="1d", parameters={"lookback": 10}, source_revision="rev",
+        data_hash="unresolved:lineage", cost_model_hash="cost",
+    )
+    unresolved_id = test_db.create_research_trial(unresolved)
+    test_db.transition_research_trial(unresolved_id, "RUNNING")
+    with pytest.raises(ValueError, match="resolved data hash"):
+        test_db.transition_research_trial(unresolved_id, "SUCCEEDED")
+    with pytest.raises(ValueError, match="Only SUCCEEDED"):
+        test_db.mark_trial_selected(unresolved_id)
+
+    missing_frame = unresolved.model_copy(update={"parameters": {"lookback": 20}, "data_hash": "valid-hash"})
+    missing_frame_id = test_db.create_research_trial(missing_frame)
+    with pytest.raises(ValueError, match="resolved data hash"):
+        test_db.transition_research_trial(missing_frame_id, "SUCCEEDED")
+
+
+def test_migration_invalidates_historical_unresolved_success(
+    test_db: DuckDBManager, sample_family: ExperimentFamilySpec,
+) -> None:
+    """Migration 015 preserves, but invalidates, legacy successful unresolved lineage."""
+
+    test_db.register_experiment_family(sample_family)
+    test_db.conn.execute(
+        """INSERT INTO research_trials_log (
+            trial_id, experiment_family_id, status, trial_json, created_at, selected
+        ) VALUES (?, ?, 'SUCCEEDED', ?, CURRENT_TIMESTAMP, TRUE)""",
+        [
+            "legacy-unresolved-success",
+            sample_family.experiment_family_id,
+            json.dumps({"data_hash": "unresolved:legacy", "frame_certification_id": None}),
+        ],
+    )
+    test_db.conn.execute(
+        (Path("storage/migrations/015_invalidate_unresolved_research_trials.sql")).read_text(encoding="utf-8")
+    )
+    migrated = test_db.get_research_trial("legacy-unresolved-success")
+    assert migrated is not None
+    assert migrated["status"] == "INVALIDATED"
+    assert migrated["selected"] is False
+    assert migrated["invalidation_reason"] == "UNRESOLVED_LINEAGE_HISTORICAL_REMEDIATION"
+
+
+def test_walk_forward_governance_failure_aborts_before_candidate_c(
+    test_db: DuckDBManager,
+) -> None:
+    """Candidate-local failures continue; DQ/certification failures abort the search."""
+
+    family = ExperimentFamilySpec(
+        experiment_family_id="fam_wf_governance_abort", hypothesis="Fail closed on DQ failure",
+        strategy_names=["trend_following"], strategy_versions=["1.0.0"],
+        universe_snapshot_id="NIFTY200_2026_08_17", timeframe="1d",
+        feature_versions=["features-v1"], cost_model_version="cost-v1",
+        parameter_space={"lookback": [10, 20, 30]}, maximum_trials=5,
+        selection_metric="sharpe", walk_forward_design={"train_size": 252, "test_size": 63},
+        source_revision="rev",
+    )
+    test_db.register_experiment_family(family)
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=3)
+    spec = ExperimentSpec(
+        strategy_name="trend_following", universe=["RELIANCE"], timeframe="1d",
+        experiment_family_id=family.experiment_family_id,
+    )
+    source = MagicMock()
+    source.data_hash = "resolved-source-hash"
+    source.frame_certification_id = "frame-cert"
+    source.panel = pd.DataFrame({"timestamp": [pd.Timestamp("2026-01-01", tz="UTC")]})
+    executed: list[int] = []
+
+    def run_candidate(_: Any, __: Any, ___: Any, parameters: dict[str, Any], ____: float) -> Any:
+        lookback = int(parameters["lookback"])
+        executed.append(lookback)
+        if lookback == 20:
+            raise PipelineDataQualityError("certification evidence invalid")
+        return MockRunResult(sharpe=1.0, run_id=f"run-{lookback}")
+
+    with patch.object(evaluator, "_run", side_effect=run_candidate):
+        with pytest.raises(ResearchIntegrityError, match="aborting search"):
+            evaluator._select(
+                spec, StrategyScope.SINGLE_ASSET, source,
+                [{"lookback": 10}, {"lookback": 20}, {"lookback": 30}], 100_000.0,
+            )
+
+    assert executed == [10, 20]
+    trials = test_db.list_research_trials(family.experiment_family_id)
+    assert [trial["parameters"] for trial in trials] == [{"lookback": 10}, {"lookback": 20}]
+    assert [trial["status"] for trial in trials] == ["SUCCEEDED", "FAILED"]

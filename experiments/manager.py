@@ -12,7 +12,12 @@ from typing import Any
 import pandas as pd
 
 from experiments.models import ExperimentSpec
-from experiments.trials import ResearchTrial, TrialStatus, canonical_hash
+from experiments.trials import (
+    ResearchLineageError,
+    ResearchTrial,
+    TrialStatus,
+    canonical_hash,
+)
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.calendars import MarketCalendar
@@ -70,6 +75,7 @@ class ExperimentManager:
 
         revision = source_revision(self.project_root)
         trial_id: str | None = None
+        governed = spec.experiment_family_id is not None
 
         # Resolve authoritative market-data evidence before trial reservation
         data_hash: str | None = None
@@ -77,6 +83,8 @@ class ExperimentManager:
         train_start: datetime | None = None
         train_end: datetime | None = None
         resolved_dataset: Any = None
+        lineage_error: ResearchLineageError | None = None
+        authoritative_certification = governed or spec.require_authoritative_certification
 
         if metadata.scope == StrategyScope.CROSS_SECTIONAL:
             try:
@@ -84,7 +92,7 @@ class ExperimentManager:
                     self.db,
                     calendar=self.india_calendar,
                     strict_calendar=self.india_calendar is not None,
-                    require_authoritative_certification=spec.require_authoritative_certification,
+                    require_authoritative_certification=authoritative_certification,
                 ).build(
                     spec.universe,
                     spec.timeframe,
@@ -97,19 +105,22 @@ class ExperimentManager:
                 if not resolved_dataset.panel.empty:
                     train_start = pd.to_datetime(resolved_dataset.panel["timestamp"], utc=True).min().to_pydatetime()
                     train_end = pd.to_datetime(resolved_dataset.panel["timestamp"], utc=True).max().to_pydatetime()
-            except Exception:
+            except Exception as exc:
                 data_hash = f"unresolved:{hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest()[:16]}"
+                lineage_error = ResearchLineageError(
+                    f"Authoritative lineage resolution failed for {spec.strategy_name}: {exc}"
+                )
         else:
             try:
                 pipeline_loader = StrategyPipeline(
                     self.db,
                     india_calendar=self.india_calendar,
-                    require_authoritative_certification=spec.require_authoritative_certification,
+                    require_authoritative_certification=authoritative_certification,
                 )
                 resolved_frame = pipeline_loader.load_candles(
                     spec.universe[0],
                     spec.timeframe,
-                    require_authoritative_certification=spec.require_authoritative_certification,
+                    require_authoritative_certification=authoritative_certification,
                 )
                 hash_columns = [
                     c for c in ("timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id")
@@ -122,8 +133,26 @@ class ExperimentManager:
                 if not resolved_frame.empty:
                     train_start = pd.to_datetime(resolved_frame["timestamp"], utc=True).min().to_pydatetime()
                     train_end = pd.to_datetime(resolved_frame["timestamp"], utc=True).max().to_pydatetime()
-            except Exception:
+            except Exception as exc:
                 data_hash = f"unresolved:{hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest()[:16]}"
+                lineage_error = ResearchLineageError(
+                    f"Authoritative lineage resolution failed for {spec.strategy_name}: {exc}"
+                )
+
+        if governed and (lineage_error is not None or not data_hash or data_hash.startswith("unresolved:") or not frame_cert_id):
+            failure = lineage_error or ResearchLineageError(
+                f"Governed research requires a resolved dataset hash and frame certification for {spec.strategy_name}."
+            )
+            self._record_lineage_failure(
+                spec=spec,
+                metadata=metadata,
+                revision=revision,
+                data_hash=data_hash or f"unresolved:{hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest()[:16]}",
+                error=failure,
+                train_start=train_start,
+                train_end=train_end,
+            )
+            raise failure
 
         if spec.experiment_family_id:
             trial = ResearchTrial(
@@ -178,7 +207,7 @@ class ExperimentManager:
                     self.db,
                     calendar=self.india_calendar,
                     strict_calendar=self.india_calendar is not None,
-                    require_authoritative_certification=spec.require_authoritative_certification,
+                    require_authoritative_certification=authoritative_certification,
                 ).build(
                     spec.universe,
                     spec.timeframe,
@@ -207,7 +236,7 @@ class ExperimentManager:
                 outcome = StrategyPipeline(
                     self.db,
                     india_calendar=self.india_calendar,
-                    require_authoritative_certification=spec.require_authoritative_certification,
+                    require_authoritative_certification=authoritative_certification,
                 ).run(
                     strategy_name=spec.strategy_name,
                     symbol=spec.universe[0],
@@ -277,6 +306,64 @@ class ExperimentManager:
                 },
             )
             raise
+
+    def _record_lineage_failure(
+        self,
+        *,
+        spec: ExperimentSpec,
+        metadata: Any,
+        revision: str,
+        data_hash: str,
+        error: ResearchLineageError,
+        train_start: datetime | None,
+        train_end: datetime | None,
+    ) -> None:
+        """Retain a governed failed attempt without allowing execution to start."""
+
+        trial = ResearchTrial(
+            experiment_family_id=str(spec.experiment_family_id),
+            strategy_name=spec.strategy_name,
+            strategy_version=metadata.version,
+            scope=metadata.scope.value,
+            symbol=spec.universe[0] if metadata.scope == StrategyScope.SINGLE_ASSET else None,
+            universe_snapshot_id=spec.universe_snapshot_id,
+            timeframe=spec.timeframe,
+            parameters=spec.parameters,
+            source_revision=revision,
+            data_hash=data_hash,
+            cost_model_hash=canonical_hash(spec.cost_model),
+            cost_model_version=spec.cost_model_version,
+            feature_version=spec.feature_version,
+            train_start=train_start,
+            train_end=train_end,
+            fold_id=spec.fold_id,
+            status=TrialStatus.PLANNED,
+        )
+        trial_id = self.db.create_research_trial(trial)
+        self.db.transition_research_trial(trial_id, "RUNNING")
+        self.db.transition_research_trial(trial_id, "FAILED", error_message=str(error))
+        now = datetime.now(timezone.utc)
+        self.db.log_experiment(
+            {
+                "experiment_id": spec.experiment_id,
+                "strategy_name": spec.strategy_name,
+                "strategy_version": metadata.version,
+                "universe_json": json.dumps(spec.universe),
+                "timeframe": spec.timeframe,
+                "mode": spec.mode,
+                "parameters_json": json.dumps(spec.parameters, sort_keys=True),
+                "feature_version": spec.feature_version,
+                "cost_model_json": json.dumps(spec.cost_model, sort_keys=True),
+                "benchmark_symbol": spec.benchmark_symbol,
+                "data_hash": data_hash,
+                "source_revision": revision,
+                "llm_config_json": json.dumps(spec.llm_config, sort_keys=True),
+                "status": "FAILED",
+                "started_at": now,
+                "finished_at": now,
+                "notes": str(error),
+            },
+        )
 
     def _latest_dataset_id(self, symbol: str, timeframe: str) -> str | None:
         row = self.db.conn.execute(

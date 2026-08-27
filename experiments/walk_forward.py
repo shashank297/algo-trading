@@ -13,7 +13,14 @@ from loguru import logger
 
 from experiments.manager import source_revision
 from experiments.models import ExperimentSpec
-from experiments.trials import ResearchTrial, TrialStatus, canonical_hash
+from experiments.trials import (
+    ResearchIntegrityError,
+    ResearchLineageError,
+    ResearchTrial,
+    TrialStatus,
+    canonical_hash,
+    is_research_governance_error,
+)
 from storage import DuckDBManager
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, _compute_metrics
 from trading_stack.calendars import MarketCalendar
@@ -211,6 +218,14 @@ class WalkForwardEvaluator:
         candidate_trial_ids: dict[str, str] = {}
         ranked: list[tuple[float, float, str, dict[str, Any]]] = []
 
+        if spec.experiment_family_id:
+            data_hash = str(getattr(source, "data_hash", "") or "").strip()
+            frame_certification_id = str(getattr(source, "frame_certification_id", "") or "").strip()
+            if not data_hash or data_hash.startswith("unresolved:") or not frame_certification_id:
+                raise ResearchLineageError(
+                    "Walk-forward candidate selection requires resolved data and frame lineage."
+                )
+
         for parameters in candidates:
             trial_id: str | None = None
             if spec.experiment_family_id:
@@ -261,6 +276,10 @@ class WalkForwardEvaluator:
             except Exception as exc:
                 if trial_id:
                     self.db.transition_research_trial(trial_id, "FAILED", error_message=str(exc))
+                if is_research_governance_error(exc):
+                    raise ResearchIntegrityError(
+                        f"Governed walk-forward candidate {parameters} failed; aborting search."
+                    ) from exc
                 logger.warning(f"Candidate {parameters} evaluation failed: {exc}. Retaining FAILED trial and continuing search.")
 
         if not ranked:

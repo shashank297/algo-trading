@@ -96,6 +96,12 @@ The `phase2/2.1-research-trial-registry` branch contains the core foundation tha
 - If `consumed >= maximum_trials`, fail closed with `RuntimeError` before running candidate $N+1$.
 - Concurrency must be protected under DuckDB transactional isolation so concurrent workers cannot exceed `maximum_trials`.
 
+### 3.4.1 Governed Lineage and Error Classification
+- Any trial carrying `experiment_family_id` is governed and must resolve a non-empty, non-`unresolved:*` data hash plus an authoritative frame-certification ID before execution.
+- An unresolved governed attempt may be retained only as `FAILED`; the durable ledger rejects `SUCCEEDED` and `selected` transitions without valid lineage.
+- Walk-forward candidate-local strategy/runtime errors are retained as `FAILED` and permit subsequent candidates. Explicit research lineage, certification, causality, integrity, and authoritative data-quality errors are retained as `FAILED` and abort the active selector/search.
+- Historical successful unresolved trials are forensically invalidated by migration 015; evidence is preserved.
+
 ### 3.5 Manager & Evaluator Integrations
 1. **`ExperimentSpec` & `MassExperimentSpec`**: Carry optional/explicit `experiment_family_id`. When provided, governs research accounting.
 2. **`ExperimentManager`**: Resolves family, constructs `ResearchTrial`, atomically reserves trial slot, marks `RUNNING`, records `SUCCEEDED` with metrics hash on success, or records `FAILED` with error message on exception.
