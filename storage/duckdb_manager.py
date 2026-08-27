@@ -1489,12 +1489,14 @@ class DuckDBManager:
 
     def recover_interrupted_research_trials(self) -> int:
         now = datetime.now(timezone.utc)
-        result = self.conn.execute(
-            "UPDATE research_trials_log SET status='FAILED', finished_at=?, error_message=COALESCE(error_message, 'INTERRUPTED_PROCESS') WHERE status='RUNNING'",
-            [now],
-        )
-        row = result.fetchone() if result.description else None
-        return int(row[0]) if row is not None else 0
+        count_row = self.conn.execute("SELECT COUNT(*) FROM research_trials_log WHERE status='RUNNING'").fetchone()
+        count = int(_scalar(count_row, "running trials count"))
+        if count > 0:
+            self.conn.execute(
+                "UPDATE research_trials_log SET status='FAILED', finished_at=?, error_message=COALESCE(error_message, 'INTERRUPTED_PROCESS') WHERE status='RUNNING'",
+                [now],
+            )
+        return count
 
 
     def link_experiment_run(self, experiment_id: str, run_id: str, dataset_id: str | None, role: str = "primary") -> None:

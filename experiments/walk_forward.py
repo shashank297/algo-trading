@@ -239,7 +239,7 @@ class WalkForwardEvaluator:
 
             try:
                 replay = self._run(spec, scope, source, parameters, capital)
-                result = replay.run if hasattr(replay, "run") else replay
+                result = getattr(replay, "run") if hasattr(replay, "run") and hasattr(getattr(replay, "run"), "metrics") else replay
                 param_key = json.dumps(parameters, sort_keys=True, default=str)
                 if trial_id:
                     metrics_dict = {
@@ -247,7 +247,7 @@ class WalkForwardEvaluator:
                         "max_drawdown": float(result.metrics.max_drawdown) if getattr(result.metrics, "max_drawdown", None) is not None else None,
                         "cagr": float(result.metrics.cagr) if getattr(result.metrics, "cagr", None) is not None else None,
                         "total_return": float(result.metrics.total_return) if getattr(result.metrics, "total_return", None) is not None else None,
-                        "run_id": getattr(result, "run_id", None),
+                        "run_id": str(getattr(result, "run_id", "")) if getattr(result, "run_id", None) is not None else None,
                     }
                     self.db.transition_research_trial(trial_id, "SUCCEEDED", metrics=metrics_dict)
                     candidate_trial_ids[param_key] = trial_id

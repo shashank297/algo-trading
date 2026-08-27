@@ -445,11 +445,7 @@ def test_walk_forward_budget_exhaustion_blocks_candidate_execution(test_db: Duck
     def mock_run(s: Any, scope: Any, src: Any, params: dict[str, Any], cap: float) -> Any:
         nonlocal execution_count
         execution_count += 1
-        res = MagicMock()
-        res.metrics.sharpe = 1.0
-        res.metrics.max_drawdown = 0.10
-        res.run_id = f"run_{execution_count}"
-        return res
+        return MockRunResult(sharpe=1.0, max_drawdown=0.10, run_id=f"run_{execution_count}")
 
     mock_source = MagicMock()
     mock_source.data_hash = "mock_data_hash"
