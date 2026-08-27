@@ -52,6 +52,7 @@ def admit_and_promote_dataset(
     target_adjustment: PriceAdjustment = PriceAdjustment.SPLIT_ADJUSTED,
     policy: SourceSemanticsPolicy | None = None,
     raw_dataset_id: str | None = None,
+    available_at: datetime | None = None,
 ) -> CanonicalDatasetResult:
     """Institutional Ground-Truth Gateway: validates semantics, applies canonical adjustments, and stores canonical bars."""
     active_policy = policy or SourceSemanticsPolicy()
@@ -136,7 +137,10 @@ def admit_and_promote_dataset(
         adjustment=target_adjustment.value,
         provider_name=snapshot.provenance.provider_name,
         dataset_id=snapshot.dataset_id,
+        available_at=available_at,
     )
+    if available_at is not None:
+        db.record_market_dataset_availability(snapshot.dataset_id, available_at)
 
     return CanonicalDatasetResult(
         raw_dataset_id=parent_id,
@@ -160,6 +164,7 @@ def ingest_raw_provider_dataset(
     declared_adjustment: PriceAdjustment | None = None,
     timezone_name: str = "Asia/Kolkata",
     retrieved_at: datetime | None = None,
+    available_at: datetime | None = None,
     raw_payload: str | bytes | None = None,
     db: DuckDBManager,
     policy: SourceSemanticsPolicy | None = None,
@@ -277,6 +282,7 @@ def ingest_raw_provider_dataset(
         target_adjustment=target_adjustment,
         policy=policy,
         raw_dataset_id=raw_id,
+        available_at=available_at,
     )
 
     if promotion.status == SourceValidationStatus.VERIFIED or (promotion.bars is not None and not promotion.bars.empty):

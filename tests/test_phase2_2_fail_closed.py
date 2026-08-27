@@ -40,6 +40,12 @@ def _seed_certified_source(db: DuckDBManager, dataset_id: str, bars: pd.DataFram
                VALUES ('RELIANCE', '1m', ?, ?, ?, 0, '{}', CURRENT_TIMESTAMP)""",
             [dataset_id, cert_id, check],
         )
+    availability = bars["timestamp"].iloc[-1].to_pydatetime()
+    db.record_market_dataset_availability(dataset_id, availability)
+    db.record_historical_candle_availability_batch(
+        dataset_id, "RELIANCE", "NSE", "1m",
+        [(timestamp.to_pydatetime(), timestamp.to_pydatetime()) for timestamp in bars["timestamp"]],
+    )
 
 
 def _bars(count: int) -> pd.DataFrame:

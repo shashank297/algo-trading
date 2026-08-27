@@ -370,6 +370,12 @@ class SessionBarResampler:
             )
 
         # Build DataFrame of derived bars
+        from trading_stack.bar_availability import bar_available_at
+
+        source_availability = {
+            pd.Timestamp(row.timestamp): pd.Timestamp(row.available_at).to_pydatetime()
+            for row in bars_1m.itertuples(index=False)
+        }
         derived_df = pd.DataFrame(
             [
                 {
@@ -379,6 +385,14 @@ class SessionBarResampler:
                     "low": bar.low,
                     "close": bar.close,
                     "volume": bar.volume,
+                    "available_at": max(
+                        bar_available_at(pd.Timestamp(bar.timestamp).to_pydatetime(), target_timeframe, calendar),
+                        max(
+                            available_at for source_timestamp, available_at in source_availability.items()
+                            if pd.Timestamp(bar.timestamp) <= source_timestamp
+                            < pd.Timestamp(bar_available_at(pd.Timestamp(bar.timestamp).to_pydatetime(), target_timeframe, calendar))
+                        ),
+                    ),
                 }
                 for bar in resampled
             ]

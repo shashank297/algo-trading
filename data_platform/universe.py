@@ -244,8 +244,7 @@ class PointInTimeUniverseManager:
                 knowledge_timestamp = knowledge_timestamp.tz_localize("Asia/Kolkata")
             knowledge_date = knowledge_timestamp.date()
             query += """ AND (
-                pit.known_from IS NULL
-                OR pit.known_from < ?
+                pit.known_from < ?
                 OR (pit.known_from = ? AND knowledge.known_at IS NOT NULL AND knowledge.known_at <= ?)
             )"""
             params.extend([knowledge_date.isoformat(), knowledge_date.isoformat(), knowledge_timestamp.isoformat()])

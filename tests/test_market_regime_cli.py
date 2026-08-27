@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import pandas as pd
+import pytest
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from research import main
@@ -19,6 +21,13 @@ def _empty_regime_bars_result() -> dict:
     }
 
 
+def test_cli_market_regime_rejects_configured_universe() -> None:
+    """Historical regime evaluation must not read today's configured membership."""
+    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager"):
+        with pytest.raises(ValueError, match="authoritative PIT universe identity"):
+            main(["--command", "market-regime", "--universe-snapshot", "CONFIGURED_UNIVERSE"])
+
+
 def test_cli_market_regime_eod(capsys):
     """Test research.py CLI with --command market-regime in EOD mode."""
     test_argv = [
@@ -28,9 +37,13 @@ def test_cli_market_regime_eod(capsys):
         "EOD",
         "--as-of",
         "2026-08-27",
+        "--universe-snapshot",
+        "TEST_PIT",
     ]
 
-    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls:
+    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls, patch(
+        "research.PointInTimeUniverseManager.get_constituents", return_value=[SimpleNamespace(symbol="TEST")],
+    ):
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         # Mock load_regime_bars to return empty certified result (produces INSUFFICIENT_CONTEXT)
@@ -63,9 +76,13 @@ def test_cli_market_regime_intraday(capsys):
         "2026-08-27",
         "--decision-time",
         "2026-08-27T10:00:00+05:30",
+        "--universe-snapshot",
+        "TEST_PIT",
     ]
 
-    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls:
+    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls, patch(
+        "research.PointInTimeUniverseManager.get_constituents", return_value=[SimpleNamespace(symbol="TEST")],
+    ):
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         mock_db.load_regime_bars.return_value = {

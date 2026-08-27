@@ -115,7 +115,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if requested_universe:
             universe = requested_universe
-        elif args.universe_snapshot != "CONFIGURED_UNIVERSE":
+        elif args.universe_snapshot != "CONFIGURED_UNIVERSE" and args.command != "market-regime":
             rows = db.conn.execute(
                 """
                 SELECT provider_symbol
@@ -262,6 +262,12 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "market-regime":
             from trading_stack.market_regime import MarketContextType, MarketRegimeEngine
 
+            if args.universe_snapshot == "CONFIGURED_UNIVERSE":
+                raise ValueError(
+                    "market-regime requires an authoritative PIT universe identity; "
+                    "CONFIGURED_UNIVERSE is not valid for historical causal breadth."
+                )
+
             as_of_str = args.as_of or datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
             context_type = MarketContextType(args.context.upper())
             decision_time_str = args.decision_time
@@ -271,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     decision_time_str = f"{as_of_str}T15:30:00+05:30"
 
-            if not requested_universe and args.universe_snapshot != "CONFIGURED_UNIVERSE":
+            if not requested_universe:
                 pit_members = PointInTimeUniverseManager.get_constituents(
                     db, args.universe_snapshot, as_of_str, as_of_knowledge=decision_time_str,
                 )
@@ -329,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
                     universe_manifest_members.append({"symbol": sym, "usable": False, "reason": "NO_CAUSAL_CERTIFIED_BARS"})
             universe_manifest_members.sort(key=lambda member: member["symbol"])
             universe_manifest = {
-                "universe_name": args.universe_snapshot if args.universe_snapshot != "CONFIGURED_UNIVERSE" else None,
+                "universe_name": args.universe_snapshot,
                 "members": universe_manifest_members, "total_member_count": len(universe),
                 "usable_member_count": len(universe_daily), "cutoff": decision_time_str,
             }
@@ -352,8 +358,7 @@ def main(argv: list[str] | None = None) -> int:
                 evidence_metadata={
                     "universe_snapshot_id": (
                         args.universe_snapshot
-                        if args.universe_snapshot != "CONFIGURED_UNIVERSE"
-                        else None
+                        if args.universe_snapshot != "CONFIGURED_UNIVERSE" else None
                     ),
                     # Certified dataset provenance for audit hash
                     "benchmark_dataset_id": bench_result["dataset_id"],

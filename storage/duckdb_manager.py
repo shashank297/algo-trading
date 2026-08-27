@@ -81,6 +81,84 @@ class DuckDBManager:
             logger.exception("Failed to initialize DuckDB schema: {}", exc)
             raise
 
+    @staticmethod
+    def _availability_timestamp(value: datetime | str) -> datetime:
+        """Normalize an explicit, timezone-aware information-availability time."""
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is None:
+            raise ValueError("available_at must be timezone-aware")
+        return timestamp.to_pydatetime()
+
+    def record_market_dataset_availability(
+        self, dataset_id: str, available_at: datetime | str,
+    ) -> None:
+        """Persist immutable source-publication availability for a dataset."""
+        timestamp = self._availability_timestamp(available_at)
+        existing = self.conn.execute(
+            "SELECT available_at FROM market_dataset_availability WHERE dataset_id = ?", [dataset_id]
+        ).fetchone()
+        if existing is not None:
+            if pd.Timestamp(existing[0]) != pd.Timestamp(timestamp):
+                raise ValueError(f"Conflicting immutable dataset availability for {dataset_id}")
+            return
+        self.conn.execute(
+            "INSERT INTO market_dataset_availability (dataset_id, available_at) VALUES (?, ?)",
+            [dataset_id, timestamp],
+        )
+
+    def get_market_dataset_availability(self, dataset_id: str) -> datetime | None:
+        """Return immutable dataset availability, if recorded."""
+        row = self.conn.execute(
+            "SELECT available_at FROM market_dataset_availability WHERE dataset_id = ?", [dataset_id]
+        ).fetchone()
+        return pd.Timestamp(row[0]).to_pydatetime() if row else None
+
+    def record_historical_candle_availability(
+        self, dataset_id: str, symbol: str, exchange: str, timeframe: str,
+        timestamp: datetime | str, available_at: datetime | str,
+    ) -> None:
+        """Persist immutable source-publication availability for one candle."""
+        bar_timestamp = self._availability_timestamp(timestamp)
+        evidence_timestamp = self._availability_timestamp(available_at)
+        key = [dataset_id, symbol, exchange, timeframe, bar_timestamp]
+        existing = self.conn.execute(
+            """SELECT available_at FROM historical_candle_availability
+               WHERE dataset_id = ? AND symbol = ? AND exchange = ? AND timeframe = ? AND timestamp = ?""",
+            key,
+        ).fetchone()
+        if existing is not None:
+            if pd.Timestamp(existing[0]) != pd.Timestamp(evidence_timestamp):
+                raise ValueError(f"Conflicting immutable candle availability for {dataset_id}/{symbol}/{timeframe}")
+            return
+        self.conn.execute(
+            """INSERT INTO historical_candle_availability
+               (dataset_id, symbol, exchange, timeframe, timestamp, available_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [*key, evidence_timestamp],
+        )
+
+    def record_historical_candle_availability_batch(
+        self, dataset_id: str, symbol: str, exchange: str, timeframe: str,
+        records: list[tuple[datetime | str, datetime | str]],
+    ) -> None:
+        """Persist a deterministic batch of immutable candle availability evidence."""
+        for timestamp, available_at in records:
+            self.record_historical_candle_availability(
+                dataset_id, symbol, exchange, timeframe, timestamp, available_at,
+            )
+
+    def get_historical_candle_availability(
+        self, dataset_id: str, symbol: str, exchange: str, timeframe: str, timestamp: datetime | str,
+    ) -> datetime | None:
+        """Return immutable candle availability, if recorded."""
+        bar_timestamp = self._availability_timestamp(timestamp)
+        row = self.conn.execute(
+            """SELECT available_at FROM historical_candle_availability
+               WHERE dataset_id = ? AND symbol = ? AND exchange = ? AND timeframe = ? AND timestamp = ?""",
+            [dataset_id, symbol, exchange, timeframe, bar_timestamp],
+        ).fetchone()
+        return pd.Timestamp(row[0]).to_pydatetime() if row else None
+
     def upsert_candles(
         self,
         df: pd.DataFrame,
@@ -91,6 +169,7 @@ class DuckDBManager:
         adjustment: str = "UNADJUSTED",
         provider_name: str | None = None,
         dataset_id: str | None = None,
+        available_at: datetime | str | None = None,
     ) -> int:
         """Batch insert candles, ignoring duplicates by primary key.
 
@@ -157,10 +236,8 @@ class DuckDBManager:
         insert_df["adjustment"] = str(adjustment).upper()
         insert_df["provider_name"] = provider_name
         insert_df["dataset_id"] = dataset_id
-        if "available_at" not in insert_df.columns:
-            insert_df["available_at"] = None
         insert_df = insert_df[
-            ["symbol", "token", "exchange", "timeframe", "timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id", "available_at"]
+            ["symbol", "token", "exchange", "timeframe", "timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id"]
         ]
 
         table_name = f"temp_historical_candles_{uuid.uuid4().hex}"
@@ -232,7 +309,7 @@ class DuckDBManager:
                         volume,
                         adjustment,
                         provider_name,
-                        dataset_id, available_at
+                        dataset_id
                     )
                     SELECT
                         symbol,
@@ -247,10 +324,17 @@ class DuckDBManager:
                         volume,
                         adjustment,
                         provider_name,
-                        dataset_id, available_at
+                        dataset_id
                     FROM {table_name}
                     """
                 )
+
+                if dataset_id is not None and available_at is not None:
+                    evidence_time = self._availability_timestamp(available_at)
+                    self.record_historical_candle_availability_batch(
+                        dataset_id, symbol, exchange, timeframe,
+                        [(timestamp, evidence_time) for timestamp in insert_df["timestamp"]],
+                    )
 
                 provenance_updates = 0
                 if provider_name is not None or dataset_id is not None:
@@ -2290,13 +2374,26 @@ class DuckDBManager:
         if end_ts is not None:
             conditions.append("timestamp < ?")
             params.append(end_ts)
+        dataset_available_at = self.get_market_dataset_availability(source_dataset_id)
+        if dataset_available_at is None:
+            raise ValueError("Source dataset lacks immutable availability evidence.")
         bars = self.conn.execute(
-            "SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, dataset_id "
-            f"FROM historical_candles WHERE {' AND '.join(conditions)} ORDER BY timestamp", params
+            """SELECT candles.symbol, candles.exchange, candles.timeframe, candles.timestamp,
+                      candles.open, candles.high, candles.low, candles.close, candles.volume,
+                      candles.adjustment, candles.dataset_id, availability.available_at
+               FROM historical_candles candles
+               INNER JOIN historical_candle_availability availability
+                 ON availability.dataset_id = candles.dataset_id
+                AND availability.symbol = candles.symbol
+                AND availability.exchange = candles.exchange
+                AND availability.timeframe = candles.timeframe
+                AND availability.timestamp = candles.timestamp
+               WHERE """ + " AND ".join(conditions).replace("dataset_id", "candles.dataset_id").replace("symbol", "candles.symbol").replace("exchange", "candles.exchange").replace("timeframe", "candles.timeframe").replace("timestamp", "candles.timestamp") + " ORDER BY candles.timestamp", params
         ).df()
         if bars.empty:
             raise ValueError("No authoritative 1m source bars exist for the requested range.")
-        return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash, "provider_token": str(token or "DERIVED")}
+        return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash,
+                "provider_token": str(token or "DERIVED"), "dataset_available_at": dataset_available_at}
 
     def _has_authoritative_dq_certification(self, dataset_id: str, content_hash: str) -> tuple[bool, str | None]:
         """Return whether a dataset has Phase 2.2 hash-bound DQ evidence."""
@@ -2344,6 +2441,10 @@ class DuckDBManager:
         frame["adjustment"] = certification.adjustment_basis
         frame["provider_name"] = "derived"
         frame["dataset_id"] = certification.derived_dataset_id
+        if "available_at" not in frame.columns:
+            raise ValueError("Derived admission requires per-bar causal availability evidence.")
+        availability_values = [self._availability_timestamp(value) for value in frame["available_at"]]
+        dataset_available_at = max(availability_values)
         table_name = f"temp_derived_{uuid.uuid4().hex}"
         try:
             with self.transaction():
@@ -2373,6 +2474,12 @@ class DuckDBManager:
                         content_hash, dq_status, dq_report_json, created_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     [row[key] for key in ("derived_dataset_id", "source_dataset_ids", "source_content_hashes", "symbol", "exchange", "timeframe", "adjustment_basis", "resampler_version", "calendar_version", "start_ts", "end_ts", "row_count", "content_hash", "dq_status", "dq_report_json", "created_at")],
+                )
+                self.record_market_dataset_availability(certification.derived_dataset_id, dataset_available_at)
+                self.record_historical_candle_availability_batch(
+                    certification.derived_dataset_id, certification.symbol, certification.exchange,
+                    certification.timeframe,
+                    list(zip(frame["timestamp"].tolist(), availability_values)),
                 )
                 checks_json = json.dumps({"dataset_content_hash": certification.content_hash, "derived_report": certification.dq_report}, sort_keys=True, default=str)
                 now = datetime.now(timezone.utc)
@@ -2800,8 +2907,9 @@ class DuckDBManager:
                     breadth_score, dispersion_score, liquidity_score, stress_score,
                     input_evidence_json, input_evidence_hash, model_version,
                     policy_version, policy_hash, calendar_version,
-                    missing_evidence_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    missing_evidence_json, input_evidence_manifest_json,
+                    component_evidence_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     data["regime_id"],
@@ -2825,6 +2933,8 @@ class DuckDBManager:
                     data["policy_hash"],
                     data["calendar_version"],
                     data["missing_evidence_json"],
+                    data.get("input_evidence_manifest_json"),
+                    data.get("component_evidence_json"),
                     data["created_at"],
                 ],
             )

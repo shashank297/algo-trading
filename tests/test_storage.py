@@ -29,6 +29,25 @@ class DuckDBManagerTests(unittest.TestCase):
         self.manager.close()
         self.temp_dir.cleanup()
 
+    def test_availability_evidence_is_immutable_and_idempotent(self) -> None:
+        """Companion availability records reject contradictory causal timestamps."""
+        available_at = datetime(2025, 1, 2, 15, 30, tzinfo=IST)
+        timestamp = datetime(2025, 1, 2, 15, 29, tzinfo=IST)
+        self.manager.record_market_dataset_availability("dataset-a", available_at)
+        self.manager.record_market_dataset_availability("dataset-a", available_at)
+        self.manager.record_historical_candle_availability(
+            "dataset-a", "NIFTY", "NSE", "1m", timestamp, available_at,
+        )
+        with self.assertRaises(ValueError):
+            self.manager.record_market_dataset_availability(
+                "dataset-a", datetime(2025, 1, 2, 15, 31, tzinfo=IST),
+            )
+        with self.assertRaises(ValueError):
+            self.manager.record_historical_candle_availability(
+                "dataset-a", "NIFTY", "NSE", "1m", timestamp,
+                datetime(2025, 1, 2, 15, 31, tzinfo=IST),
+            )
+
     def test_initialize_schema_creates_all_tables(self) -> None:
         """The database should contain the Phase 1 tables and the new strategy tables."""
 
