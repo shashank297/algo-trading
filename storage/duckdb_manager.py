@@ -2226,6 +2226,136 @@ class DuckDBManager:
     # Phase 2.2 — Derived dataset lineage and cross-provider verification
     # ------------------------------------------------------------------
 
+    def load_certified_1m_source(
+        self, *, source_dataset_id: str, symbol: str, exchange: str,
+        start_ts: datetime | None = None, end_ts: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Load one exact canonical 1m dataset only after authoritative admission checks."""
+        row = self.conn.execute(
+            """SELECT symbol, canonical_symbol, exchange, timeframe, provider_token,
+                      adjustment, transformation_hash, raw_hash, status, lifecycle_status
+               FROM market_datasets WHERE dataset_id = ?""",
+            [source_dataset_id],
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Unknown source dataset {source_dataset_id}.")
+        ds_symbol, canonical_symbol, ds_exchange, timeframe, token, adjustment, transformed, raw, status, lifecycle = row
+        if str(timeframe) != "1m" or str(status) != "VERIFIED" or str(lifecycle) != "CANONICAL_PROMOTED":
+            raise ValueError("Source dataset must be exactly 1m, VERIFIED, and CANONICAL_PROMOTED.")
+        if str(ds_symbol or canonical_symbol or "") != symbol or str(ds_exchange) != exchange:
+            raise ValueError("Source dataset symbol/exchange does not match the requested derivation.")
+        content_hash = str(transformed or raw or "").strip()
+        if not content_hash:
+            raise ValueError("Source dataset has no immutable content hash.")
+        certs = self.conn.execute(
+            """SELECT certification_id, checks_json FROM data_quality_certifications
+               WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0
+               ORDER BY completed_at DESC""", [source_dataset_id]
+        ).fetchall()
+        required = {"schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"}
+        valid_cert = False
+        for cert_id, checks_json in certs:
+            try:
+                bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
+            except json.JSONDecodeError:
+                continue
+            checks = self.conn.execute(
+                "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?", [cert_id]
+            ).fetchall()
+            if bound_hash == content_hash and len(checks) == 6 and {str(c[0]) for c in checks if int(c[1]) == 0} == required:
+                valid_cert = True
+                break
+        if not valid_cert:
+            raise ValueError("Source dataset lacks DQ certification bound to its immutable hash.")
+        conditions = ["dataset_id = ?", "symbol = ?", "exchange = ?", "timeframe = '1m'"]
+        params: list[Any] = [source_dataset_id, symbol, exchange]
+        if start_ts is not None:
+            conditions.append("timestamp >= ?")
+            params.append(start_ts)
+        if end_ts is not None:
+            conditions.append("timestamp < ?")
+            params.append(end_ts)
+        bars = self.conn.execute(
+            "SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, dataset_id "
+            f"FROM historical_candles WHERE {' AND '.join(conditions)} ORDER BY timestamp", params
+        ).df()
+        if bars.empty:
+            raise ValueError("No authoritative 1m source bars exist for the requested range.")
+        return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash, "provider_token": str(token or "DERIVED")}
+
+    def persist_failed_derived_dataset(self, certification: "Any") -> None:
+        """Retain failed derived DQ evidence without admitting bars to research."""
+        if certification.dq_status != "DQ_FAILED":
+            raise ValueError("Only DQ_FAILED derivation attempts may use the forensic failure ledger.")
+        self.persist_derived_dataset(certification)
+
+    def persist_certified_derived_dataset(
+        self, *, certification: "Any", derived_bars: pd.DataFrame, source_provider_token: str,
+    ) -> None:
+        """Atomically admit a certified derived dataset with its bars and DQ evidence."""
+        if certification.dq_status != "CERTIFIED":
+            raise ValueError("Only CERTIFIED derived datasets may be admitted.")
+        if derived_bars.empty:
+            raise ValueError("Certified derived dataset cannot contain zero bars.")
+        row = certification.to_storage_row()
+        cert_id = f"derived-dq-{certification.derived_dataset_id}"
+        required = ["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"]
+        frame = derived_bars.copy()
+        frame["symbol"] = certification.symbol
+        frame["token"] = source_provider_token
+        frame["exchange"] = certification.exchange
+        frame["timeframe"] = certification.timeframe
+        frame["adjustment"] = certification.adjustment_basis
+        frame["provider_name"] = "derived"
+        frame["dataset_id"] = certification.derived_dataset_id
+        table_name = f"temp_derived_{uuid.uuid4().hex}"
+        try:
+            with self.transaction():
+                self.conn.register(table_name, frame)
+                self.conn.execute(
+                    f"""INSERT INTO historical_candles
+                       (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id)
+                       SELECT symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, provider_name, dataset_id
+                       FROM {table_name}"""
+                )
+                self.conn.execute(
+                    """INSERT INTO market_datasets
+                       (dataset_id, parent_dataset_id, dataset_stage, symbol, canonical_symbol, exchange, timeframe,
+                        provider_name, provider_token, declared_adjustment, adjustment, lifecycle_status, status,
+                        raw_hash, transformation_hash, hash_algorithm, hash_version, row_count, metadata_json)
+                       VALUES (?, ?, 'DERIVED', ?, ?, ?, ?, 'derived', ?, ?, ?, 'CANONICAL_PROMOTED', 'VERIFIED',
+                               ?, ?, 'SHA256', 'derived-session-v1', ?, ?)""",
+                    [certification.derived_dataset_id, certification.source_dataset_ids[0], certification.symbol,
+                     certification.symbol, certification.exchange, certification.timeframe, source_provider_token,
+                     certification.adjustment_basis, certification.adjustment_basis, certification.content_hash,
+                     certification.content_hash, certification.row_count, row["dq_report_json"]],
+                )
+                self.conn.execute(
+                    """INSERT INTO derived_datasets
+                       (derived_dataset_id, source_dataset_ids, source_content_hashes, symbol, exchange, timeframe,
+                        adjustment_basis, resampler_version, calendar_version, start_ts, end_ts, row_count,
+                        content_hash, dq_status, dq_report_json, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    [row[key] for key in ("derived_dataset_id", "source_dataset_ids", "source_content_hashes", "symbol", "exchange", "timeframe", "adjustment_basis", "resampler_version", "calendar_version", "start_ts", "end_ts", "row_count", "content_hash", "dq_status", "dq_report_json", "created_at")],
+                )
+                checks_json = json.dumps({"dataset_content_hash": certification.content_hash, "derived_report": certification.dq_report}, sort_keys=True, default=str)
+                now = datetime.now(timezone.utc)
+                self.conn.execute(
+                    """INSERT INTO data_quality_certifications
+                       (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+                       VALUES (?, ?, ?, 6, 0, ?, 'CERTIFIED', ?, ?)""",
+                    [cert_id, certification.derived_dataset_id, certification.resampler_version, checks_json, now, now],
+                )
+                for check_type in required:
+                    self.conn.execute(
+                        """INSERT INTO quality_report
+                           (symbol, timeframe, dataset_id, certification_id, check_type, issue_count, details, checked_at)
+                           VALUES (?, ?, ?, ?, ?, 0, '{}', ?)""",
+                        [certification.symbol, certification.timeframe, certification.derived_dataset_id, cert_id, check_type, now],
+                    )
+        finally:
+            self._safe_unregister(table_name)
+
     def persist_derived_dataset(self, certification: "Any") -> None:
         """Persist a :class:`~data_platform.resampling.DerivedDatasetCertification` to ``derived_datasets``.
 
@@ -2346,6 +2476,37 @@ class DuckDBManager:
         except Exception as exc:
             logger.error("get_canonical_1m_bars failed for dataset_id={}: {}", source_dataset_id, exc)
             raise
+
+    def load_provider_verification_dataset(
+        self, *, dataset_id: str, symbol: str, exchange: str, timeframe: str,
+        provider_name: str, require_canonical: bool, start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
+    ) -> pd.DataFrame:
+        """Load one identity-bound provider dataset for observational comparison."""
+        record = self.conn.execute(
+            """SELECT symbol, canonical_symbol, exchange, timeframe, provider_name, status, lifecycle_status
+               FROM market_datasets WHERE dataset_id = ?""", [dataset_id]
+        ).fetchone()
+        if not record:
+            raise ValueError(f"Unknown provider dataset {dataset_id}.")
+        ds_symbol, canonical_symbol, ds_exchange, ds_timeframe, ds_provider, status, lifecycle = record
+        if str(ds_symbol or canonical_symbol or "") != symbol or str(ds_exchange) != exchange or str(ds_timeframe) != timeframe:
+            raise ValueError("Provider dataset identity does not match requested symbol/exchange/timeframe.")
+        if str(ds_provider) != provider_name:
+            raise ValueError("Provider dataset does not belong to the requested provider.")
+        if require_canonical and (str(status) != "VERIFIED" or str(lifecycle) != "CANONICAL_PROMOTED"):
+            raise ValueError("Primary provider dataset must be VERIFIED and CANONICAL_PROMOTED.")
+        conditions = ["dataset_id = ?", "symbol = ?", "exchange = ?", "timeframe = ?"]
+        params: list[Any] = [dataset_id, symbol, exchange, timeframe]
+        if start_ts is not None:
+            conditions.append("timestamp >= ?")
+            params.append(start_ts)
+        if end_ts is not None:
+            conditions.append("timestamp < ?")
+            params.append(end_ts)
+        return self.conn.execute(
+            "SELECT * FROM historical_candles WHERE " + " AND ".join(conditions) + " ORDER BY timestamp", params
+        ).df()
 
     def persist_reconciliation(
         self,

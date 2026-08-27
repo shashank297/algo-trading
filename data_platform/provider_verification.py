@@ -196,7 +196,7 @@ class CrossProviderVerifier:
         severity: VerificationSeverity = VerificationSeverity.WARNING,
         tolerance: dict[str, float] | None = None,
         db: "DuckDBManager",
-        primary_dataset_id: str = "unknown",
+        primary_dataset_id: str | None = None,
         secondary_dataset_id: str | None = None,
     ) -> ProviderVerificationReport:
         """Run cross-provider comparison and persist results.
@@ -224,6 +224,8 @@ class CrossProviderVerifier:
             ProviderDataVerificationError: If ``severity=BLOCKING`` and any bar
                                            produces a DISAGREEMENT result.
         """
+        if not primary_dataset_id or not secondary_dataset_id:
+            raise ValueError("Provider verification requires explicit primary and secondary dataset IDs.")
         active_tolerance = _build_tolerance(tolerance)
         reconciliation_id = str(uuid.uuid4())
 
@@ -303,6 +305,7 @@ class CrossProviderVerifier:
                     secondary_ohlcv=secondary_ohlcv,
                     field_deltas=field_deltas,
                     severity=severity,
+                    defer_blocking=True,
                 )
 
         overall_status = _compute_overall_status(
@@ -332,6 +335,12 @@ class CrossProviderVerifier:
         # Persist to storage — primary data untouched
         comparison_date = primary_df["timestamp"].iloc[0] if len(primary_df) > 0 else None
         db.persist_reconciliation(report, comparison_date=comparison_date)
+
+        if severity == VerificationSeverity.BLOCKING and bars_disagreement:
+            raise ProviderDataVerificationError(
+                f"DATA_VERIFICATION_WARNING: provider disagreement persisted in blocking reconciliation {reconciliation_id} "
+                f"with {bars_disagreement} disagreement(s)."
+            )
 
         logger.info(
             "Provider verification {} {} {}: match={} tol_match={} disagree={} unavail={} → {}",
@@ -428,6 +437,7 @@ def _handle_disagreement(
     secondary_ohlcv: dict[str, float],
     field_deltas: dict[str, float],
     severity: VerificationSeverity,
+    defer_blocking: bool = False,
 ) -> None:
     """Log or raise on a DISAGREEMENT — never blend the values."""
     msg = (
@@ -437,11 +447,12 @@ def _handle_disagreement(
         f"relative_deltas={field_deltas}. "
         f"Primary data is NOT modified."
     )
-    if severity == VerificationSeverity.BLOCKING:
+    if severity == VerificationSeverity.BLOCKING and not defer_blocking:
         raise ProviderDataVerificationError(msg)
     else:
         import warnings  # noqa: PLC0415
-        warnings.warn(msg, ProviderDataVerificationWarning, stacklevel=6)
+        if severity == VerificationSeverity.WARNING:
+            warnings.warn(msg, ProviderDataVerificationWarning, stacklevel=6)
         logger.warning(msg)
 
 

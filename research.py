@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from main import apply_env_overrides, configured_nse_calendar, load_yaml, validate_config, validate_symbols
 from ai_research import OpenAIResearchClient, ResearchGoal, ResearchWorkflow
@@ -41,7 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--strategy", default="trend_following", choices=StrategyRegistry.available())
     parser.add_argument("--strategies", default="", help="Comma-separated strategy names for mass research; defaults to --strategy.")
     parser.add_argument("--symbol", default=None, help="Trading symbol from config/symbols.yaml")
-    parser.add_argument("--timeframe", default="1d", choices=["1m", "1d"], help="Target timeframe")
+    parser.add_argument("--timeframe", default="1d", choices=["1m", "5m", "15m", "30m", "60m", "1d"], help="Target timeframe")
     parser.add_argument("--mode", default="vectorized", choices=["vectorized", "event-driven", "paper"], help="Execution mode")
     parser.add_argument("--capital", type=float, default=100_000.0, help="Starting capital")
     parser.add_argument("--params", default="{}", help="JSON encoded strategy parameters")
@@ -66,9 +68,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--status", default=None, help="Filter research trials by status (e.g. PLANNED, RUNNING, SUCCEEDED, FAILED, INVALIDATED, CANCELLED)")
     # Phase 2.2 — Multi-timeframe data
     parser.add_argument("--source-dataset", default=None, help="Canonical source dataset_id for build-derived-bars")
-    parser.add_argument("--derived-timeframe", default="15m", choices=["5m", "15m", "30m", "60m"], help="Target derived timeframe")
+    parser.add_argument("--derived-timeframe", default=None, choices=["5m", "15m", "30m", "60m"], help="Deprecated alias for --timeframe when building derived bars")
     parser.add_argument("--primary-provider", default=None, help="Primary (canonical) provider name for verify-market-provider")
     parser.add_argument("--secondary-provider", default=None, help="Secondary (observational) provider name for verify-market-provider")
+    parser.add_argument("--primary-dataset", default=None, help="Canonical primary dataset_id for verify-market-provider")
+    parser.add_argument("--secondary-dataset", default=None, help="Observational secondary dataset_id for verify-market-provider")
     parser.add_argument("--verification-severity", default="WARNING", choices=["WARNING", "BLOCKING"], help="How to handle provider disagreements")
     parser.add_argument("--start-date", default=None, help="Start date for data range (YYYY-MM-DD)")
     parser.add_argument("--end-date", default=None, help="End date for data range (YYYY-MM-DD)")
@@ -140,34 +144,25 @@ def main(argv: list[str] | None = None) -> int:
             if not args.symbol:
                 parser.error("--symbol is required for build-derived-bars")
 
-            bars_1m = db.get_canonical_1m_bars(
-                source_dataset_id=args.source_dataset,
-                symbol=args.symbol,
-            )
-            if bars_1m.empty:
-                raise ValueError(
-                    f"No canonical 1m bars found for source_dataset={args.source_dataset}, "
-                    f"symbol={args.symbol}."
-                )
-
-            source_adj = str(bars_1m["adjustment"].iloc[0]) if "adjustment" in bars_1m.columns else "SPLIT_ADJUSTED"
-            # Compute source content hash for lineage
-            from data_platform.resampling import _compute_derived_content_hash  # noqa: PLC0415
-            source_hash = _compute_derived_content_hash(bars_1m)
+            target_timeframe = args.derived_timeframe or args.timeframe
+            if args.derived_timeframe and args.timeframe != "1d" and args.derived_timeframe != args.timeframe:
+                parser.error("--derived-timeframe conflicts with --timeframe")
+            if target_timeframe not in {"5m", "15m", "30m", "60m"}:
+                parser.error("build-derived-bars requires --timeframe 5m, 15m, 30m, or 60m")
+            start_ts, end_ts = _local_date_range(args.start_date, args.end_date)
 
             cal = india_calendar
             resampler = SessionBarResampler()
             try:
                 cert = resampler.derive_and_certify(
                     source_dataset_id=args.source_dataset,
-                    bars_1m=bars_1m,
-                    target_timeframe=args.derived_timeframe,
+                    target_timeframe=target_timeframe,
                     calendar=cal,
-                    source_adjustment=source_adj,
-                    source_content_hash=source_hash,
                     db=db,
                     symbol=args.symbol,
-                    exchange=str(bars_1m["exchange"].iloc[0]) if "exchange" in bars_1m.columns else "NSE",
+                    exchange="NSE",
+                    start_ts=start_ts,
+                    end_ts=end_ts,
                 )
                 print(json.dumps({
                     "status": cert.dq_status,
@@ -196,20 +191,27 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--primary-provider is required for verify-market-provider")
             if not args.secondary_provider:
                 parser.error("--secondary-provider is required for verify-market-provider")
+            if not args.primary_dataset or not args.secondary_dataset:
+                parser.error("--primary-dataset and --secondary-dataset are required for verify-market-provider")
 
-            # Load primary bars from DB
-            sql_primary = (
-                "SELECT * FROM historical_candles "
-                "WHERE symbol = ? AND timeframe = ? AND provider_name = ? ORDER BY timestamp"
+            target_timeframe = args.derived_timeframe or args.timeframe
+            if args.derived_timeframe and args.timeframe != "1d" and args.derived_timeframe != args.timeframe:
+                parser.error("--derived-timeframe conflicts with --timeframe")
+            start_ts, end_ts = _local_date_range(args.start_date, args.end_date)
+
+            primary_bars = db.load_provider_verification_dataset(
+                dataset_id=args.primary_dataset, symbol=args.symbol, exchange="NSE", timeframe=target_timeframe,
+                provider_name=args.primary_provider, require_canonical=True, start_ts=start_ts, end_ts=end_ts,
             )
-            primary_bars = db.conn.execute(sql_primary, [args.symbol, args.derived_timeframe, args.primary_provider]).df()
             if primary_bars.empty:
                 raise ValueError(
                     f"No primary bars found for {args.symbol}/{args.derived_timeframe}/{args.primary_provider}."
                 )
 
-            # Load secondary bars from DB (may be empty → UNAVAILABLE)
-            secondary_bars = db.conn.execute(sql_primary, [args.symbol, args.derived_timeframe, args.secondary_provider]).df()
+            secondary_bars = db.load_provider_verification_dataset(
+                dataset_id=args.secondary_dataset, symbol=args.symbol, exchange="NSE", timeframe=target_timeframe,
+                provider_name=args.secondary_provider, require_canonical=False, start_ts=start_ts, end_ts=end_ts,
+            )
 
             severity = VerificationSeverity(args.verification_severity)
             verifier = CrossProviderVerifier()
@@ -219,12 +221,14 @@ def main(argv: list[str] | None = None) -> int:
                     secondary_bars=secondary_bars if not secondary_bars.empty else None,
                     symbol=args.symbol,
                     exchange=str(primary_bars["exchange"].iloc[0]) if "exchange" in primary_bars.columns else "NSE",
-                    timeframe=args.derived_timeframe,
+                    timeframe=target_timeframe,
                     primary_provider=args.primary_provider,
                     secondary_provider=args.secondary_provider,
                     severity=severity,
                     tolerance=None,
                     db=db,
+                    primary_dataset_id=args.primary_dataset,
+                    secondary_dataset_id=args.secondary_dataset,
                 )
                 print(json.dumps({
                     "reconciliation_id": verif_report.reconciliation_id,
@@ -475,6 +479,20 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         db.close()
         project_logger.info("operation_finished duration_seconds={:.3f}", time.perf_counter() - started_at)
+
+
+def _local_date_range(start_date: str | None, end_date: str | None) -> tuple[datetime | None, datetime | None]:
+    """Translate inclusive local trading dates into a half-open UTC range."""
+    if not start_date and not end_date:
+        return None, None
+    if not start_date or not end_date:
+        raise ValueError("--start-date and --end-date must be supplied together.")
+    zone = ZoneInfo("Asia/Kolkata")
+    start = datetime.fromisoformat(start_date).replace(tzinfo=zone)
+    end = datetime.fromisoformat(end_date).replace(tzinfo=zone) + timedelta(days=1)
+    if end <= start:
+        raise ValueError("--end-date must not precede --start-date.")
+    return start.astimezone(ZoneInfo("UTC")), end.astimezone(ZoneInfo("UTC"))
 
 
 if __name__ == "__main__":

@@ -131,6 +131,7 @@ class TestCrossProviderVerifier:
             severity=VerificationSeverity.WARNING,
             db=db,
             primary_dataset_id="ds_primary_tol",
+            secondary_dataset_id="ds_secondary_tol",
         )
 
         assert report.bars_match == 0
@@ -166,6 +167,7 @@ class TestCrossProviderVerifier:
                 severity=VerificationSeverity.WARNING,
                 db=db,
                 primary_dataset_id="ds_primary_warn",
+                secondary_dataset_id="ds_secondary_warn",
             )
 
         assert report.bars_disagreement == 1
@@ -197,7 +199,12 @@ class TestCrossProviderVerifier:
                 severity=VerificationSeverity.BLOCKING,
                 db=db,
                 primary_dataset_id="ds_primary_block",
+                secondary_dataset_id="ds_secondary_block",
             )
+        persisted = db.get_reconciliations(symbol="RELIANCE", timeframe="5m")
+        assert len(persisted) == 1
+        assert persisted[0]["overall_status"] == "DISAGREEMENT"
+        assert persisted[0]["bars_disagreement"] == 1
 
     def test_unavailable_secondary_provider(self, verifier, db):
         """T033: If secondary bars are None, all bars are marked UNAVAILABLE and overall is UNAVAILABLE."""
@@ -219,6 +226,7 @@ class TestCrossProviderVerifier:
             severity=VerificationSeverity.WARNING,
             db=db,
             primary_dataset_id="ds_primary_unavail",
+            secondary_dataset_id="ds_secondary_unavail",
         )
 
         assert report.bars_match == 0
@@ -262,6 +270,7 @@ class TestCrossProviderVerifier:
                 severity=VerificationSeverity.WARNING,
                 db=db,
                 primary_dataset_id="ds_primary_noblend",
+                secondary_dataset_id="ds_secondary_noblend",
             )
 
         # 1. Primary DataFrame object was not altered in-place

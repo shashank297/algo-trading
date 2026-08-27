@@ -141,10 +141,23 @@ class DerivedBarDQCertifier:
 
         # Work on a copy with normalised timestamps
         df = derived_df.copy()
-        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+        df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
         for col in ("open", "high", "low", "close"):
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df["volume"] = pd.to_numeric(df["volume"], errors="coerce")
+
+        invalid_values = df[["timestamp", "open", "high", "low", "close", "volume"]].isna().any(axis=1)
+        non_finite = ~df[["open", "high", "low", "close", "volume"]].apply(
+            lambda column: column.map(lambda value: pd.notna(value) and float(value) == float(value) and abs(float(value)) != float("inf"))
+        ).all(axis=1)
+        negative_volume = df["volume"].notna() & (df["volume"] < 0)
+        non_positive_prices = df[["open", "high", "low", "close"]].notna().all(axis=1) & (df[["open", "high", "low", "close"]] <= 0).any(axis=1)
+        if invalid_values.any() or non_finite.any() or negative_volume.any() or non_positive_prices.any():
+            report.issues.append(
+                "Schema check FAILED: timestamps and OHLCV values must be finite; prices must be positive and volume non-negative."
+            )
+            report.schema_ok = False
+            return report
 
         # ----------------------------------------------------------------
         # Check 2: OHLC integrity
@@ -208,7 +221,7 @@ class DerivedBarDQCertifier:
             day_ts = ts_local[day_mask]
 
             before_session = (day_ts < window.start).sum()
-            after_session = (day_ts > window.end).sum()
+            after_session = (day_ts >= window.end).sum()
             if before_session or after_session:
                 out_of_session_count += int(before_session) + int(after_session)
                 report.issues.append(
@@ -220,7 +233,8 @@ class DerivedBarDQCertifier:
             report.session_aligned = True
 
         # ----------------------------------------------------------------
-        # Check 5: Missing expected buckets (informational; recorded not blocking)
+        # Check 5: Missing expected buckets.  This is an integrity failure: a
+        # certified derived dataset may not silently omit a complete bucket.
         # ----------------------------------------------------------------
         if self._target_minutes is not None:
             for trading_date in sorted(ts_local.dt.date.unique()):
@@ -239,8 +253,8 @@ class DerivedBarDQCertifier:
                         f"({expected_buckets - actual_buckets} missing)."
                     )
                     report.missing_buckets.append(msg)
-                    # Missing buckets are logged as warnings but do NOT block certification
-                    logger.warning(
+                    report.issues.append(msg)
+                    logger.error(
                         "DQ missing buckets: {} {} {} — {}",
                         symbol,
                         exchange,
@@ -275,7 +289,7 @@ class DerivedBarDQCertifier:
             and report.no_duplicates
             and report.session_aligned
             and report.timestamp_monotonic
-            # Missing buckets are WARNING only, not blocking
+            and not report.missing_buckets
         )
 
         log_level = "info" if report.certified else "error"

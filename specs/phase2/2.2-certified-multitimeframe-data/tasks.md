@@ -66,10 +66,19 @@
 
 ## Phase 10: Polish & Final Verification
 
-- [x] T038 Run `.\venv\Scripts\ruff.exe check .` and fix any issues
-- [x] T039 Run `.\venv\Scripts\mypy.exe data_platform storage research.py` and fix any type errors
-- [x] T040 Run `.\venv\Scripts\python.exe -m pytest -q` and verify full suite (428+ passed, all Phase 2.2 tests pass)
-- [x] T041 Push `phase2/2.2-certified-multitimeframe-data` branch and confirm CI green on exact SHA
+- [ ] T038 Run `.\venv\Scripts\ruff.exe check .` and fix any issues
+- [ ] T039 Run `.\venv\Scripts\mypy.exe data_platform storage research.py` and fix any type errors
+- [ ] T040 Run `.\venv\Scripts\python.exe -m pytest -q` and verify full suite (428+ passed, all Phase 2.2 tests pass)
+- [ ] T041 Push `phase2/2.2-certified-multitimeframe-data` branch and confirm CI green on exact SHA
+
+## Phase 11: Fail-Closed Remediation
+
+- [x] T042 Require source dataset identity, canonical lifecycle, immutable hash, and hash-bound DQ evidence before governed derivation.
+- [x] T043 Require exact consecutive source minutes; persist `DQ_FAILED` forensic evidence before raising.
+- [x] T044 Atomically admit certified derived candles, lineage, `market_datasets`, and authoritative DQ evidence.
+- [x] T045 Bind provider verification to explicit dataset identities and persist BLOCKING reports before raising.
+- [x] T046 Apply inclusive local-date CLI ranges and document `--timeframe` as the target timeframe.
+- [ ] T047 Complete full local and exact-SHA GitHub Actions verification before certifying this phase.
 
 ## Dependencies
 

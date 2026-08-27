@@ -11,7 +11,7 @@ The **Certified Multi-Timeframe Data Platform** extends the canonical market-dat
 The `SessionBarResampler` (`data_platform/resampling.py`) aggregates canonical, certified 1-minute bars into higher-timeframe bars subject to strict safety invariants:
 
 - **Session Awareness**: Resampling never crosses NSE session boundaries (09:15–15:30 IST) or combines different trading days.
-- **Incomplete Bucket Dropping**: Trailing partial buckets (e.g. remaining 15 minutes of a 375-minute day during 30m or 60m resampling) are dropped and never emitted.
+- **Complete Source Evidence**: Every emitted N-minute bucket contains exactly N consecutive valid 1-minute observations. Interior gaps, duplicate/misaligned minutes, invalid numerics, or an untrusted source fail closed. Only the unavoidable trailing partial session bucket is dropped.
 - **Authoritative OHLCV Aggregation**:
   - `open`: First authoritative open price in bucket.
   - `high`: Maximum authoritative high price in bucket.
@@ -35,7 +35,7 @@ Every derived dataset records complete provenance in the `derived_datasets` Duck
 - `calendar_version`: e.g. `builtin-v1`.
 - `adjustment_basis`: e.g. `SPLIT_ADJUSTED`.
 - `row_count`: Number of certified derived bars.
-- `content_hash`: SHA-256 hash computed deterministically over the derived bar sequence.
+- `content_hash`: SHA-256 hash computed deterministically over the derived bar sequence and exact source identity/hash, requested range, adjustment, calendar, resampler version, and timeframe.
 - `dq_status`: `CERTIFIED` or `DQ_FAILED`.
 
 Resampling is completely deterministic: identical source data + calendar + resampler version + timeframe reproduces the identical content hash.
@@ -53,7 +53,7 @@ The `DerivedBarDQCertifier` (`data_platform/dq_derived.py`) executes 6 validatio
 5. **Monotonicity**: Strict chronological timestamp ordering.
 6. **Completeness / Missing Buckets**: Audits gaps against expected session buckets.
 
-Certification fails closed: any integrity violation marks the dataset as `DQ_FAILED` and halts pipeline admission.
+Certification fails closed: any integrity violation creates durable `DQ_FAILED` forensic lineage evidence, writes no authoritative candles, and halts pipeline admission. A certified result is atomically registered in `historical_candles`, `derived_datasets`, `market_datasets`, and the authoritative DQ ledger.
 
 ---
 
@@ -71,7 +71,7 @@ The `CrossProviderVerifier` (`data_platform/provider_verification.py`) provides 
   - `UNAVAILABLE`: Secondary bar missing for given timestamp.
 - **Severity Modes**:
   - `WARNING`: Issues `DATA_VERIFICATION_WARNING` and logs reconciliation details.
-  - `BLOCKING`: Raises `ProviderDataVerificationError` to block research admission.
+  - `BLOCKING`: Persists the complete reconciliation first, then raises `ProviderDataVerificationError` to block research admission.
 
 Reconciliation summaries and per-bar audits are persisted to `cross_provider_reconciliations`.
 
@@ -84,16 +84,19 @@ Reconciliation summaries and per-bar audits are persisted to `cross_provider_rec
 .\venv\Scripts\python.exe research.py --command build-derived-bars \
     --source-dataset ds_canonical_1m_reliance \
     --symbol RELIANCE \
-    --derived-timeframe 5m
+    --timeframe 5m \
+    --start-date 2024-01-02 --end-date 2024-01-02
 ```
 
 ### Verify Cross-Provider Reconciliation
 ```powershell
 .\venv\Scripts\python.exe research.py --command verify-market-provider \
     --symbol RELIANCE \
-    --derived-timeframe 5m \
+    --timeframe 5m \
     --primary-provider angel_one \
     --secondary-provider nse_feed \
-    --source-dataset ds_canonical_1m_reliance \
+    --primary-dataset ds_canonical_5m_reliance \
+    --secondary-dataset ds_observational_5m_reliance \
+    --start-date 2024-01-02 --end-date 2024-01-02 \
     --verification-severity WARNING
 ```

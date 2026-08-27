@@ -278,6 +278,12 @@ class SessionBarResampler:
                 from datetime import timedelta  # noqa: PLC0415
                 # Compute UTC open timestamp for this bucket
                 bucket_open_utc = session_open_utc + timedelta(minutes=int(bucket_idx) * target_minutes)
+                expected = pd.date_range(bucket_open_utc, periods=target_minutes, freq="min", tz="UTC")
+                if len(group_sorted) != target_minutes or not pd.DatetimeIndex(group_sorted["_ts_utc"]).equals(expected):
+                    raise ResamplingError(
+                        f"Incomplete or misaligned source bucket at {bucket_open_utc.isoformat()}: "
+                        f"expected {target_minutes} consecutive 1m bars, got {len(group_sorted)}."
+                    )
 
                 result.append(
                     ResampledBar(
@@ -304,14 +310,13 @@ class SessionBarResampler:
         self,
         *,
         source_dataset_id: str,
-        bars_1m: pd.DataFrame,
         target_timeframe: str,
         calendar: "MarketCalendar",
-        source_adjustment: str,
-        source_content_hash: str,
         db: "DuckDBManager",
         symbol: str,
         exchange: str,
+        start_ts: datetime | None = None,
+        end_ts: datetime | None = None,
     ) -> DerivedDatasetCertification:
         """Resample, run DQ, compute content hash, register lineage, and persist derived bars.
 
@@ -342,7 +347,22 @@ class SessionBarResampler:
         """
         from data_platform.dq_derived import DerivedBarDQCertifier  # avoid circular import
 
-        resampled = self.resample(bars_1m, target_timeframe, calendar, source_adjustment)
+        source = db.load_certified_1m_source(
+            source_dataset_id=source_dataset_id, symbol=symbol, exchange=exchange,
+            start_ts=start_ts, end_ts=end_ts,
+        )
+        bars_1m = source["bars"]
+        source_adjustment = source["adjustment"]
+        source_content_hash = source["content_hash"]
+        derived_dataset_id = str(uuid.uuid4())
+        try:
+            resampled = self.resample(bars_1m, target_timeframe, calendar, source_adjustment)
+        except Exception as exc:
+            db.persist_failed_derived_dataset(self._failed_certification(
+                derived_dataset_id, source_dataset_id, source_content_hash, symbol, exchange,
+                target_timeframe, calendar, source_adjustment, start_ts, end_ts, str(exc),
+            ))
+            raise
 
         if not resampled:
             raise ResamplingError(
@@ -366,7 +386,9 @@ class SessionBarResampler:
 
         # DQ certification — fail closed
         certifier = DerivedBarDQCertifier(calendar=calendar, target_timeframe=target_timeframe)
-        dq_report = certifier.certify(derived_df, symbol=symbol, exchange=exchange)
+        dq_report = certifier.certify(
+            derived_df, symbol=symbol, exchange=exchange, derived_dataset_id=derived_dataset_id
+        )
 
         dq_status = "CERTIFIED" if dq_report.certified else "DQ_FAILED"
         if not dq_report.certified:
@@ -377,15 +399,25 @@ class SessionBarResampler:
                 source_dataset_id,
                 dq_report.issues,
             )
+            db.persist_failed_derived_dataset(self._failed_certification(
+                derived_dataset_id, source_dataset_id, source_content_hash, symbol, exchange,
+                target_timeframe, calendar, source_adjustment, start_ts, end_ts,
+                "; ".join(dq_report.issues), dq_report.to_dict(), len(derived_df),
+            ))
             raise RuntimeError(
                 f"DQ certification failed for derived {symbol} {target_timeframe}: "
                 f"{'; '.join(dq_report.issues)}"
             )
 
         # Compute deterministic content hash
-        content_hash = _compute_derived_content_hash(derived_df)
-
-        derived_dataset_id = str(uuid.uuid4())
+        content_hash = _compute_derived_content_hash(derived_df, {
+            "source_dataset_id": source_dataset_id,
+            "source_content_hash": source_content_hash,
+            "symbol": symbol, "exchange": exchange, "adjustment_basis": source_adjustment,
+            "target_timeframe": target_timeframe, "calendar_version": calendar.version,
+            "resampler_version": self.RESAMPLER_VERSION,
+            "requested_start": start_ts, "requested_end": end_ts,
+        })
 
         start_ts = derived_df["timestamp"].min()
         end_ts = derived_df["timestamp"].max()
@@ -412,22 +444,10 @@ class SessionBarResampler:
             dq_report=dq_report.to_dict(),
         )
 
-        # Persist derived bars to historical_candles
-
-        adj_value = source_adjustment
-        db.upsert_candles(
-            derived_df,
-            symbol=symbol,
-            token="DERIVED",
-            exchange=exchange,
-            timeframe=target_timeframe,
-            adjustment=adj_value,
-            provider_name="derived",
-            dataset_id=derived_dataset_id,
+        db.persist_certified_derived_dataset(
+            certification=certification, derived_bars=derived_df,
+            source_provider_token=source["provider_token"],
         )
-
-        # Persist lineage to derived_datasets
-        db.persist_derived_dataset(certification)
 
         logger.info(
             "Derived & certified: {} {} {} — {} bars, hash={}, id={}",
@@ -439,6 +459,23 @@ class SessionBarResampler:
             derived_dataset_id[:8],
         )
         return certification
+
+    def _failed_certification(
+        self, derived_dataset_id: str, source_dataset_id: str, source_content_hash: str,
+        symbol: str, exchange: str, timeframe: str, calendar: "MarketCalendar",
+        adjustment: str, start_ts: datetime | None, end_ts: datetime | None, issue: str,
+        dq_report: dict[str, Any] | None = None, row_count: int = 0,
+    ) -> DerivedDatasetCertification:
+        now = datetime.now(timezone.utc)
+        return DerivedDatasetCertification(
+            derived_dataset_id=derived_dataset_id, source_dataset_ids=[source_dataset_id],
+            source_content_hashes=[source_content_hash], symbol=symbol, exchange=exchange,
+            timeframe=timeframe, adjustment_basis=adjustment,
+            resampler_version=self.RESAMPLER_VERSION, calendar_version=calendar.version,
+            start_ts=start_ts or now, end_ts=end_ts or now, row_count=row_count,
+            content_hash="", dq_status="DQ_FAILED",
+            dq_report=dq_report or {"derived_dataset_id": derived_dataset_id, "certified": False, "issues": [issue]},
+        )
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -462,6 +499,15 @@ class SessionBarResampler:
 
         if bars.empty:
             raise ResamplingError("Source bars DataFrame is empty — cannot resample.")
+
+        timestamps = pd.to_datetime(bars["timestamp"], utc=True, errors="coerce")
+        if timestamps.isna().any() or timestamps.duplicated().any():
+            raise ResamplingError("Source timestamps must be valid UTC instants and unique.")
+        numeric = bars[["open", "high", "low", "close", "volume"]].apply(pd.to_numeric, errors="coerce")
+        if numeric.isna().any().any() or not numeric.apply(lambda c: c.map(lambda v: abs(float(v)) != float("inf")).all()).all():
+            raise ResamplingError("Source OHLCV values must be finite numeric values.")
+        if (numeric[["open", "high", "low", "close"]] <= 0).any().any() or (numeric["volume"] < 0).any():
+            raise ResamplingError("Source prices must be positive and volume must be non-negative.")
 
         # Reject mixed adjustment basis
         if "adjustment" in bars.columns:
@@ -516,7 +562,7 @@ class SessionBarResampler:
 # ---------------------------------------------------------------------------
 
 
-def _compute_derived_content_hash(derived_df: pd.DataFrame) -> str:
+def _compute_derived_content_hash(derived_df: pd.DataFrame, lineage: dict[str, Any] | None = None) -> str:
     """Compute a deterministic SHA256 hash of derived OHLCV content.
 
     Uses the same canonical JSON representation pattern as
@@ -531,8 +577,10 @@ def _compute_derived_content_hash(derived_df: pd.DataFrame) -> str:
         "%Y-%m-%dT%H:%M:%S+00:00"
     )
     clean = clean.sort_values("timestamp")
-    rows = clean.to_dict(orient="records")
-    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str)
+    payload = json.dumps(
+        {"bars": clean.to_dict(orient="records"), "lineage": lineage or {}},
+        sort_keys=True, separators=(",", ":"), default=str,
+    )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 

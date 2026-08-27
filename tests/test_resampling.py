@@ -259,17 +259,13 @@ class TestSpecialSession:
 # ---------------------------------------------------------------------------
 
 class TestMissingMinute:
-    def test_bucket_with_gap_aggregates_available_bars(self, resampler, calendar):
-        """T023: A 5m bucket with only 4 out of 5 1m bars still aggregates the 4 available."""
+    def test_bucket_with_gap_fails_closed(self, resampler, calendar):
+        """A complete 5m bucket cannot be derived from four source minutes."""
         bars = _make_1m_bars(trading_date="2024-01-02", n_minutes=375)
         # Remove bar index 2 (third 1m bar of the first 5m bucket)
         bars_with_gap = bars.drop(index=2).reset_index(drop=True)
-        result = resampler.resample(bars_with_gap, "5m", calendar, "SPLIT_ADJUSTED")
-
-        # First bucket now has 4 source bars
-        assert result[0].bucket_bar_count == 4
-        # Total bars is still 75 (bucket still exists, just has fewer source bars)
-        assert len(result) == 75
+        with pytest.raises(ResamplingError, match="Incomplete or misaligned"):
+            resampler.resample(bars_with_gap, "5m", calendar, "SPLIT_ADJUSTED")
 
 
 # ---------------------------------------------------------------------------
