@@ -1287,13 +1287,34 @@ class DuckDBManager:
                     if family is None:
                         raise ValueError("Research trial requires a pre-registered experiment family.")
                     
-                    # Check if this exact trial already exists (for idempotency / resume)
-                    existing_trial = self.conn.execute(
-                        "SELECT trial_id, status FROM research_trials_log WHERE trial_id = ?",
-                        [trial.trial_id],
+                    # Check if this exact trial or any successor attempt already SUCCEEDED
+                    succeeded_attempt = self.conn.execute(
+                        "SELECT trial_id FROM research_trials_log WHERE (trial_id = ? OR parent_trial_id = ?) AND status = 'SUCCEEDED'",
+                        [trial.trial_id, trial.trial_id],
                     ).fetchone()
-                    if existing_trial is not None:
-                        return str(existing_trial[0])
+                    if succeeded_attempt is not None:
+                        return str(succeeded_attempt[0])
+
+                    # Check if an in-flight RUNNING attempt exists
+                    running_attempt = self.conn.execute(
+                        "SELECT trial_id FROM research_trials_log WHERE (trial_id = ? OR parent_trial_id = ?) AND status = 'RUNNING'",
+                        [trial.trial_id, trial.trial_id],
+                    ).fetchone()
+                    if running_attempt is not None:
+                        return str(running_attempt[0])
+
+                    target_trial_id = trial.trial_id
+                    parent_trial_id = getattr(trial, "parent_trial_id", None)
+
+                    # Check if any prior attempts exist (for retry creation)
+                    attempts_row = self.conn.execute(
+                        "SELECT COUNT(*) FROM research_trials_log WHERE trial_id = ? OR parent_trial_id = ?",
+                        [trial.trial_id, trial.trial_id],
+                    ).fetchone()
+                    attempt_count = int(attempts_row[0]) if attempts_row else 0
+                    if attempt_count > 0:
+                        target_trial_id = f"{trial.trial_id}#attempt={attempt_count + 1}"
+                        parent_trial_id = trial.trial_id
 
                     consumed_row = self.conn.execute(
                         "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ?",
@@ -1309,11 +1330,22 @@ class DuckDBManager:
                         [trial.created_at, trial.experiment_family_id],
                     )
 
+                    trial_payload = trial.model_dump(mode="json")
+                    trial_payload["trial_id"] = target_trial_id
+                    trial_payload["parent_trial_id"] = parent_trial_id
+
                     self.conn.execute(
-                        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, created_at) VALUES (?, ?, ?, ?, ?)",
-                        [trial.trial_id, trial.experiment_family_id, trial.status.value if hasattr(trial.status, "value") else str(trial.status), json.dumps(trial.model_dump(mode="json"), sort_keys=True, default=str), trial.created_at],
+                        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, parent_trial_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                        [
+                            target_trial_id,
+                            trial.experiment_family_id,
+                            trial.status.value if hasattr(trial.status, "value") else str(trial.status),
+                            json.dumps(trial_payload, sort_keys=True, default=str),
+                            parent_trial_id,
+                            trial.created_at,
+                        ],
                     )
-                return trial.trial_id
+                return target_trial_id
             except (RuntimeError, ValueError):
                 raise
             except Exception as exc:

@@ -9,6 +9,7 @@ from dataclasses import asdict
 from typing import Any
 
 import pandas as pd
+from loguru import logger
 
 from experiments.manager import source_revision
 from experiments.models import ExperimentSpec
@@ -260,7 +261,7 @@ class WalkForwardEvaluator:
             except Exception as exc:
                 if trial_id:
                     self.db.transition_research_trial(trial_id, "FAILED", error_message=str(exc))
-                raise
+                logger.warning(f"Candidate {parameters} evaluation failed: {exc}. Retaining FAILED trial and continuing search.")
 
         if not ranked:
             raise RuntimeError("No candidate evaluations succeeded during walk-forward parameter selection.")

@@ -649,3 +649,272 @@ def test_statistical_integrity_acceptance_20_candidates(test_db: DuckDBManager) 
     )
     with pytest.raises(RuntimeError, match="trial budget exhausted"):
         test_db.create_research_trial(candidate_21)
+
+
+# ---------------------------------------------------------------------------
+# 10. Forensic Integrity & Lineage Integration Tests
+# ---------------------------------------------------------------------------
+
+def test_adversarial_market_data_lineage_distinct_trial_identity() -> None:
+    """Adversarial test: same strategy, same parameters, same universe, different dataset content hash => distinct research trial."""
+    trial_dataset_v1 = ResearchTrial(
+        experiment_family_id="fam_lineage_test",
+        strategy_name="trend_following",
+        strategy_version="1.0.0",
+        scope="SINGLE_ASSET",
+        symbol="RELIANCE",
+        timeframe="1d",
+        parameters={"lookback": 20},
+        source_revision="rev_lineage_1",
+        data_hash="data_hash_content_v1",  # Initial dataset content hash
+        cost_model_hash="cost_model_v1",
+    )
+
+    trial_dataset_v2 = ResearchTrial(
+        experiment_family_id="fam_lineage_test",
+        strategy_name="trend_following",
+        strategy_version="1.0.0",
+        scope="SINGLE_ASSET",
+        symbol="RELIANCE",
+        timeframe="1d",
+        parameters={"lookback": 20},
+        source_revision="rev_lineage_1",
+        data_hash="data_hash_content_v2",  # Changed market data content hash!
+        cost_model_hash="cost_model_v1",
+    )
+
+    # Invariant: Changing market data while keeping same universe MUST create distinct research trial identity
+    assert trial_dataset_v1.trial_id != trial_dataset_v2.trial_id
+    assert trial_dataset_v1.data_hash != trial_dataset_v2.data_hash
+
+
+def test_walk_forward_evaluator_failed_candidate_continuation(test_db: DuckDBManager) -> None:
+    """A succeeds, B raises exception -> B retained as FAILED, C succeeds with highest Sharpe -> C SUCCEEDED + selected."""
+    family = ExperimentFamilySpec(
+        experiment_family_id="fam_wf_continuation",
+        hypothesis="Candidate B failure does not abort candidate C evaluation",
+        strategy_names=["trend_following"],
+        strategy_versions=["1.0.0"],
+        universe_snapshot_id="NIFTY200_2026_08_17",
+        timeframe="1d",
+        feature_versions=["features-v1"],
+        cost_model_version="angel-nse-delivery-2026-04",
+        parameter_space={"lookback": [10, 20, 30]},
+        maximum_trials=5,
+        selection_metric="sharpe",
+        walk_forward_design={"train_size": 252, "test_size": 63},
+        source_revision="rev-wf-cont",
+    )
+    test_db.register_experiment_family(family)
+
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=5)
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["RELIANCE"],
+        timeframe="1d",
+        parameters={},
+        experiment_family_id="fam_wf_continuation",
+    )
+
+    call_count = 0
+
+    def mock_run_with_failure(s: Any, scope: Any, src: Any, params: dict[str, Any], cap: float) -> Any:
+        nonlocal call_count
+        call_count += 1
+        lookback = params.get("lookback")
+        if lookback == 10:
+            # Candidate A succeeds (Sharpe = 1.0)
+            return MockRunResult(sharpe=1.0, max_drawdown=0.10, run_id="run_a")
+        elif lookback == 20:
+            # Candidate B raises candidate-local evaluation exception
+            raise ValueError("Division by zero in indicator calculation for candidate B")
+        elif lookback == 30:
+            # Candidate C succeeds with highest Sharpe (Sharpe = 2.2)
+            return MockRunResult(sharpe=2.2, max_drawdown=0.08, run_id="run_c")
+        return MockRunResult(sharpe=0.5, max_drawdown=0.15, run_id=f"run_{call_count}")
+
+    mock_source = MagicMock()
+    mock_source.data_hash = "mock_source_data_hash"
+    mock_source.frame_certification_id = "cert_wf_cont"
+    mock_source.panel = pd.DataFrame({"timestamp": [pd.Timestamp("2026-01-01", tz="UTC")]})
+
+    candidates = [{"lookback": 10}, {"lookback": 20}, {"lookback": 30}]
+
+    with patch.object(evaluator, "_run", side_effect=mock_run_with_failure):
+        best_params, best_score = evaluator._select(
+            spec, StrategyScope.SINGLE_ASSET, mock_source, candidates, 100_000.0, fold_id="wf-001"
+        )
+
+    # Invariant: Selection continued across candidate B failure and picked Candidate C
+    assert best_params == {"lookback": 30}
+    assert best_score == 2.2
+
+    # Verify all 3 trials are persisted in DuckDB
+    trials = test_db.list_research_trials("fam_wf_continuation")
+    assert len(trials) == 3
+
+    # Trial A: lookback 10 -> SUCCEEDED, selected = False
+    trial_a = next(t for t in trials if t["parameters"] == {"lookback": 10})
+    assert trial_a["status"] == "SUCCEEDED"
+    assert trial_a["selected"] is False
+    assert trial_a["metrics"]["sharpe"] == 1.0
+
+    # Trial B: lookback 20 -> FAILED, error_message recorded, selected = False
+    trial_b = next(t for t in trials if t["parameters"] == {"lookback": 20})
+    assert trial_b["status"] == "FAILED"
+    assert trial_b["selected"] is False
+    assert "Division by zero" in str(trial_b["error_message"])
+
+    # Trial C: lookback 30 -> SUCCEEDED, selected = True
+    trial_c = next(t for t in trials if t["parameters"] == {"lookback": 30})
+    assert trial_c["status"] == "SUCCEEDED"
+    assert trial_c["selected"] is True
+    assert trial_c["metrics"]["sharpe"] == 2.2
+
+
+def test_failed_trial_retry_and_exact_succeeded_resume_semantics(test_db: DuckDBManager, sample_family: ExperimentFamilySpec) -> None:
+    """Proves: attempt 1 -> FAILED, attempt 2 -> executes, both attempts retained, budget count = 2. Exact SUCCEEDED resume does NOT add a new trial."""
+    test_db.register_experiment_family(sample_family)
+
+    base_trial = ResearchTrial(
+        experiment_family_id=sample_family.experiment_family_id,
+        strategy_name="cross_sectional_momentum",
+        strategy_version="1.0.0",
+        scope="CROSS_SECTIONAL_PORTFOLIO",
+        timeframe="1d",
+        parameters={"lookback": 20},
+        source_revision="rev-retry-test",
+        data_hash="data-retry-hash",
+        cost_model_hash="cost-retry-hash",
+    )
+
+    # 1. Attempt 1: created, runs, and fails
+    trial_id_1 = test_db.create_research_trial(base_trial)
+    test_db.transition_research_trial(trial_id_1, "RUNNING")
+    test_db.transition_research_trial(trial_id_1, "FAILED", error_message="Execution timeout on node 1")
+
+    assert test_db.remaining_trial_budget(sample_family.experiment_family_id) == sample_family.maximum_trials - 1
+
+    # 2. Attempt 2 (retry after failure): must create a NEW attempt and consume budget
+    trial_id_2 = test_db.create_research_trial(base_trial)
+    assert trial_id_2 != trial_id_1
+    assert "#attempt=2" in trial_id_2
+
+    test_db.transition_research_trial(trial_id_2, "RUNNING")
+    test_db.transition_research_trial(trial_id_2, "SUCCEEDED", metrics={"sharpe": 1.75, "max_drawdown": 0.11})
+
+    # Both attempts are retained, budget consumed is 2
+    summary = test_db.research_trial_summary(sample_family.experiment_family_id)
+    assert summary["consumed"] == 2
+    assert summary["remaining"] == sample_family.maximum_trials - 2
+
+    t1 = test_db.get_research_trial(trial_id_1)
+    t2 = test_db.get_research_trial(trial_id_2)
+    assert t1 is not None and t1["status"] == "FAILED"
+    assert t2 is not None and t2["status"] == "SUCCEEDED"
+    assert t2["parent_trial_id"] == trial_id_1
+
+    # 3. Exact SUCCEEDED resume does NOT create a false new trial or consume extra budget
+    trial_id_3 = test_db.create_research_trial(base_trial)
+    # Reuses existing successful trial
+    assert trial_id_3 == trial_id_1 or trial_id_3 == trial_id_2
+    summary_after_resume = test_db.research_trial_summary(sample_family.experiment_family_id)
+    assert summary_after_resume["consumed"] == 2  # Budget unchanged!
+
+
+def test_mass_experiment_manager_family_propagation(test_db: DuckDBManager) -> None:
+    """Verifies that MassExperimentManager propagates experiment_family_id to child ExperimentSpecs."""
+    family = ExperimentFamilySpec(
+        experiment_family_id="fam_mass_prop",
+        hypothesis="Mass experiment family propagation test",
+        strategy_names=["trend_following"],
+        strategy_versions=["1.0.0"],
+        universe_snapshot_id="NIFTY200_2026_08_17",
+        timeframe="1d",
+        feature_versions=["features-v1"],
+        cost_model_version="angel-nse-delivery-2026-04",
+        parameter_space={"trend_following": {"lookback": 20}},
+        maximum_trials=5,
+        selection_metric="sharpe",
+        walk_forward_design={"train_size": 252, "test_size": 63},
+        source_revision="rev-mass-prop",
+    )
+    test_db.register_experiment_family(family)
+
+    from experiments.mass import MassExperimentManager
+    from experiments.models import MassExperimentSpec
+
+    mgr = MassExperimentManager(test_db)
+    spec = MassExperimentSpec(
+        experiment_id="mass_exp_test",
+        strategy_names=["trend_following"],
+        universe=["INFY"],
+        timeframe="1d",
+        parameters={"trend_following": {"lookback": 20}},
+        experiment_family_id="fam_mass_prop",
+        require_authoritative_certification=False,
+    )
+
+    executed_spec_family_ids: list[str | None] = []
+
+    def mock_manager_run(child_spec: ExperimentSpec, starting_capital: float = 100000.0) -> dict[str, Any]:
+        executed_spec_family_ids.append(child_spec.experiment_family_id)
+        mock_result = MagicMock()
+        mock_result.run_id = "run_mass_01"
+        mock_result.data_hash = "mass_data_hash"
+        mock_result.metrics.sharpe = 1.3
+        mock_result.metrics.max_drawdown = 0.12
+        return {"experiment_id": child_spec.experiment_id, "outcome": {"result": mock_result}}
+
+    with patch.object(ExperimentManager, "run", side_effect=mock_manager_run), \
+         patch.object(WalkForwardEvaluator, "evaluate", return_value=[{"fold": 1}]):
+        res = mgr.run(spec)
+
+    # Verify family ID was propagated to child experiment spec
+    assert len(executed_spec_family_ids) == 1
+    assert executed_spec_family_ids[0] == "fam_mass_prop"
+    assert res["jobs"][0]["state"] == "SUCCEEDED"
+
+
+def test_experiment_manager_successful_execution_and_metrics_linkage(test_db: DuckDBManager, sample_family: ExperimentFamilySpec) -> None:
+    """Verifies that ExperimentManager successful execution transitions trial to SUCCEEDED and binds metrics & run_id."""
+    test_db.register_experiment_family(sample_family)
+    mgr = ExperimentManager(test_db)
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TCS"],
+        timeframe="1d",
+        parameters={"lookback": 20},
+        experiment_family_id=sample_family.experiment_family_id,
+        require_authoritative_certification=False,
+    )
+
+    mock_run_result = MockRunResult(sharpe=1.65, max_drawdown=0.09, run_id="run_exp_success_001")
+    mock_run_result.data_hash = "mock_exp_data_hash"
+
+    with patch.object(mgr, "_record_dataset_group", return_value="ds_group_1"), \
+         patch.object(mgr, "_latest_dataset_id", return_value="ds_single_1"), \
+         patch("experiments.manager.StrategyPipeline") as mock_pipeline_cls:
+        mock_pipeline = MagicMock()
+        mock_pipeline.load_candles.return_value = pd.DataFrame({
+            "timestamp": [pd.Timestamp("2026-01-01", tz="UTC")],
+            "open": [100.0], "high": [105.0], "low": [98.0], "close": [102.0], "volume": [1000],
+        })
+        mock_pipeline._last_frame_certification_id = "cert_exp_001"
+        mock_pipeline.run.return_value = {"result": mock_run_result}
+        mock_pipeline_cls.return_value = mock_pipeline
+
+        res = mgr.run(spec)
+
+    assert res["experiment_id"] == spec.experiment_id
+
+    trials = test_db.list_research_trials(sample_family.experiment_family_id)
+    assert len(trials) == 1
+    trial = trials[0]
+    assert trial["status"] == "SUCCEEDED"
+    assert trial["metrics"] is not None
+    assert trial["metrics"]["sharpe"] == 1.65
+    assert trial["metrics"]["run_id"] == "run_exp_success_001"
+    assert trial["finished_at"] is not None
+
+

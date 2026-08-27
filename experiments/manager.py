@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from experiments.models import ExperimentSpec
 from experiments.trials import ResearchTrial, TrialStatus, canonical_hash
 from storage.duckdb_manager import DuckDBManager
@@ -68,6 +70,61 @@ class ExperimentManager:
 
         revision = source_revision(self.project_root)
         trial_id: str | None = None
+
+        # Resolve authoritative market-data evidence before trial reservation
+        data_hash: str | None = None
+        frame_cert_id: str | None = None
+        train_start: datetime | None = None
+        train_end: datetime | None = None
+        resolved_dataset: Any = None
+
+        if metadata.scope == StrategyScope.CROSS_SECTIONAL:
+            try:
+                resolved_dataset = SynchronizedPanelBuilder(
+                    self.db,
+                    calendar=self.india_calendar,
+                    strict_calendar=self.india_calendar is not None,
+                    require_authoritative_certification=spec.require_authoritative_certification,
+                ).build(
+                    spec.universe,
+                    spec.timeframe,
+                    universe_snapshot_id=spec.universe_snapshot_id,
+                    benchmark_symbol=spec.benchmark_symbol,
+                    minimum_lookback=metadata.required_lookback,
+                )
+                data_hash = resolved_dataset.data_hash
+                frame_cert_id = resolved_dataset.frame_certification_id
+                if not resolved_dataset.panel.empty:
+                    train_start = pd.to_datetime(resolved_dataset.panel["timestamp"], utc=True).min().to_pydatetime()
+                    train_end = pd.to_datetime(resolved_dataset.panel["timestamp"], utc=True).max().to_pydatetime()
+            except Exception:
+                data_hash = f"unresolved:{hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest()[:16]}"
+        else:
+            try:
+                pipeline_loader = StrategyPipeline(
+                    self.db,
+                    india_calendar=self.india_calendar,
+                    require_authoritative_certification=spec.require_authoritative_certification,
+                )
+                resolved_frame = pipeline_loader.load_candles(
+                    spec.universe[0],
+                    spec.timeframe,
+                    require_authoritative_certification=spec.require_authoritative_certification,
+                )
+                hash_columns = [
+                    c for c in ("timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id")
+                    if c in resolved_frame.columns
+                ]
+                data_hash = hashlib.sha256(
+                    pd.util.hash_pandas_object(resolved_frame[hash_columns], index=True).values.tobytes()
+                ).hexdigest()
+                frame_cert_id = pipeline_loader._last_frame_certification_id
+                if not resolved_frame.empty:
+                    train_start = pd.to_datetime(resolved_frame["timestamp"], utc=True).min().to_pydatetime()
+                    train_end = pd.to_datetime(resolved_frame["timestamp"], utc=True).max().to_pydatetime()
+            except Exception:
+                data_hash = f"unresolved:{hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest()[:16]}"
+
         if spec.experiment_family_id:
             trial = ResearchTrial(
                 experiment_family_id=spec.experiment_family_id,
@@ -79,10 +136,13 @@ class ExperimentManager:
                 timeframe=spec.timeframe,
                 parameters=spec.parameters,
                 source_revision=revision,
-                data_hash=hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest(),
+                data_hash=data_hash or hashlib.sha256(json.dumps(spec.universe, sort_keys=True).encode()).hexdigest(),
                 cost_model_hash=canonical_hash(spec.cost_model),
                 cost_model_version=spec.cost_model_version,
                 feature_version=spec.feature_version,
+                frame_certification_id=frame_cert_id,
+                train_start=train_start,
+                train_end=train_end,
                 fold_id=spec.fold_id,
                 status=TrialStatus.PLANNED,
             )
@@ -114,7 +174,7 @@ class ExperimentManager:
             result: Any
             dataset_id: str | None
             if metadata.scope == StrategyScope.CROSS_SECTIONAL:
-                dataset = SynchronizedPanelBuilder(
+                dataset = resolved_dataset if resolved_dataset is not None else SynchronizedPanelBuilder(
                     self.db,
                     calendar=self.india_calendar,
                     strict_calendar=self.india_calendar is not None,
