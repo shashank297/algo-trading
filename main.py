@@ -519,6 +519,7 @@ def run_live_ticker(bootstrap_config: dict[str, Any], args: argparse.Namespace) 
 
     aggregator = RealtimeBarAggregator(timeframe="1m", market_calendar=calendar)
     aggregator.load_unresolved_gaps(stream_db)
+    client.restore_unresolved_gaps(stream_db)
 
     latest_ticks: dict[str, Any] = {}
     ticks_lock = threading.Lock()

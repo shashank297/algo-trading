@@ -181,17 +181,18 @@ def test_smartapi_websocket_client_packet_and_sequence_branches(tmp_path):
     raw_base = make_ltp_packet(token="2885", seq=1, ltp=2000.0)
     client._on_data(None, raw_base, generation=client._generation_id)
 
-    # 2. 5-argument vs 6-argument adapter callback
-    calls_5 = []
-    def callback_5(exch, tok, sym, window, epoch):
-        calls_5.append((exch, tok, sym, window, epoch))
+    # 2. Canonical durable gap callback contract
+    gap_calls = []
+    def record_gap(gap_id, exch, tok, sym, window, expected, received, gap_size, epoch):
+        gap_calls.append((gap_id, exch, tok, sym, window, expected, received, gap_size, epoch))
 
-    client.on_stream_degraded = callback_5
+    client.on_stream_degraded = record_gap
 
     # Process tick with sequence gap (seq=10 after seq=1)
     raw_gap = make_ltp_packet(token="2885", seq=10, ltp=2000.0)
     client._on_data(None, raw_gap, generation=client._generation_id)
-    assert len(calls_5) == 1
+    assert len(gap_calls) == 1
+    assert gap_calls[0][5:] == (2, 10, 8, 1)
     assert client.state == ConnectionState.DEGRADED
 
     # 3. Duplicate packet
@@ -229,8 +230,8 @@ def test_smartapi_websocket_client_packet_and_sequence_branches(tmp_path):
 
     # 8. Re-anchor and gap repair notifications
     anchors = []
-    def on_anchor(exch, tok, sym, epoch):
-        anchors.append((exch, tok, sym, epoch))
+    def on_anchor(exch, tok, sym, epoch, gap_ids):
+        anchors.append((exch, tok, sym, epoch, gap_ids))
     client.on_stream_reanchored = on_anchor
     client.reanchor_stream("NSE", "2885", 100)
     assert len(anchors) == 1

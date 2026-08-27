@@ -207,12 +207,17 @@ def test_paper_reconciliation_detects_real_drift(tmp_path):
     cal = build_nse_calendar()
     engine = ForwardPaperSessionEngine(db=db, calendar=cal, risk_engine=RiskEngine(RiskPolicy()))
 
-    # Case 1: Target = 50, observed ledger = 50 -> drift = 0
-    rec_zero = engine._reconcile("sess_1", datetime(2026, 1, 6, tzinfo=timezone.utc), [], [], 0.0, "ok", desired_quantity=50.0, observed_quantity=50.0)
+    as_of = datetime(2026, 1, 6, tzinfo=timezone.utc)
+    # Case 1: independently persisted intent = fill-derived ledger = 50.
+    engine._record_desired_position("sess_zero", "RELIANCE", as_of, 50.0, as_of)
+    db.conn.execute("INSERT INTO strategy_fills VALUES ('fill_zero', 'order_zero', 'sess_zero', 'RELIANCE', ?, 50, 100, 'BUY', 'PAPER', 0, 0, '{}', CURRENT_TIMESTAMP)", [as_of])
+    rec_zero = engine._reconcile("sess_zero", as_of, [], [], 0.0, "ok")
     assert rec_zero["drift"] == 0.0
 
-    # Case 2: Target = 50, observed ledger = 30 (e.g. partial fill or rejection) -> drift = 20.0
-    rec_drift = engine._reconcile("sess_1", datetime(2026, 1, 6, tzinfo=timezone.utc), [{"status": "REJECTED"}], [], -10.0, "rejection", desired_quantity=50.0, observed_quantity=30.0)
+    # Case 2: desired 50 vs immutable observed fill of 30 -> drift = 20.
+    engine._record_desired_position("sess_drift", "RELIANCE", as_of, 50.0, as_of)
+    db.conn.execute("INSERT INTO strategy_fills VALUES ('fill_drift', 'order_drift', 'sess_drift', 'RELIANCE', ?, 30, 100, 'BUY', 'PAPER', 0, 0, '{}', CURRENT_TIMESTAMP)", [as_of])
+    rec_drift = engine._reconcile("sess_drift", as_of, [{"status": "REJECTED"}], [], -10.0, "rejection")
     assert rec_drift["drift"] == 20.0
     assert "position_drift=20.0000" in rec_drift["notes"]
 
@@ -472,4 +477,3 @@ def test_websocket_client_edge_branches():
     # Error handling
     client._on_error(None, Exception("Simulated transport disconnect"), client._generation_id)
     assert client is not None
-

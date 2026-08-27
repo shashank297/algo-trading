@@ -102,19 +102,9 @@ class RealtimeBarAggregator:
         self._untrusted_windows: dict[str, list[tuple[str, datetime, datetime | None]]] = {}
 
     def mark_untrusted(
-        self, gap_id: str, symbol: str | datetime, start_time: datetime | None = None, end_time: datetime | None = None,
+        self, gap_id: str, symbol: str, start_time: datetime, end_time: datetime | None = None,
     ) -> None:
         """Flag an interval for a symbol as degraded/untrusted due to stream sequence gaps."""
-        if isinstance(symbol, datetime):
-            # Compatibility projection for old diagnostic callers; production callbacks
-            # always provide the canonical gap ID explicitly.
-            legacy_symbol = gap_id
-            gap_id = f"legacy:{legacy_symbol}:{symbol.isoformat()}"
-            end_time = start_time
-            start_time = symbol
-            symbol = legacy_symbol
-        if start_time is None:
-            raise ValueError("Untrusted interval requires a start timestamp.")
         with self._lock:
             intervals = self._untrusted_windows.setdefault(symbol, [])
             if any(existing_id == gap_id for existing_id, _, _ in intervals):
@@ -129,18 +119,9 @@ class RealtimeBarAggregator:
                     if existing_id == gap_id:
                         intervals[index] = (existing_id, start_time, end_time or reanchor_time)
                         return
-            # Legacy diagnostics addressed intervals by symbol. This compatibility
-            # path is intentionally not used by live lifecycle callbacks.
-            if gap_id in self._untrusted_windows:
-                intervals = self._untrusted_windows[gap_id]
-                self._untrusted_windows[gap_id] = [
-                    (existing_id, start_time, end_time or reanchor_time)
-                    for existing_id, start_time, end_time in intervals
-                ]
-                return
             raise KeyError(f"Unknown canonical stream gap {gap_id}.")
 
-    def repair_gap(self, gap_id: str, from_time: datetime | None = None, to_time: datetime | None = None) -> None:
+    def repair_gap(self, gap_id: str) -> None:
         """Remove or resolve historical untrusted interval upon verified backfill."""
         with self._lock:
             for symbol, intervals in list(self._untrusted_windows.items()):
@@ -151,15 +132,6 @@ class RealtimeBarAggregator:
                     else:
                         del self._untrusted_windows[symbol]
                     return
-            if from_time is not None and gap_id in self._untrusted_windows:
-                self._untrusted_windows[gap_id] = [
-                    (existing_id, start_time, end_time)
-                    for existing_id, start_time, end_time in self._untrusted_windows[gap_id]
-                    if not (start_time == from_time and (to_time is None or end_time == to_time or end_time is None))
-                ]
-                if not self._untrusted_windows[gap_id]:
-                    del self._untrusted_windows[gap_id]
-                return
             raise KeyError(f"Unknown canonical stream gap {gap_id}.")
 
     def load_unresolved_gaps(self, db: Any) -> None:

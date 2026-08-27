@@ -400,6 +400,19 @@ class DuckDBManager:
             raise RuntimeError("Canonical stream gap ledger contains an invalid unresolved interval.")
         return [(str(row[0]), str(row[1]), row[2], row[3]) for row in rows]
 
+    def load_unrepaired_stream_gap_state(self) -> list[tuple[str, str, str, str, datetime, datetime | None, int]]:
+        """Load full canonical gap state for websocket restart recovery."""
+        rows = self.conn.execute(
+            """SELECT gap_id, exchange, token, symbol, gap_start, gap_end, stream_epoch
+               FROM stream_gaps WHERE gap_status = 'UNREPAIRED'"""
+        ).fetchall()
+        if any(not row[0] or not row[1] or not row[2] or not row[3] or row[4] is None for row in rows):
+            raise RuntimeError("Canonical stream gap ledger contains an invalid unresolved recovery record.")
+        return [
+            (str(row[0]), str(row[1]), str(row[2]), str(row[3]), row[4], row[5], int(row[6]))
+            for row in rows
+        ]
+
     def upsert_instrument_master(self, df: pd.DataFrame) -> int:
         """Upsert the instrument master into DuckDB.
 

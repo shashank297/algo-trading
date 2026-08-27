@@ -164,7 +164,8 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 symbols = ["EXIT", "KEEP1", "KEEP2", "KEEP3", "ENTER"]
                 day = pd.DataFrame({
                     "symbol": symbols, "open": [100.0] * 5, "close": [100.0] * 5,
-                    "volume": [200_000] * 5,
+                    "volume": [200_000] * 5, "volatility_20": [0.01] * 5,
+                    "lagged_traded_value": [20_000_000.0] * 5, "sector": ["TEST"] * 5,
                 }).set_index("symbol", drop=False)
                 targets = pd.DataFrame({
                     "timestamp": [timestamp] * 5, "symbol": symbols,

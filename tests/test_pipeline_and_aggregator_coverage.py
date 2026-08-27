@@ -64,9 +64,9 @@ def test_live_realtime_aggregator_edge_branches(tmp_path):
     db = DuckDBManager(str(tmp_path / "agg_edge.duckdb"))
     cal = build_nse_calendar()
 
-    # Pre-populate stream_gap_events and stream_gaps
-    db.conn.execute("INSERT INTO stream_gap_events (gap_id, exchange, token, symbol, start_time, end_time, gap_size, epoch, status, recorded_at) VALUES ('gap_1', 'NSE', '2885', 'RELIANCE', '2026-01-05 09:15:00+05:30', '2026-01-05 09:20:00+05:30', 5, 1, 'UNREPAIRED', CURRENT_TIMESTAMP);")
-    db.conn.execute("INSERT INTO stream_gaps (gap_id, token, symbol, exchange, expected_sequence, received_sequence, gap_size, stream_epoch, detected_at, gap_status) VALUES ('gap_2', '40806', 'INFY', 'NSE', 10, 15, 5, 1, CURRENT_TIMESTAMP, 'UNREPAIRED');")
+    # Pre-populate complete canonical gap records.
+    db.conn.execute("INSERT INTO stream_gaps (gap_id, token, symbol, exchange, expected_sequence, received_sequence, gap_size, stream_epoch, detected_at, gap_status, gap_start, gap_end) VALUES ('gap_1', '2885', 'RELIANCE', 'NSE', 10, 15, 5, 1, '2026-01-05 09:15:00+05:30', 'UNREPAIRED', '2026-01-05 09:15:00+05:30', '2026-01-05 09:20:00+05:30');")
+    db.conn.execute("INSERT INTO stream_gaps (gap_id, token, symbol, exchange, expected_sequence, received_sequence, gap_size, stream_epoch, detected_at, gap_status, gap_start, gap_end) VALUES ('gap_2', '40806', 'INFY', 'NSE', 10, 15, 5, 1, CURRENT_TIMESTAMP, 'UNREPAIRED', '2026-01-05 09:15:00+05:30', '2026-01-05 09:20:00+05:30');")
 
     agg = RealtimeBarAggregator(timeframe="1m", market_calendar=cal)
     agg.allowed_lateness = timedelta(seconds=0)

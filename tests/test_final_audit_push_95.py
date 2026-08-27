@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import pytest
 
 from data_platform.contracts import LiveTickerMode, LtpTick
 from data_platform.live_admission import LiveMarketDataAdmissionValidator, TickAdmissionResult, TickAdmissionAction, AdmissionReasonCode
@@ -14,6 +15,7 @@ from smartapi.subscription_registry import SubscriptionKey
 from smartapi.websocket_client import (
     ConnectionState,
     SmartAPIWebSocketClient,
+    StreamRecoveryError,
 )
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.pipeline import StrategyPipeline
@@ -48,7 +50,10 @@ def test_websocket_client_queues_and_edge_branches(tmp_path):
     def bad_anchor_cb(*args):
         raise RuntimeError("Anchor callback error")
     client.on_stream_reanchored = bad_anchor_cb
-    client.reanchor_stream("NSE", "2885", 100)
+    with pytest.raises(StreamRecoveryError, match="trusted dispatch remains blocked"):
+        client.reanchor_stream("NSE", "2885", 100)
+    assert client.state == ConnectionState.RECOVERY_FAILED
+    client._state = ConnectionState.CONNECTED
 
     # 2. subscribe & unsubscribe with active websocket mock
     mock_ws = MagicMock()

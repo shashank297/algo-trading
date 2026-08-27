@@ -44,6 +44,7 @@ from smartapi.auth import SmartAPIAuth
 from smartapi.websocket_client import (
     ConnectionState,
     SmartAPIWebSocketClient,
+    StreamRecoveryError,
 )
 from storage.duckdb_manager import DuckDBManager
 from storage.migrations.runner import MigrationRunner
@@ -311,7 +312,7 @@ def test_promotion_engine_comprehensive_evaluation(tmp_path):
 
     # 1. Seed complete passing run
     run_id = "RUN_PROMOTION_PASS"
-    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at, notes) VALUES ('RUN_PROMOTION_PASS', 'cross_sectional_momentum', 'INDIA_EQUITY', 'RELIANCE', '1d', 'event-driven', '{}', 'h_pass', 'COMPLETED', CURRENT_TIMESTAMP, '{\"frame_certification_id\":\"rfc_pass\"}');")
+    db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at, frame_certification_id) VALUES ('RUN_PROMOTION_PASS', 'cross_sectional_momentum', 'INDIA_EQUITY', 'RELIANCE', '1d', 'event-driven', '{}', 'h_pass', 'COMPLETED', CURRENT_TIMESTAMP, 'rfc_pass');")
     db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name, raw_hash, status, lifecycle_status) VALUES ('ds_pass', 'RELIANCE', 'RELIANCE', 'NSE', '1d', 'ANGEL', 'h_pass_raw', 'VERIFIED', 'CANONICAL_PROMOTED');")
     db.conn.execute("INSERT INTO data_quality_certifications VALUES ('cert_pass', 'ds_pass', 'validator-v1', 6, 0, '{\"dataset_content_hash\": \"h_pass_raw\"}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);")
     for i, c in enumerate(["schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"], start=1):
@@ -360,8 +361,8 @@ def test_websocket_client_gap_handling_and_reconnect_flow():
 
     client = SmartAPIWebSocketClient(
         auth=auth,
-        on_stream_degraded=lambda ex, tok, sym, window, gap, epoch: degraded_calls.append((tok, gap, epoch)),
-        on_stream_reanchored=lambda ex, tok, sym, epoch: reanchored_calls.append((tok, epoch)),
+        on_stream_degraded=lambda gap_id, ex, tok, sym, window, expected, received, gap, epoch: degraded_calls.append((gap_id, tok, gap, epoch)),
+        on_stream_reanchored=lambda ex, tok, sym, epoch, gap_ids: reanchored_calls.append((tok, epoch, tuple(gap_ids))),
         on_gap_repaired=lambda ex, tok, sym, gap_id: repaired_calls.append((tok, gap_id)),
     )
 
@@ -413,17 +414,17 @@ def test_realtime_bar_aggregator_untrusted_intervals_and_repair():
     t1 = datetime(2026, 1, 6, 9, 20, 0, tzinfo=timezone.utc)
 
     # 1. Mark untrusted open-ended
-    aggregator.mark_untrusted("RELIANCE", t0, None)
+    aggregator.mark_untrusted("gap_reliance", "RELIANCE", t0, None)
     assert len(aggregator._untrusted_windows["RELIANCE"]) == 1
-    assert aggregator._untrusted_windows["RELIANCE"][0] == (t0, None)
+    assert aggregator._untrusted_windows["RELIANCE"][0] == ("gap_reliance", t0, None)
 
     # 2. Close degraded interval at re-anchor time
-    aggregator.close_degraded_interval("RELIANCE", t1)
-    assert aggregator._untrusted_windows["RELIANCE"][0] == (t0, t1)
+    aggregator.close_degraded_interval("gap_reliance", t1)
+    assert aggregator._untrusted_windows["RELIANCE"][0] == ("gap_reliance", t0, t1)
 
     # 3. Repair gap removes the window
-    aggregator.repair_gap("RELIANCE", t0, t1)
-    assert len(aggregator._untrusted_windows["RELIANCE"]) == 0
+    aggregator.repair_gap("gap_reliance")
+    assert "RELIANCE" not in aggregator._untrusted_windows
 
 
 # ---------------------------------------------------------------------------
@@ -724,9 +725,12 @@ def test_live_aggregator_unresolved_gaps_loading(tmp_path):
     db = DuckDBManager(str(tmp_path / "agg_gaps.duckdb"))
     aggregator = RealtimeBarAggregator(timeframe="1m")
 
-    # 1. Insert unrepaired gaps into stream_gap_events
+    # 1. Insert a complete canonical unresolved gap record.
     db.conn.execute(
-        "INSERT INTO stream_gap_events VALUES ('gap_1', 'NSE', '2885', 'RELIANCE', '2026-01-06 09:15:00', null, 5, 0, 'UNREPAIRED', CURRENT_TIMESTAMP);"
+        """INSERT INTO stream_gaps (gap_id, token, symbol, exchange, expected_sequence,
+           received_sequence, gap_size, stream_epoch, detected_at, gap_status, gap_start)
+           VALUES ('gap_1', '2885', 'RELIANCE', 'NSE', 10, 15, 5, 0,
+           '2026-01-06 09:15:00+00:00', 'UNREPAIRED', '2026-01-06 09:15:00+00:00')"""
     )
     aggregator.load_unresolved_gaps(db)
     assert "RELIANCE" in aggregator._untrusted_windows
@@ -1456,8 +1460,10 @@ def test_websocket_client_callbacks_lifecycle_and_drain():
     # 2. Repair gap with callback
     cb_gap = MagicMock(side_effect=Exception("Callback crash"))
     client.on_gap_repaired = cb_gap
-    client.repair_gap("NSE", "2885", "gap_123")
+    with pytest.raises(StreamRecoveryError, match="trusted dispatch remains blocked"):
+        client.repair_gap("NSE", "2885", "gap_123")
     cb_gap.assert_called_once()
+    assert client.state == ConnectionState.RECOVERY_FAILED
 
     # 3. subscribe_symbols and unsubscribe_tick
     client.subscribe_symbols(["RELIANCE", "INFY"])
@@ -1477,14 +1483,12 @@ def test_websocket_client_callbacks_lifecycle_and_drain():
 
 def test_live_aggregator_rollovers_and_untrusted_windows(tmp_path):
     db = DuckDBManager(str(tmp_path / "agg_untrusted.duckdb"))
-    # Insert unresolved gaps in both stream_gap_events and stream_gaps
-    db.conn.execute("INSERT INTO stream_gap_events (gap_id, exchange, token, symbol, start_time, end_time, gap_size, epoch, status, recorded_at) VALUES ('gap_ev_1', 'NSE', '2885', 'RELIANCE', '2026-01-05 09:15:00+00', '2026-01-05 09:20:00+00', 5, 1, 'UNREPAIRED', CURRENT_TIMESTAMP);")
-    db.conn.execute("INSERT INTO stream_gaps (gap_id, token, symbol, exchange, expected_sequence, received_sequence, gap_size, stream_epoch, detected_at, gap_status, repaired_at) VALUES ('gap_1', '2885', 'RELIANCE', 'NSE', 10, 15, 5, 1, '2026-01-05 09:25:00+00', 'UNREPAIRED', NULL);")
+    db.conn.execute("INSERT INTO stream_gaps (gap_id, token, symbol, exchange, expected_sequence, received_sequence, gap_size, stream_epoch, detected_at, gap_status, gap_start, gap_end, repaired_at) VALUES ('gap_1', '2885', 'RELIANCE', 'NSE', 10, 15, 5, 1, '2026-01-05 09:15:00+00', 'UNREPAIRED', '2026-01-05 09:15:00+00', '2026-01-05 09:20:00+00', NULL);")
 
     agg = RealtimeBarAggregator(timeframe="1m")
     agg.load_unresolved_gaps(db)
     assert "RELIANCE" in agg._untrusted_windows
-    assert len(agg._untrusted_windows["RELIANCE"]) == 2
+    assert len(agg._untrusted_windows["RELIANCE"]) == 1
 
     # 1. Process LtpTick
     from data_platform.contracts import LiveTickerMode, LtpTick
@@ -1522,8 +1526,8 @@ def test_live_aggregator_rollovers_and_untrusted_windows(tmp_path):
     assert agg._dropped_late_ticks_count > 0
 
     # 4. Close degraded interval and repair gap
-    agg.close_degraded_interval("RELIANCE", datetime(2026, 1, 5, 9, 30, 0, tzinfo=timezone.utc))
-    agg.repair_gap("RELIANCE", datetime(2026, 1, 5, 9, 15, 0, tzinfo=timezone.utc))
+    agg.close_degraded_interval("gap_1", datetime(2026, 1, 5, 9, 30, 0, tzinfo=timezone.utc))
+    agg.repair_gap("gap_1")
 
     # 5. Dispatch bars with faulty callback
     faulty_cb = MagicMock(side_effect=Exception("Subscriber crashed"))
@@ -2202,6 +2206,8 @@ def test_smartapi_websocket_client_workers_and_watchdog_deep():
     mock_cb = MagicMock()
     client.subscribe_tick(mock_cb)
     client.unsubscribe_tick(mock_cb)
+    client.on_stream_reanchored = MagicMock()
+    client.on_gap_repaired = MagicMock()
     client.reanchor_stream("NSE", "2885", baseline_seq=100)
     client.repair_gap("NSE", "2885", "gap_123")
 
@@ -2709,6 +2715,7 @@ def test_smartapi_websocket_client_callbacks_and_resolver():
     mock_reanch = MagicMock()
     client.on_stream_degraded = mock_deg
     client.on_stream_reanchored = mock_reanch
+    client.on_gap_repaired = MagicMock()
 
     client.reanchor_stream("NSE", "2885", baseline_seq=100)
     assert mock_reanch.called

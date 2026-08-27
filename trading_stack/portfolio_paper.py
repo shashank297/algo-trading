@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -112,6 +112,10 @@ class ForwardPortfolioPaperSessionEngine:
             .transform(lambda s: s.shift(1))
         )
         panel["lagged_traded_value"] = panel["lagged_close"] * panel["lagged_adv20"]
+        panel["volatility_20"] = (
+            panel.groupby("symbol")["close"]
+            .transform(lambda prices: prices.pct_change().rolling(20, min_periods=20).std(ddof=1))
+        )
         signals = strategy.generate_signals(panel).copy()
         signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
         session_id = self._session_id(
@@ -369,6 +373,7 @@ class ForwardPortfolioPaperSessionEngine:
         peak_equity: float,
     ) -> tuple[pd.DataFrame, list[RiskDecision]]:
         adjusted = targets.copy()
+        del capital  # Risk limits use the current marked-to-market equity below.
         if "target_weight" in adjusted.columns:
             adjusted["target_weight"] = pd.to_numeric(adjusted["target_weight"], errors="coerce").fillna(0.0)
         else:
@@ -409,15 +414,16 @@ class ForwardPortfolioPaperSessionEngine:
             lagged_val = float(day.loc[symbol, "lagged_traded_value"]) if ("lagged_traded_value" in day.columns and symbol in day.index and pd.notna(day.loc[symbol, "lagged_traded_value"])) else sym_vol * price
             turnover_crore = (lagged_val / 10_000_000.0) if lagged_val > 0 else None
             vol_val = float(day.loc[symbol, "volatility_20"]) if (symbol in day.index and "volatility_20" in day.columns and pd.notna(day.loc[symbol, "volatility_20"])) else None
+            projected_gross = current_gross + requested_delta
             est_port_var = (
-                1.65 * vol_val * math.sqrt(max(len(quantities) + 1, 1)) * (current_gross / max(capital, 1e-9))
-                if capital > 0 and vol_val is not None and vol_val > 0 else None
+                NormalDist().inv_cdf(0.95) * vol_val * projected_gross / max(equity, 1e-9)
+                if vol_val is not None and vol_val > 0 and equity > 0 else None
             )
 
             decision = self.risk_engine.evaluate(TradeProposal(
                 symbol=symbol,
                 requested_notional=requested_delta,
-                capital=capital,
+                capital=equity,
                 current_position_notional=current_notional,
                 current_gross_exposure=current_gross,
                 daily_pnl=equity - daily_start_equity,

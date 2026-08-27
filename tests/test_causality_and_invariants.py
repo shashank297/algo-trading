@@ -570,11 +570,29 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
     db.conn.execute("INSERT INTO index_constituents_pit VALUES ('SNAP_1', '2885', 'RELIANCE', '2885', 'NSE', '2020-01-01', '2027-01-01', '2020-01-01', 0.5, 'IN', null, CURRENT_TIMESTAMP);")
     db.conn.execute("INSERT INTO index_constituents_pit VALUES ('SNAP_1', '11536', 'TCS', '11536', 'NSE', '2020-01-01', '2027-01-01', '2020-01-01', 0.5, 'IN', null, CURRENT_TIMESTAMP);")
 
+    # Seed enough prior observations to calculate authoritative portfolio
+    # volatility/VaR.  A valid opening observation must not bypass this gate.
+    historical_sessions = list(
+        build_nse_calendar().iter_trading_days(date(2025, 11, 25), date(2025, 12, 29))
+    )
+    for index, session in enumerate(historical_sessions):
+        rel_price = 80.0 + index
+        tcs_price = 180.0 + (index * 1.5)
+        timestamp = f"{session.isoformat()} 15:30:00+05:30"
+        db.conn.execute(
+            "INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', ?, ?, ? + 5, ? - 5, ?, 100000000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);",
+            [timestamp, rel_price, rel_price, rel_price, rel_price],
+        )
+        db.conn.execute(
+            "INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', ?, ?, ? + 5, ? - 5, ?, 100000000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);",
+            [timestamp, tcs_price, tcs_price, tcs_price, tcs_price],
+        )
+
     # Insert historical candles on valid weekdays spanning month-end
-    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2025-12-30 15:30:00+05:30', 90, 95, 85, 90, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
-    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2025-12-31 15:30:00+05:30', 100, 105, 95, 100, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
-    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2025-12-30 15:30:00+05:30', 200, 205, 195, 200, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
-    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2025-12-31 15:30:00+05:30', 200, 205, 195, 200, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2025-12-30 15:30:00+05:30', 90, 95, 85, 90, 100000000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2025-12-31 15:30:00+05:30', 100, 105, 95, 100, 100000000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2025-12-30 15:30:00+05:30', 200, 205, 195, 200, 100000000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2025-12-31 15:30:00+05:30', 200, 205, 195, 200, 100000000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
 
     db.conn.execute("INSERT INTO strategy_runs (run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, data_hash, status, started_at) VALUES ('RUN_PREV', 'cross_sectional_momentum', 'INDIA_EQUITY', 'PORTFOLIO:SNAP_1', '1d', 'event-driven', '{\"long_lookback\": 1, \"skip_recent\": 0}', 'h1', 'COMPLETED', CURRENT_TIMESTAMP);")
 
@@ -599,9 +617,22 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
     )
     assert res1.status == "BOOTSTRAPPED"
 
-    # 2. Advance forward with Day 2026-01-01 bar
-    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
-    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2026-01-01 15:30:00+05:30', 200, 205, 195, 202, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+    # 2. Advance forward with a known NSE trading-day bar.
+    db.conn.execute("INSERT INTO historical_candles VALUES ('RELIANCE', '2885', 'NSE', '1d', '2026-01-02 15:30:00+05:30', 100, 105, 95, 102, 100000, 'UNADJUSTED', 'ANGEL', 'ds1', CURRENT_TIMESTAMP);")
+    db.conn.execute("INSERT INTO historical_candles VALUES ('TCS', '11536', 'NSE', '1d', '2026-01-02 15:30:00+05:30', 200, 205, 195, 202, 100000, 'UNADJUSTED', 'ANGEL', 'ds2', CURRENT_TIMESTAMP);")
+
+    # Seed the persisted authoritative signal ledger.  The strategy's normal
+    # monthly schedule does not emit a target on this one-day fixture, so the
+    # test must not mistake a missing signal for opening-tick rejection.
+    engine._save_pending(
+        res1.session_id,
+        pd.DataFrame([{
+            "timestamp": datetime(2025, 12, 31, 10, 0, tzinfo=timezone.utc),
+            "symbol": "RELIANCE", "target_weight": 0.05,
+            "signal": "ENTER", "reason": "test_authoritative_target",
+        }]),
+        datetime(2025, 12, 31, 16, 0, tzinfo=timezone.utc),
+    )
 
     # Run with TRUE_NEXT_OPEN and live opening tick for RELIANCE at 103.5 (TCS has no opening tick)
     from trading_stack.domain import OpeningTickObservation
@@ -610,8 +641,8 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
         token="2885",
         exchange="NSE",
         price=103.5,
-        exchange_timestamp=datetime(2026, 1, 1, 9, 15, tzinfo=timezone.utc),
-        received_at_utc=datetime(2026, 1, 1, 9, 15, 1, tzinfo=timezone.utc),
+            exchange_timestamp=datetime(2026, 1, 2, 9, 15, tzinfo=timezone.utc),
+            received_at_utc=datetime(2026, 1, 2, 9, 15, 1, tzinfo=timezone.utc),
     )
     res2 = engine.run(
         strategy_name="cross_sectional_momentum",
@@ -623,7 +654,7 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
         parameters=params,
         execution_mode="TRUE_NEXT_OPEN",
         opening_observations={"RELIANCE": obs_rel},
-        as_of=datetime(2026, 1, 1, 16, 0, tzinfo=timezone.utc),
+            as_of=datetime(2026, 1, 2, 16, 0, tzinfo=timezone.utc),
     )
     assert res2.status == "PROCESSED"
     assert len(res2.fills) > 0
@@ -865,8 +896,8 @@ def test_e8_websocket_full_recovery_and_reanchor_lifecycle():
     client = SmartAPIWebSocketClient(
         auth=auth,
         admission_validator=validator,
-        on_stream_degraded=lambda exch, tok, sym, gap, epoch: degraded_events.append((tok, epoch)),
-        on_stream_reanchored=lambda exch, tok, sym, epoch: reanchored_events.append((tok, epoch)),
+        on_stream_degraded=lambda gap_id, exch, tok, sym, gap, expected, received, gap_size, epoch: degraded_events.append((gap_id, tok, gap_size, epoch)),
+        on_stream_reanchored=lambda exch, tok, sym, epoch, gap_ids: reanchored_events.append((tok, epoch, tuple(gap_ids))),
     )
     # Simulate active connected state
     with client._state_lock:
@@ -911,6 +942,167 @@ def test_e8_websocket_full_recovery_and_reanchor_lifecycle():
     ev4 = client._dispatch_queue.get_nowait()
     assert ev4.quality_state == "TRUSTED"
     assert client.state == ConnectionState.CONNECTED
+
+
+def test_e8_failed_gap_persistence_survives_restart_and_blocks_startup(tmp_path):
+    """A failed canonical gap write is durably fail-closed across process restart."""
+    from smartapi.websocket_client import ConnectionState, SmartAPIWebSocketClient, StreamRecoveryError
+    from unittest.mock import MagicMock
+
+    db_path = tmp_path / "stream.duckdb"
+    client = SmartAPIWebSocketClient(auth=MagicMock())
+    client.configure_quarantine_store(str(db_path))
+    client._write_recovery_marker(
+        gap_id="gap-failed", exchange="NSE", token="2885", epoch=7,
+        error=RuntimeError("canonical ledger unavailable"),
+    )
+    assert client._recovery_marker_path is not None
+    assert client._recovery_marker_path.exists()
+
+    restarted = SmartAPIWebSocketClient(auth=MagicMock())
+    restarted.configure_quarantine_store(str(db_path))
+    durable_state = MagicMock()
+    durable_state.load_unrepaired_stream_gap_state.return_value = [
+        ("gap-open", "NSE", "2885", "RELIANCE", datetime(2026, 1, 6, tzinfo=timezone.utc), None, 6),
+    ]
+    with pytest.raises(StreamRecoveryError, match="durable stream recovery marker"):
+        restarted.restore_unresolved_gaps(durable_state)
+    assert restarted.state == ConnectionState.RECOVERY_FAILED
+    assert ("NSE", "2885") in restarted._degraded_tokens
+    with pytest.raises(StreamRecoveryError, match="startup is blocked"):
+        restarted.start()
+    restarted._on_open(MagicMock(), restarted.generation_id)
+    assert restarted.state == ConnectionState.RECOVERY_FAILED
+
+
+def test_e8_websocket_transport_lifecycle_failure_paths():
+    """Transport failures remain isolated while fail-closed state is retained."""
+    from smartapi.subscription_registry import SubscriptionKey
+    from smartapi.websocket_client import ConnectionState, SmartAPIWebSocketClient
+    from unittest.mock import MagicMock
+
+    auth = MagicMock()
+    auth.websocket_authorization = "Bearer test"
+    auth.api_key = "key"
+    auth.client_code = "client"
+    auth.feed_token = "feed"
+    socket = MagicMock()
+    socket.run_forever.side_effect = RuntimeError("transport failed")
+    client = SmartAPIWebSocketClient(auth=auth, websocket_factory=lambda **_: socket)
+    client._connect_socket(client.generation_id)
+    client._ws_thread.join(timeout=1.0)
+    client.subscribe([SubscriptionKey(mode=1, exchange_type=1, token="2885")])
+    client._on_open(socket, client.generation_id)
+    assert socket.send.called
+    socket.send.side_effect = RuntimeError("write failed")
+    client._send_json({"action": 1})
+    socket.close.side_effect = RuntimeError("close failed")
+    client._trigger_stream_resync("NSE", "2885")
+    client._state = ConnectionState.RECOVERY_FAILED
+    client._on_close(socket, 1006, "failed", client.generation_id)
+    assert client.state == ConnectionState.RECOVERY_FAILED
+    client.stop()
+
+
+def test_e8_lifecycle_callbacks_are_mandatory_and_gap_ids_are_exact():
+    """Recovery operations reject missing durable callbacks and unknown exact IDs."""
+    from smartapi.websocket_client import SmartAPIWebSocketClient, StreamRecoveryError
+    from unittest.mock import MagicMock
+
+    client = SmartAPIWebSocketClient(auth=MagicMock())
+    with pytest.raises(StreamRecoveryError, match="re-anchor requires"):
+        client.reanchor_stream("NSE", "2885", baseline_seq=1)
+    with pytest.raises(StreamRecoveryError, match="repair requires"):
+        client.repair_gap("NSE", "2885", "unknown")
+
+    aggregator = RealtimeBarAggregator(timeframe="1m")
+    start = datetime(2026, 1, 6, 9, 15, tzinfo=timezone.utc)
+    aggregator.mark_untrusted("gap-a", "RELIANCE", start)
+    aggregator.mark_untrusted("gap-a", "RELIANCE", start)
+    assert aggregator._untrusted_windows["RELIANCE"] == [("gap-a", start, None)]
+    with pytest.raises(KeyError, match="Unknown canonical"):
+        aggregator.close_degraded_interval("gap-missing", start)
+    with pytest.raises(KeyError, match="Unknown canonical"):
+        aggregator.repair_gap("gap-missing")
+    aggregator.close_degraded_interval("gap-a", start)
+    aggregator.repair_gap("gap-a")
+
+
+def test_e8_stream_fail_closed_transport_and_worker_edges(monkeypatch):
+    """Raw-sink, gap-callback, watchdog and reconnect faults never make ticks authoritative."""
+    import struct
+    import threading
+    from unittest.mock import MagicMock
+
+    from data_platform.live_admission import EventTimePolicy
+    from smartapi.websocket_client import ConnectionState, SmartAPIWebSocketClient
+
+    auth = MagicMock()
+    policy = LiveAdmissionPolicy(
+        event_time=EventTimePolicy(max_feed_staleness_seconds=1e9, max_future_skew_seconds=1e9),
+        max_stale_latency_seconds=1e9,
+        check_session_hours=False,
+    )
+    client = SmartAPIWebSocketClient(
+        auth=auth,
+        admission_validator=LiveMarketDataAdmissionValidator(policy=policy),
+    )
+    client._state = ConnectionState.CONNECTED
+
+    class UnreliableRawSink:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def enqueue_raw_packet(self, raw: bytes, *, received_at: datetime) -> bool:
+            self.calls += 1
+            if self.calls == 1:
+                return False
+            raise RuntimeError("raw sink offline")
+
+    client.raw_packet_sink = UnreliableRawSink()
+
+    def packet(sequence: int) -> bytes:
+        return struct.pack(
+            "<BB25sqqq", 1, 1, b"2885".ljust(25, b"\x00"), sequence,
+            int(time.time() * 1000), 250_000,
+        )
+
+    # A full raw queue is observational only: the valid baseline tick remains trusted.
+    client._on_data(None, packet(1), 2, True)
+    assert client.metrics.dispatch_queue_drops == 1
+    assert client._dispatch_queue.get_nowait().quality_state == "TRUSTED"
+
+    # No durable gap callback is a hard failure, even if raw capture also fails.
+    client._on_data(None, packet(3), 2, True)
+    assert client.state == ConnectionState.RECOVERY_FAILED
+    assert client._dispatch_queue.empty()
+    client._schedule_reconnect()
+    assert client.metrics.reconnect_total == 0
+
+    # A watchdog timeout closes the socket; it does not dispatch data itself.
+    watchdog_client = SmartAPIWebSocketClient(auth=MagicMock())
+    watchdog_client.watchdog_timeout = 1.0
+    watchdog_client._state = ConnectionState.CONNECTED
+    watchdog_client._last_rx_monotonic = 0.0
+    watchdog_client._monotonic = lambda: 2.0
+    watchdog_client._ws = MagicMock()
+    watchdog_client._ws.close.side_effect = lambda: setattr(
+        watchdog_client, "_state", ConnectionState.STOPPED,
+    )
+    monkeypatch.setattr("smartapi.websocket_client.time.sleep", lambda _: None)
+    watchdog_client._watchdog_loop()
+    watchdog_client._ws.close.assert_called_once()
+
+    # Auth-refresh errors remain isolated and the reconnect attempt is still bounded.
+    reconnect_client = SmartAPIWebSocketClient(auth=MagicMock())
+    reconnect_client._rng = lambda _a, _b: 0.0
+    reconnect_client._state = ConnectionState.CONNECTED
+    reconnect_client.auth.refresh_token.side_effect = RuntimeError("expired")
+    finished = threading.Event()
+    reconnect_client._connect_socket = lambda _generation: finished.set()
+    reconnect_client._schedule_reconnect(is_auth_error=True)
+    assert finished.wait(timeout=1.0)
+    assert reconnect_client.metrics.auth_refresh_total == 0
 
 
 def test_p0_4_arbitrary_named_universe_fails_closed(tmp_path):

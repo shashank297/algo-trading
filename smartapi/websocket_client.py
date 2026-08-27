@@ -12,6 +12,7 @@ import uuid
 from dataclasses import replace
 from datetime import datetime, timezone
 from enum import Enum
+from pathlib import Path
 from typing import Any, Callable
 
 import websocket
@@ -115,6 +116,7 @@ class SmartAPIWebSocketClient:
         self._gap_start_times: dict[tuple[str, str], datetime] = {}
         self._gap_ids: dict[tuple[str, str], list[str]] = {}
         self._recovery_epoch = 0
+        self._recovery_marker_path: Path | None = None
 
     @property
     def state(self) -> ConnectionState:
@@ -151,20 +153,20 @@ class SmartAPIWebSocketClient:
                 f"Unable to durably re-anchor stream gap for {exchange}:{token}; trusted dispatch remains blocked."
             ) from exc
 
+        # Durability is confirmed above. Only now may future packets become
+        # authoritative, and only for the exact token whose persisted gaps
+        # were closed by the callback.
         self.metrics.sequence_tracker.reanchor(exchange, token, baseline_seq)
-        # Also reanchor under prefix variants.
-        for ex in ["NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"]:
-            self.metrics.sequence_tracker.reanchor(ex, token, baseline_seq)
-        for k in keys_to_remove:
-            self._degraded_tokens.discard(k)
-            self._gap_start_times.pop(k, None)
-            self._gap_ids.pop(k, None)
-
+        for known_exchange in ("NSE", "NSE_CM", "NSE_FO", "BSE", "BSE_CM", "BSE_FO", "MCX", "MCX_FO"):
+            self.metrics.sequence_tracker.reanchor(known_exchange, token, baseline_seq)
+        for key in keys_to_remove:
+            self._degraded_tokens.discard(key)
+            self._gap_start_times.pop(key, None)
+            self._gap_ids.pop(key, None)
         with self._state_lock:
             if not self._degraded_tokens and self._state == ConnectionState.DEGRADED:
                 self._state = ConnectionState.CONNECTED
-
-        logger.info("Stream authoritatively re-anchored for {}:{}.", exchange, resolved_sym)
+        logger.info("Stream authoritatively re-anchored for {}:{} at baseline {}.", exchange, resolved_sym, baseline_seq)
 
     def repair_gap(self, exchange: str, token: str, gap_id: str) -> None:
         """Acknowledge backfilled repair of a historical gap interval."""
@@ -173,7 +175,14 @@ class SmartAPIWebSocketClient:
             resolved_sym = self.instrument_master.resolve_symbol(token, exchange) or token
         if self.on_gap_repaired is None:
             raise StreamRecoveryError("Canonical gap repair requires a durable lifecycle callback.")
-        self.on_gap_repaired(exchange, token, resolved_sym, gap_id)
+        try:
+            self.on_gap_repaired(exchange, token, resolved_sym, gap_id)
+        except Exception as exc:
+            with self._state_lock:
+                self._state = ConnectionState.RECOVERY_FAILED
+            raise StreamRecoveryError(
+                f"Unable to durably record repair for stream gap {gap_id}; trusted dispatch remains blocked."
+            ) from exc
 
     def subscribe_tick(self, callback: Callable[[MarketDataEvent], None]) -> None:
         """Register a subscriber callback for decoded market data events."""
@@ -190,10 +199,44 @@ class SmartAPIWebSocketClient:
     def configure_quarantine_store(self, db_path: str) -> None:
         """Configure path for quarantine worker's dedicated DuckDB connection."""
         self._quarantine_db_path = db_path
+        self._recovery_marker_path = Path(f"{db_path}.stream-recovery-failed.json")
+
+    def restore_unresolved_gaps(self, db: Any) -> None:
+        """Restore durable unresolved gaps before any live stream becomes authoritative."""
+        rows = db.load_unrepaired_stream_gap_state()
+        for gap_id, exchange, token, _, start_time, _, epoch in rows:
+            key = (exchange, token)
+            self._degraded_tokens.add(key)
+            self._gap_start_times.setdefault(key, start_time)
+            self._gap_ids.setdefault(key, []).append(gap_id)
+            self._recovery_epoch = max(self._recovery_epoch, int(epoch))
+        if self._recovery_marker_path and self._recovery_marker_path.exists():
+            with self._state_lock:
+                self._state = ConnectionState.RECOVERY_FAILED
+            raise StreamRecoveryError(
+                f"Unresolved durable stream recovery marker exists at {self._recovery_marker_path}."
+            )
+
+    def _write_recovery_marker(self, *, gap_id: str, exchange: str, token: str, epoch: int, error: Exception) -> None:
+        """Durably record a failed canonical write so restart cannot erase the failure."""
+        if self._recovery_marker_path is None:
+            return
+        payload = {
+            "gap_id": gap_id, "exchange": exchange, "token": token,
+            "stream_epoch": epoch, "error": str(error),
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = self._recovery_marker_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        temporary.replace(self._recovery_marker_path)
 
     def start(self) -> None:
         """Start the streaming client, dispatch worker, and connection loop."""
         with self._state_lock:
+            if self._state == ConnectionState.RECOVERY_FAILED:
+                raise StreamRecoveryError(
+                    "Streaming startup is blocked by an unresolved durable recovery failure."
+                )
             if self._state in (ConnectionState.CONNECTED, ConnectionState.CONNECTING):
                 return
             self._state = ConnectionState.CONNECTING
@@ -361,6 +404,9 @@ class SmartAPIWebSocketClient:
         with self._state_lock:
             if generation != self._generation_id:
                 return
+            if self._state == ConnectionState.RECOVERY_FAILED:
+                logger.error("WebSocket opened while recovery is failed; authoritative dispatch remains blocked.")
+                return
             self._state = ConnectionState.CONNECTED
             self._connected_monotonic = self._monotonic()
             self._last_rx_monotonic = self._monotonic()
@@ -459,6 +505,10 @@ class SmartAPIWebSocketClient:
                             seq_num - gap_size, seq_num, gap_size, curr_epoch,
                         )
                     except Exception as exc:
+                        self._write_recovery_marker(
+                            gap_id=gap_id, exchange=event.exchange, token=event.token,
+                            epoch=curr_epoch, error=exc,
+                        )
                         with self._state_lock:
                             self._state = ConnectionState.RECOVERY_FAILED
                         logger.critical("Unable to persist canonical stream gap {}: {}", gap_id, exc)
@@ -567,7 +617,11 @@ class SmartAPIWebSocketClient:
     ) -> None:
         """Handle WebSocket close and schedule reconnect if applicable."""
         with self._state_lock:
-            if generation != self._generation_id or self._state in (ConnectionState.STOPPED, ConnectionState.STOPPING):
+            if generation != self._generation_id or self._state in (
+                ConnectionState.STOPPED,
+                ConnectionState.STOPPING,
+                ConnectionState.RECOVERY_FAILED,
+            ):
                 return
             self._state = ConnectionState.RECONNECTING
 
@@ -576,6 +630,8 @@ class SmartAPIWebSocketClient:
 
     def _schedule_reconnect(self, is_auth_error: bool = False) -> None:
         """Perform jittered backoff reconnect with selective auth refresh."""
+        if self.state == ConnectionState.RECOVERY_FAILED:
+            return
         self.metrics.reconnect_total += 1
         self._reconnect_attempts += 1
 
@@ -588,7 +644,11 @@ class SmartAPIWebSocketClient:
         def reconnect_task() -> None:
             time.sleep(delay)
             with self._state_lock:
-                if self._state in (ConnectionState.STOPPED, ConnectionState.STOPPING):
+                if self._state in (
+                    ConnectionState.STOPPED,
+                    ConnectionState.STOPPING,
+                    ConnectionState.RECOVERY_FAILED,
+                ):
                     return
                 self._generation_id += 1
                 gen = self._generation_id
