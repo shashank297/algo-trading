@@ -40,6 +40,7 @@ def test_websocket_client_deep_branches(tmp_path):
         instrument_master=im,
         admission_validator=validator,
         quarantine_db_path=str(tmp_path / "ws_deep.duckdb"),
+        websocket_factory=MagicMock,
     )
 
     # 1. start() and double start() branch
@@ -64,7 +65,7 @@ def test_websocket_client_deep_branches(tmp_path):
     mock_ws.close.side_effect = Exception("Close error")
     client._ws = mock_ws
     mock_th = MagicMock()
-    mock_th.is_alive.return_value = True
+    mock_th.is_alive.return_value = False
     client._ws_thread = mock_th
     client.stop()
 
@@ -73,6 +74,7 @@ def test_websocket_client_deep_branches(tmp_path):
         auth=auth,
         admission_validator=validator,
         quarantine_db_path="/invalid/nonexistent/path/db.duckdb",
+        websocket_factory=MagicMock,
     )
     bad_client._state = ConnectionState.STOPPED
     bad_client._quarantine_worker()

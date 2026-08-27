@@ -577,7 +577,7 @@ class SmartAPIWebSocketClient:
                     if self._state == ConnectionState.STOPPED and self._quarantine_queue.empty():
                         break
                 try:
-                    item = self._quarantine_queue.get(timeout=0.5)
+                    item = self._quarantine_queue.get(timeout=0.05)
                 except queue.Empty:
                     continue
 
@@ -689,7 +689,7 @@ class SmartAPIWebSocketClient:
         """Asynchronously dispatch decoded ticks to all subscribers with exception isolation."""
         while self.state != ConnectionState.STOPPED:
             try:
-                event = self._dispatch_queue.get(timeout=0.2)
+                event = self._dispatch_queue.get(timeout=0.05)
             except queue.Empty:
                 continue
 

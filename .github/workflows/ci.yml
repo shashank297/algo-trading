@@ -31,7 +31,7 @@ jobs:
       - name: Compile source
         run: python -m compileall -q main.py research.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
       - name: Run tests
-        run: python -m pytest -q
+        run: python -X faulthandler -m pytest -vv -o faulthandler_timeout=60
 
   quality:
     runs-on: ubuntu-latest

@@ -29,6 +29,18 @@ def _scalar(row: tuple[Any, ...] | None, description: str) -> Any:
 class DuckDBManager:
     """Manage DuckDB schema creation, upserts, and audit logging."""
 
+    _path_locks: dict[str, threading.RLock] = {}
+    _path_locks_lock = threading.Lock()
+
+    @classmethod
+    def _get_path_lock(cls, db_path: str) -> threading.RLock:
+        import os
+        norm = os.path.abspath(db_path) if db_path != ":memory:" else f":memory:{uuid.uuid4()}"
+        with cls._path_locks_lock:
+            if norm not in cls._path_locks:
+                cls._path_locks[norm] = threading.RLock()
+            return cls._path_locks[norm]
+
     def __init__(self, db_path: str) -> None:
         """Connect to DuckDB and initialize the schema.
 
@@ -37,20 +49,21 @@ class DuckDBManager:
         """
 
         self.db_path = db_path
-        self._write_lock = threading.RLock()
+        self._write_lock = self._get_path_lock(db_path)
         
-        for attempt in range(10):
-            try:
-                self.conn = duckdb.connect(database=db_path)
-                break
-            except duckdb.IOException as e:
-                if attempt == 9:
-                    logger.error("Failed to acquire DuckDB lock after 10 attempts.")
-                    raise e
-                logger.debug(f"DuckDB locked, retrying in 1s (attempt {attempt+1}/10)...")
-                time.sleep(1)
-                
-        self.initialize_schema()
+        with self._write_lock:
+            for attempt in range(10):
+                try:
+                    self.conn = duckdb.connect(database=db_path)
+                    break
+                except duckdb.IOException as e:
+                    if attempt == 9:
+                        logger.error("Failed to acquire DuckDB lock after 10 attempts.")
+                        raise e
+                    logger.debug(f"DuckDB locked, retrying in 1s (attempt {attempt+1}/10)...")
+                    time.sleep(1)
+                    
+            self.initialize_schema()
         logger.info("🗄️ Database connected: {}", db_path)
 
     def initialize_schema(self) -> None:
