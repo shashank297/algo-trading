@@ -19,7 +19,7 @@ def test_cli_market_regime_eod(capsys):
         "2026-08-27",
     ]
 
-    with patch("research.DuckDBManager") as mock_db_cls:
+    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         # Mock historical candles df empty to produce valid INSUFFICIENT_CONTEXT snapshot without crash
@@ -55,7 +55,7 @@ def test_cli_market_regime_intraday(capsys):
         "2026-08-27T10:00:00+05:30",
     ]
 
-    with patch("research.DuckDBManager") as mock_db_cls:
+    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
         import pandas as pd
