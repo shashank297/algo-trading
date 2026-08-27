@@ -23,6 +23,7 @@ Persistence: results are written to ``cross_provider_reconciliations`` via
 from __future__ import annotations
 
 import json
+import math
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -73,7 +74,7 @@ class BarComparisonOutcome:
     result: ProviderReconciliationResult
     primary_ohlcv: dict[str, float]
     secondary_ohlcv: dict[str, float] | None  # None when secondary bar is UNAVAILABLE
-    field_deltas: dict[str, float]  # relative differences per field (empty on UNAVAILABLE)
+    field_deltas: dict[str, float | None]  # None denotes an invalid non-finite observation
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -224,8 +225,10 @@ class CrossProviderVerifier:
             ProviderDataVerificationError: If ``severity=BLOCKING`` and any bar
                                            produces a DISAGREEMENT result.
         """
-        if not primary_dataset_id or not secondary_dataset_id:
-            raise ValueError("Provider verification requires explicit primary and secondary dataset IDs.")
+        if not primary_dataset_id:
+            raise ValueError("Provider verification requires an explicit primary dataset ID.")
+        if secondary_bars is not None and not secondary_bars.empty and not secondary_dataset_id:
+            raise ValueError("Observed secondary bars require an explicit secondary dataset ID.")
         active_tolerance = _build_tolerance(tolerance)
         reconciliation_id = str(uuid.uuid4())
 
@@ -233,6 +236,7 @@ class CrossProviderVerifier:
         primary_df = primary_bars.copy()
         primary_df["timestamp"] = pd.to_datetime(primary_df["timestamp"], utc=True)
         primary_df = primary_df.sort_values("timestamp").reset_index(drop=True)
+        _validate_primary_ohlcv(primary_df)
 
         secondary_df: pd.DataFrame | None = None
         if secondary_bars is not None and not secondary_bars.empty:
@@ -395,15 +399,22 @@ def _compare_ohlcv(
     primary: dict[str, float],
     secondary: dict[str, float],
     tolerance: dict[str, float],
-) -> tuple[dict[str, float], ProviderReconciliationResult]:
+) -> tuple[dict[str, float | None], ProviderReconciliationResult]:
     """Compare two OHLCV dicts; return (field_deltas, outcome)."""
-    deltas: dict[str, float] = {}
+    deltas: dict[str, float | None] = {}
     any_beyond_tolerance = False
     any_within_tolerance_but_not_exact = False
 
     for col in ("open", "high", "low", "close", "volume"):
         p_val = primary.get(col, 0.0)
         s_val = secondary.get(col, 0.0)
+
+        if not math.isfinite(p_val):
+            raise ValueError(f"Canonical primary {col} is non-finite.")
+        if not math.isfinite(s_val):
+            deltas[col] = None
+            any_beyond_tolerance = True
+            continue
 
         if p_val == 0.0 and s_val == 0.0:
             rel_delta = 0.0
@@ -427,6 +438,19 @@ def _compare_ohlcv(
     return deltas, ProviderReconciliationResult.MATCH
 
 
+def _validate_primary_ohlcv(primary_df: pd.DataFrame) -> None:
+    """Reject invalid canonical provider input before a reconciliation is created."""
+    required = ("open", "high", "low", "close", "volume")
+    missing = set(required).difference(primary_df.columns)
+    if missing:
+        raise ValueError(f"Canonical primary bars are missing OHLCV columns: {sorted(missing)}.")
+    values = primary_df[list(required)].apply(pd.to_numeric, errors="coerce")
+    if values.isna().any().any() or not values.apply(lambda column: column.map(math.isfinite).all()).all():
+        raise ValueError("Canonical primary OHLCV values must be finite.")
+    if (values[["open", "high", "low", "close"]] <= 0).any().any() or (values["volume"] < 0).any():
+        raise ValueError("Canonical primary prices must be positive and volume non-negative.")
+
+
 def _handle_disagreement(
     *,
     symbol: str,
@@ -435,7 +459,7 @@ def _handle_disagreement(
     timestamp: "pd.Timestamp",
     primary_ohlcv: dict[str, float],
     secondary_ohlcv: dict[str, float],
-    field_deltas: dict[str, float],
+    field_deltas: dict[str, float | None],
     severity: VerificationSeverity,
     defer_blocking: bool = False,
 ) -> None:

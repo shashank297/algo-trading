@@ -226,7 +226,7 @@ class TestCrossProviderVerifier:
             severity=VerificationSeverity.WARNING,
             db=db,
             primary_dataset_id="ds_primary_unavail",
-            secondary_dataset_id="ds_secondary_unavail",
+            secondary_dataset_id=None,
         )
 
         assert report.bars_match == 0
@@ -237,6 +237,34 @@ class TestCrossProviderVerifier:
         for outcome in report.bar_outcomes:
             assert outcome.result == ProviderReconciliationResult.UNAVAILABLE
             assert outcome.secondary_ohlcv is None
+        persisted = db.get_reconciliations(symbol="RELIANCE", timeframe="5m")
+        assert persisted[0]["secondary_dataset_id"] is None
+
+    @pytest.mark.parametrize("column,value", [("open", float("nan")), ("close", float("inf")), ("volume", float("nan"))])
+    def test_non_finite_secondary_is_disagreement(self, verifier, db, column, value):
+        primary = _make_bar_df([(100.0, 105.0, 99.0, 102.0, 5000.0)])
+        secondary = primary.copy()
+        secondary.loc[0, column] = value
+        with pytest.warns(ProviderDataVerificationWarning):
+            report = verifier.verify(
+                primary_bars=primary, secondary_bars=secondary, symbol="RELIANCE", exchange="NSE", timeframe="5m",
+                primary_provider="angel_one", secondary_provider="nse_feed", db=db,
+                primary_dataset_id="primary-finite", secondary_dataset_id="secondary-invalid",
+            )
+        assert report.bar_outcomes[0].result == ProviderReconciliationResult.DISAGREEMENT
+        assert report.bar_outcomes[0].field_deltas[column] is None
+
+    @pytest.mark.parametrize("column,value", [("open", float("nan")), ("close", float("inf")), ("volume", -1.0)])
+    def test_invalid_primary_fails_before_reconciliation(self, verifier, db, column, value):
+        primary = _make_bar_df([(100.0, 105.0, 99.0, 102.0, 5000.0)])
+        primary.loc[0, column] = value
+        with pytest.raises(ValueError, match="Canonical primary"):
+            verifier.verify(
+                primary_bars=primary, secondary_bars=None, symbol="RELIANCE", exchange="NSE", timeframe="5m",
+                primary_provider="angel_one", secondary_provider="nse_feed", db=db,
+                primary_dataset_id="primary-invalid",
+            )
+        assert db.get_reconciliations(symbol="RELIANCE", timeframe="5m") == []
 
     def test_no_provider_blending_invariant(self, verifier, db):
         """T034: Verification never blends (averages or synthetically combines) primary and secondary data."""

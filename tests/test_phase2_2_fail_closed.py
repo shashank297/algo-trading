@@ -8,6 +8,7 @@ from data_platform.resampling import ResamplingError, SessionBarResampler
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.calendars import MarketCalendar
 from trading_stack.domain import infer_market_spec
+from trading_stack.pipeline import StrategyPipeline
 
 
 _CHECKS = ("schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity")
@@ -70,7 +71,7 @@ def test_certified_derivation_is_admitted_with_bound_dq_evidence(tmp_path) -> No
     _seed_certified_source(db, "source-ok", _bars(375))
     calendar = MarketCalendar(infer_market_spec("RELIANCE", "NSE", "EQUITY"))
     cert = SessionBarResampler().derive_and_certify(
-        source_dataset_id="source-ok", target_timeframe="5m", calendar=calendar, db=db,
+        source_dataset_id="source-ok", target_timeframe="15m", calendar=calendar, db=db,
         symbol="RELIANCE", exchange="NSE",
     )
     row = db.conn.execute(
@@ -78,6 +79,10 @@ def test_certified_derivation_is_admitted_with_bound_dq_evidence(tmp_path) -> No
         [cert.derived_dataset_id],
     ).fetchone()
     assert row == ("VERIFIED", "CANONICAL_PROMOTED", cert.content_hash, "source-ok")
-    assert db.conn.execute("SELECT COUNT(*) FROM historical_candles WHERE dataset_id = ?", [cert.derived_dataset_id]).fetchone()[0] == 75
+    assert db.conn.execute("SELECT COUNT(*) FROM historical_candles WHERE dataset_id = ?", [cert.derived_dataset_id]).fetchone()[0] == 25
     assert db.conn.execute("SELECT COUNT(*) FROM data_quality_certifications WHERE dataset_id = ? AND status = 'CERTIFIED'", [cert.derived_dataset_id]).fetchone()[0] == 1
+    pipeline = StrategyPipeline(db, india_calendar=calendar, require_authoritative_certification=True)
+    loaded = pipeline.load_candles("RELIANCE", "15m", require_authoritative_certification=True)
+    assert len(loaded) == 25
+    assert pipeline._last_frame_certification_id is not None
     db.close()

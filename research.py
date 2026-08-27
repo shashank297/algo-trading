@@ -191,8 +191,8 @@ def main(argv: list[str] | None = None) -> int:
                 parser.error("--primary-provider is required for verify-market-provider")
             if not args.secondary_provider:
                 parser.error("--secondary-provider is required for verify-market-provider")
-            if not args.primary_dataset or not args.secondary_dataset:
-                parser.error("--primary-dataset and --secondary-dataset are required for verify-market-provider")
+            if not args.primary_dataset:
+                parser.error("--primary-dataset is required for verify-market-provider")
 
             target_timeframe = args.derived_timeframe or args.timeframe
             if args.derived_timeframe and args.timeframe != "1d" and args.derived_timeframe != args.timeframe:
@@ -208,17 +208,19 @@ def main(argv: list[str] | None = None) -> int:
                     f"No primary bars found for {args.symbol}/{args.derived_timeframe}/{args.primary_provider}."
                 )
 
-            secondary_bars = db.load_provider_verification_dataset(
-                dataset_id=args.secondary_dataset, symbol=args.symbol, exchange="NSE", timeframe=target_timeframe,
-                provider_name=args.secondary_provider, require_canonical=False, start_ts=start_ts, end_ts=end_ts,
-            )
+            secondary_bars = None
+            if args.secondary_dataset:
+                secondary_bars = db.load_provider_verification_dataset(
+                    dataset_id=args.secondary_dataset, symbol=args.symbol, exchange="NSE", timeframe=target_timeframe,
+                    provider_name=args.secondary_provider, require_canonical=False, start_ts=start_ts, end_ts=end_ts,
+                )
 
             severity = VerificationSeverity(args.verification_severity)
             verifier = CrossProviderVerifier()
             try:
                 verif_report = verifier.verify(
                     primary_bars=primary_bars,
-                    secondary_bars=secondary_bars if not secondary_bars.empty else None,
+                    secondary_bars=secondary_bars if secondary_bars is not None and not secondary_bars.empty else None,
                     symbol=args.symbol,
                     exchange=str(primary_bars["exchange"].iloc[0]) if "exchange" in primary_bars.columns else "NSE",
                     timeframe=target_timeframe,

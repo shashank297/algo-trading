@@ -79,6 +79,9 @@
 - [x] T045 Bind provider verification to explicit dataset identities and persist BLOCKING reports before raising.
 - [x] T046 Apply inclusive local-date CLI ranges and document `--timeframe` as the target timeframe.
 - [ ] T047 Complete full local and exact-SHA GitHub Actions verification before certifying this phase.
+- [x] T048 Permit a genuinely unavailable secondary provider without a placeholder dataset ID.
+- [x] T049 Reject invalid canonical primary values and classify non-finite secondary values as persisted disagreements.
+- [x] T050 Prove certified derived bars pass the authoritative `StrategyPipeline.load_candles()` admission path.
 
 ## Dependencies
 

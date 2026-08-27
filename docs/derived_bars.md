@@ -63,6 +63,7 @@ The `CrossProviderVerifier` (`data_platform/provider_verification.py`) provides 
 
 - **Primary Provider**: Remains canonical and untouched.
 - **Secondary Provider**: Purely observational comparison.
+- **Unavailable Secondary**: A missing secondary dataset is recorded as `UNAVAILABLE` for every primary bar; no placeholder dataset identity is fabricated.
 - **No Blending Invariant**: Primary data is NEVER averaged, interpolated, or blended with secondary data (i.e. `(primary + secondary)/2` is strictly forbidden).
 - **Per-Bar Outcomes**:
   - `MATCH`: Exact match across all OHLCV fields.
@@ -74,6 +75,7 @@ The `CrossProviderVerifier` (`data_platform/provider_verification.py`) provides 
   - `BLOCKING`: Persists the complete reconciliation first, then raises `ProviderDataVerificationError` to block research admission.
 
 Reconciliation summaries and per-bar audits are persisted to `cross_provider_reconciliations`.
+Non-finite secondary OHLCV is a persisted `DISAGREEMENT`; invalid primary OHLCV is rejected before reconciliation because canonical data must be valid.
 
 ---
 
