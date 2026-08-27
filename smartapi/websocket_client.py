@@ -63,7 +63,7 @@ class SmartAPIWebSocketClient:
         clock: Callable[[], float] = time.time,
         monotonic_clock: Callable[[], float] = time.monotonic,
         backoff_rng: Callable[[float, float], float] = random.uniform,
-        websocket_factory: Any = websocket.WebSocketApp,
+        websocket_factory: Any | None = None,
         quarantine_conn: Any = None,
         quarantine_db_path: str | None = None,
         raw_packet_sink: Any | None = None,
@@ -88,7 +88,10 @@ class SmartAPIWebSocketClient:
         self._clock = clock
         self._monotonic = monotonic_clock
         self._rng = backoff_rng
-        self._ws_factory = websocket_factory
+        # Resolve the default at construction time.  Besides making dependency
+        # injection explicit, this prevents an import-time-bound factory from
+        # bypassing test isolation patches.
+        self._ws_factory = websocket_factory or websocket.WebSocketApp
 
         self.registry = SubscriptionRegistry()
         self.metrics = StreamMetrics()

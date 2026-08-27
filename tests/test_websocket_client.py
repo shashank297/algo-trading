@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 
 from data_platform.live_admission import LiveAdmissionPolicy, LiveMarketDataAdmissionValidator
@@ -196,7 +196,12 @@ class TestSmartAPIWebSocketClient(unittest.TestCase):
         self.client.configure_quarantine_store(":memory:")
         self.assertEqual(self.client._quarantine_db_path, ":memory:")
 
+    def test_default_websocket_factory_is_resolved_at_construction_time(self) -> None:
+        """A test-wide transport patch must prevent accidental real sockets."""
+        with patch("smartapi.websocket_client.websocket.WebSocketApp", FakeWebSocketApp):
+            client = SmartAPIWebSocketClient(auth=self.mock_auth)
+        self.assertIs(client._ws_factory, FakeWebSocketApp)
+
 
 if __name__ == "__main__":
     unittest.main()
-
