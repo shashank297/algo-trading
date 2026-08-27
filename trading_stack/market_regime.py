@@ -715,7 +715,10 @@ class MarketRegimeEngine:
         breadth_score = 0.4 * b_50 + 0.3 * b_200 + 0.3 * ad_ratio
 
         # Dispersion scoring
-        dispersion_score = float(np.clip((ret_dispersion_20 - 0.04) / 0.04, -1.0, 1.0))
+        dispersion_score = (
+            float(np.clip((ret_dispersion_20 - 0.04) / 0.04, -1.0, 1.0))
+            if ret_dispersion_20 is not None else 0.0
+        )
 
         # Liquidity scoring
         liquidity_score = float(np.clip((turnover_ratio - 1.0) / 0.4, -1.0, 1.0)) if turnover_ratio is not None else 0.0

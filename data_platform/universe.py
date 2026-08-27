@@ -75,6 +75,19 @@ class PointInTimeUniverseManager:
         return raw
 
     @classmethod
+    def _ensure_knowledge_table(cls, raw_conn: Any) -> None:
+        """Provide precise known-time storage for direct in-memory PIT callers."""
+        raw_conn.execute(
+            """CREATE TABLE IF NOT EXISTS index_constituent_knowledge (
+                universe_name VARCHAR NOT NULL,
+                instrument_id VARCHAR NOT NULL,
+                effective_from DATE NOT NULL,
+                known_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (universe_name, instrument_id, effective_from)
+            )"""
+        )
+
+    @classmethod
     def insert_constituent(
         cls,
         conn: Any,
@@ -83,6 +96,7 @@ class PointInTimeUniverseManager:
     ) -> None:
         """Insert a constituent membership record into DuckDB with interval overlap validation."""
         raw_conn = cls._get_raw_conn(conn)
+        cls._ensure_knowledge_table(raw_conn)
         
         # Overlap validation
         if not allow_overlap:
@@ -92,9 +106,9 @@ class PointInTimeUniverseManager:
             """
             INSERT OR REPLACE INTO index_constituents_pit (
                 universe_name, instrument_id, symbol, token, exchange, effective_from,
-                effective_until, known_from, known_at, weight, inclusion_reason, exclusion_reason,
+                effective_until, known_from, weight, inclusion_reason, exclusion_reason,
                 recorded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 constituent.universe_name.upper(),
@@ -105,13 +119,19 @@ class PointInTimeUniverseManager:
                 constituent.effective_from.isoformat(),
                 constituent.effective_until.isoformat() if constituent.effective_until else None,
                 constituent.known_from.isoformat() if constituent.known_from else None,
-                constituent.known_at.isoformat() if constituent.known_at else None,
                 constituent.weight,
                 constituent.inclusion_reason,
                 constituent.exclusion_reason,
                 datetime.now(timezone.utc).isoformat(),
             ],
         )
+        if constituent.known_at is not None:
+            raw_conn.execute(
+                """INSERT OR REPLACE INTO index_constituent_knowledge
+                   (universe_name, instrument_id, effective_from, known_at) VALUES (?, ?, ?, ?)""",
+                [constituent.universe_name.upper(), constituent.instrument_id.upper(),
+                 constituent.effective_from.isoformat(), constituent.known_at.isoformat()],
+            )
 
     @classmethod
     def _validate_no_interval_overlap(
@@ -158,6 +178,7 @@ class PointInTimeUniverseManager:
     ) -> int:
         """Bulk insert multiple PIT membership records."""
         raw_conn = cls._get_raw_conn(conn)
+        cls._ensure_knowledge_table(raw_conn)
         if isinstance(records, pd.DataFrame):
             df = records.copy()
             if "universe_name" not in df.columns or "symbol" not in df.columns or "effective_from" not in df.columns:
@@ -199,14 +220,21 @@ class PointInTimeUniverseManager:
     ) -> list[PointInTimeConstituent]:
         """Fetch exact point-in-time constituents active on date as_of without survivorship bias."""
         raw_conn = cls._get_raw_conn(conn)
+        cls._ensure_knowledge_table(raw_conn)
         target_date = cls._normalize_date(as_of)
         
         query = """
-            SELECT universe_name, instrument_id, symbol, token, exchange, effective_from, effective_until, known_from, known_at, weight, inclusion_reason, exclusion_reason
-            FROM index_constituents_pit
-            WHERE universe_name = ?
-              AND effective_from <= ?
-              AND (effective_until IS NULL OR effective_until > ?)
+            SELECT pit.universe_name, pit.instrument_id, pit.symbol, pit.token, pit.exchange,
+                   pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at,
+                   pit.weight, pit.inclusion_reason, pit.exclusion_reason
+            FROM index_constituents_pit pit
+            LEFT JOIN index_constituent_knowledge knowledge
+              ON knowledge.universe_name = pit.universe_name
+             AND knowledge.instrument_id = pit.instrument_id
+             AND knowledge.effective_from = pit.effective_from
+            WHERE pit.universe_name = ?
+              AND pit.effective_from <= ?
+              AND (pit.effective_until IS NULL OR pit.effective_until > ?)
         """
         params: list[Any] = [universe_name.upper(), target_date.isoformat(), target_date.isoformat()]
 
@@ -216,13 +244,13 @@ class PointInTimeUniverseManager:
                 knowledge_timestamp = knowledge_timestamp.tz_localize("Asia/Kolkata")
             knowledge_date = knowledge_timestamp.date()
             query += """ AND (
-                known_from IS NULL
-                OR known_from < ?
-                OR (known_from = ? AND known_at IS NOT NULL AND known_at <= ?)
+                pit.known_from IS NULL
+                OR pit.known_from < ?
+                OR (pit.known_from = ? AND knowledge.known_at IS NOT NULL AND knowledge.known_at <= ?)
             )"""
             params.extend([knowledge_date.isoformat(), knowledge_date.isoformat(), knowledge_timestamp.isoformat()])
 
-        query += " ORDER BY symbol ASC"
+        query += " ORDER BY pit.symbol ASC"
         rows = raw_conn.execute(query, params).fetchall()
         
         result: list[PointInTimeConstituent] = []

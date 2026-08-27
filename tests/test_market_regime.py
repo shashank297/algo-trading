@@ -472,8 +472,9 @@ def test_regime_bars_returns_certified_dataset(tmp_path: Path) -> None:
         VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-02 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'ds_cert')
         """
     )
-    db.conn.execute("UPDATE market_datasets SET available_at = '2025-01-02 15:30:00+05:30' WHERE dataset_id = 'ds_cert'")
-    db.conn.execute("UPDATE historical_candles SET available_at = '2025-01-02 15:30:00+05:30' WHERE dataset_id = 'ds_cert'")
+    db.conn.execute("INSERT INTO market_dataset_availability VALUES ('ds_cert', '2025-01-02 15:30:00+05:30')")
+    db.conn.execute("""INSERT INTO historical_candle_availability
+        VALUES ('ds_cert', 'NIFTY200', 'NSE', '1d', '2025-01-02 15:30:00+05:30', '2025-01-02 15:30:00+05:30')""")
     db.conn.execute(
         """INSERT INTO data_quality_certifications
            (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)

@@ -41,7 +41,7 @@ def _build_test_daily_bars(num_days: int = 200, start_date: datetime.date = date
 def test_future_close_mutation():
     """Prove future session close on day D cannot affect 10:00 intraday decision on day D."""
     engine = MarketRegimeEngine()
-    bars = _build_test_daily_bars(num_days=200)
+    bars = _build_test_daily_bars(num_days=260)
     as_of = bars["date"].iloc[-1]
     decision_time = f"{as_of.isoformat()}T10:00:00+05:30"
 
@@ -145,16 +145,16 @@ def test_future_intraday_bar_mutation():
 def test_future_universe_member_exclusion():
     """Prove future universe members do not leak into earlier breadth calculations."""
     engine = MarketRegimeEngine()
-    bars = _build_test_daily_bars(num_days=200)
+    bars = _build_test_daily_bars(num_days=260)
     as_of = bars["date"].iloc[-1]
     decision_time = f"{as_of.isoformat()}T15:30:00+05:30"
 
     # Universe active on as_of has SYM0, SYM1
     pit_members_t = ["SYM0", "SYM1"]
     univ_bars = {
-        "SYM0": _build_test_daily_bars(num_days=200),
-        "SYM1": _build_test_daily_bars(num_days=200),
-        "FUTURE_SYM": _build_test_daily_bars(num_days=200),  # Not yet in PIT universe
+        "SYM0": _build_test_daily_bars(num_days=260),
+        "SYM1": _build_test_daily_bars(num_days=260),
+        "FUTURE_SYM": _build_test_daily_bars(num_days=260),  # Not yet in PIT universe
     }
 
     snap_without_future = engine.evaluate_market_regime(
@@ -175,7 +175,7 @@ def test_future_universe_member_exclusion():
 def test_future_vix_mutation():
     """Prove VIX values published after decision_time do not alter earlier regime evaluation."""
     engine = MarketRegimeEngine()
-    bars = _build_test_daily_bars(num_days=200)
+    bars = _build_test_daily_bars(num_days=260)
     as_of = bars["date"].iloc[-1]
     decision_time = f"{as_of.isoformat()}T10:00:00+05:30"
 
@@ -184,6 +184,8 @@ def test_future_vix_mutation():
         {"timestamp": f"{as_of.isoformat()}T09:30:00+05:30", "close": 13.0},
         {"timestamp": f"{as_of.isoformat()}T15:00:00+05:30", "close": 35.0},
     ])
+    pit_members = ["SYM0"]
+    universe_bars = {"SYM0": _build_test_daily_bars(num_days=260)}
 
     snap1 = engine.evaluate_market_regime(
         market="NSE",
@@ -192,6 +194,8 @@ def test_future_vix_mutation():
         as_of=as_of,
         decision_time=decision_time,
         benchmark_daily_bars=bars,
+        universe_daily_bars=universe_bars,
+        pit_universe_members=pit_members,
         vix_bars=vix_df,
     )
     assert snap1.features.india_vix == 13.0
@@ -207,6 +211,8 @@ def test_future_vix_mutation():
         as_of=as_of,
         decision_time=decision_time,
         benchmark_daily_bars=bars,
+        universe_daily_bars=universe_bars,
+        pit_universe_members=pit_members,
         vix_bars=mutated_vix,
     )
 
@@ -218,7 +224,7 @@ def test_future_vix_mutation():
 def test_eod_vs_intraday_separation():
     """Test EOD evaluation incorporates full completed day D whereas 10:00 intraday uses up to 10:00."""
     engine = MarketRegimeEngine()
-    bars = _build_test_daily_bars(num_days=200)
+    bars = _build_test_daily_bars(num_days=260)
     as_of = bars["date"].iloc[-1]
 
     # Day D closes with massive drop
@@ -233,6 +239,8 @@ def test_eod_vs_intraday_separation():
         "close": 120.2,
         "volume": 10_000,
     }])
+    pit_members = ["SYM0"]
+    universe_bars = {"SYM0": _build_test_daily_bars(num_days=260)}
 
     # 10:00 intraday decision: does NOT know the 50.0 crash
     snap_intraday = engine.evaluate_market_regime(
@@ -243,6 +251,8 @@ def test_eod_vs_intraday_separation():
         decision_time=f"{as_of.isoformat()}T10:00:00+05:30",
         benchmark_daily_bars=bars_with_drop,
         benchmark_intraday_bars=intraday_bars,
+        universe_daily_bars=universe_bars,
+        pit_universe_members=pit_members,
     )
 
     # 15:30 EOD decision: KNOWS the 50.0 crash
@@ -253,6 +263,8 @@ def test_eod_vs_intraday_separation():
         as_of=as_of,
         decision_time=f"{as_of.isoformat()}T15:30:00+05:30",
         benchmark_daily_bars=bars_with_drop,
+        universe_daily_bars=universe_bars,
+        pit_universe_members=pit_members,
     )
 
     assert snap_intraday.component_scores.trend_score > snap_eod.component_scores.trend_score

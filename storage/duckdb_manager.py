@@ -2701,17 +2701,17 @@ class DuckDBManager:
                 # Find the most recent certified dataset for this symbol/timeframe/exchange
                 ds_row = self.conn.execute(
                     """
-                    SELECT dataset_id,
-                           COALESCE(transformation_hash, raw_hash) AS content_hash
-                    FROM market_datasets
-                    WHERE (symbol = ? OR canonical_symbol = ?)
-                      AND exchange = ?
-                      AND timeframe = ?
-                      AND status = 'VERIFIED'
-                      AND lifecycle_status = 'CANONICAL_PROMOTED'
-                      AND available_at IS NOT NULL
-                      AND available_at <= ?
-                    ORDER BY available_at DESC
+                    SELECT md.dataset_id,
+                           COALESCE(md.transformation_hash, md.raw_hash) AS content_hash
+                    FROM market_datasets md
+                    INNER JOIN market_dataset_availability mda ON mda.dataset_id = md.dataset_id
+                    WHERE (md.symbol = ? OR md.canonical_symbol = ?)
+                      AND md.exchange = ?
+                      AND md.timeframe = ?
+                      AND md.status = 'VERIFIED'
+                      AND md.lifecycle_status = 'CANONICAL_PROMOTED'
+                      AND mda.available_at <= ?
+                    ORDER BY mda.available_at DESC
                     LIMIT 1
                     """,
                     [symbol, symbol, exchange, tf, cutoff_applied],
@@ -2732,12 +2732,17 @@ class DuckDBManager:
                     SELECT hc.symbol, hc.exchange, hc.timeframe, hc.timestamp,
                            hc.open, hc.high, hc.low, hc.close, hc.volume, hc.adjustment
                     FROM historical_candles hc
+                    INNER JOIN historical_candle_availability hca
+                      ON hca.dataset_id = hc.dataset_id
+                     AND hca.symbol = hc.symbol
+                     AND hca.exchange = hc.exchange
+                     AND hca.timeframe = hc.timeframe
+                     AND hca.timestamp = hc.timestamp
                     WHERE hc.dataset_id = ?
                       AND hc.symbol = ?
                       AND hc.exchange = ?
                       AND hc.timeframe = ?
-                      AND hc.available_at IS NOT NULL
-                      AND hc.available_at <= ?
+                      AND hca.available_at <= ?
                     ORDER BY hc.timestamp
                     """,
                     [str(ds_id), symbol, exchange, tf, cutoff_applied],
