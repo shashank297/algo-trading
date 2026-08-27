@@ -1,8 +1,8 @@
 # Production Readiness & Architecture Invariants
 
-Audit date: 2026-08-26  
-Audit Scope: **Deep Architecture Audit Remediation & Invariant Enforcement**  
-Verified Implementation Commit (Commit A): `98ad8fe`  
+Audit date: 2026-08-27
+Audit Scope: **Final forensic remediation & invariant enforcement**
+Verified Implementation Commit (Commit A): `10bdd650158b15a3cb6043b15249d8b2f2b0a4fa`
 
 Current decision: **READY for NIFTY 200 daily historical research; READY for forward paper trading with EOD_BATCH and TRUE_NEXT_OPEN execution modes; NOT READY for unverified minute live trading without dedicated broker feed validation and paper incubation.**
 
@@ -24,20 +24,21 @@ The deterministic research and paper execution stack is operational with compreh
   - `EOD_BATCH`: Signals execute strictly at Day $T+1$ completed candle `close`. Mutating Day $T+1$ `open` has zero impact on execution price or size.
   - `TRUE_NEXT_OPEN`: Signals execute against strictly typed `OpeningTickObservation` (`received_at_utc >= exchange_timestamp`, non-negative sequence number and stream epoch). Enforces strict fail-closed token identity matching against resolved authoritative `instrument_master`, `universe_snapshot_members`, `index_constituents_pit`, or `historical_candles` records. Unresolved or mismatched tokens reject immediately with `MISSED_LIVE_OPEN_PRICE`.
 - **Cost Model & Vectorized Parity**: `StrategyPipeline.run(mode='vectorized')` enforces execution cost schedules via `VectorizedBacktester(execution_model=execution_model)`.
-- **Dynamic Single-Asset Paper Sizing & Parametric VaR (D-4)**: Single-asset and portfolio paper engines size targets against real-time `current_equity = cash + quantity * price` and compute dynamic parametric Value-at-Risk using asset return volatility (`pct_change().tail(20).std()`).
-- **Independent Paper Ledger Reconciliation (D-5)**: Paper reconciliation verifies target desired quantities against independent ledger positions (`paper_positions` / `strategy_metrics`), reporting real numerical position drift.
+- **Dynamic Paper Sizing & Parametric VaR (D-4)**: Single-asset and portfolio paper engines size targets against marked-to-market `current_equity = cash + quantity * price`; portfolio risk uses observed 20-session return volatility and projected gross exposure, never a fixed volatility proxy.
+- **Independent Paper Ledger Reconciliation (D-5)**: Paper reconciliation compares durable `paper_position_intents` with immutable fill-derived positions, reporting real numerical position drift.
 - **Mandatory Risk State Contract (D-6)**: `RequiredRiskStateValidator` requires all core risk dimensions (`capital`, `current_gross_exposure`, `daily_pnl`, `current_drawdown`, `current_sector_exposure`, `open_position_count`, `daily_turnover_crore`, `estimated_portfolio_var_pct`), eliminating synthetic risk manufacture across research and AI workflows.
 - **Monotonic ATR Trailing Stop Ratchet (D-7)**: Strategy ATR stops track highest high since entry and ratchet strictly upward for long positions, never loosening stop levels.
 - **Live Calendar Metric Annualization**: Metric calculations dynamically derive trading days and session minutes from the active `MarketCalendar`.
 - **Date-Effective Delivery Cost Schedules**: Transaction costs dynamically resolve historical statutory and broker rate schedules back to 2010 based on fill timestamp.
 
 ### Realtime Streaming & Gap Recovery (P1-14, P1-16, P2-25, E-1, E-8)
-- **Generation-Isolated WebSocket Client (E-8)**: Enforces WebSocket reconnection across fresh socket instances (`ws.close()`) rather than replaying subscriptions on degraded sockets. Propagates actual detected gap size to callbacks and quarantines malformed or out-of-order ticks to durable store.
-- **Aggregator Re-Anchor & Gap Quarantine**: `RealtimeBarAggregator.on_stream_reanchored()` closes open-ended untrusted intervals at re-anchor time while keeping historical gaps marked as untrusted until explicit backfill repair.
+- **Generation-Isolated WebSocket Client (E-8)**: Enforces WebSocket reconnection across fresh socket instances (`ws.close()`) rather than replaying subscriptions on degraded sockets. Canonical gap callbacks carry exact gap IDs and durable evidence.
+- **Restart-Safe Gap Quarantine**: `SmartAPIWebSocketClient.restore_unresolved_gaps()` restores canonical unresolved state before startup. Canonical ledger-write failure creates an atomic durable recovery marker; startup, reconnect, open, and authoritative dispatch remain blocked until explicit recovery.
+- **Exact Re-Anchor & Repair Semantics**: `RealtimeBarAggregator` closes only the named gap at re-anchor time and retains its historical interval as untrusted until explicit verified backfill repair.
 - **Multi-Window Watermark Live Aggregator**: Buffers active tick windows and advances event-time watermarks (`max_event_time - allowed_lateness`), handling out-of-order ticks within tolerance.
 - **Non-Overlapping Worker Retries**: Task execution timeout tracks live threads and aborts retries if the previous worker remains alive, guaranteeing `max_concurrent == 1`.
 - **Durable Raw Packet Persistence**: WebSocket binary packets pipe directly to `market_raw_packets` with atomic batch writes and dead-letter spooling.
-- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 010) fail-closed against tampering.
+- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 013) fail-closed against tampering.
 
 ### Certification & Stitched OOS Promotion (E-10, D-2)
 - **Exact Run Certification**: `RunCertificationService` evaluates 5 categories (`DATA_LINEAGE`, `DATA_QUALITY`, `CAUSALITY`, `PIT_SURVIVORSHIP`, `OOS_WALK_FORWARD`), verifies exact frame certification and DQ certificates without latest-dataset fallback, and writes atomic certification bundles.
@@ -47,12 +48,13 @@ The deterministic research and paper execution stack is operational with compreh
 
 ## 2. Verification Summary
 
-- **Verified Commit A SHA**: `98ad8fe`
-- **Deterministic Test Suite**: 397 passed tests across the repository.
-- **Global Test Coverage**: 85% repository-wide line coverage (exceeds 80% CI threshold).
+- **Verified Commit A SHA**: `10bdd650158b15a3cb6043b15249d8b2f2b0a4fa`
+- **GitHub Actions Evidence**: CI run #28 succeeded on the verified SHA: Linux Python 3.12, Linux Python 3.13, Windows Python 3.12, quality, gitleaks, and frontend jobs all passed.
+- **Deterministic Test Suite**: 405 passed tests across the repository (3 expected corporate-action basis warnings).
+- **Global Test Coverage**: 84% repository-wide line coverage (exceeds 80% CI threshold).
 - **Critical Path Module Coverage**: 95% critical line coverage across execution, risk, streaming, aggregation, and certification modules (exceeds 95% CI threshold).
 - **Static Analysis & Type Checking**:
-  - `mypy`: 0 issues across 85 source files.
+  - `mypy`: 0 issues.
   - `pyright`: 0 errors.
   - `ruff`: 0 lint errors across repository.
   - `compileall`: 100% clean compilation.
@@ -61,10 +63,10 @@ The deterministic research and paper execution stack is operational with compreh
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-# Output: 397 passed in 80.01s
+# Output: 405 passed, 3 warnings
 
 .\venv\Scripts\python.exe -m coverage report --fail-under=80
-# Output: TOTAL 85% line coverage
+# Output: TOTAL 84% line coverage
 
 .\venv\Scripts\python.exe -m coverage report --include="risk/*.py,trading_stack/paper.py,trading_stack/portfolio.py,trading_stack/portfolio_paper.py,trading_stack/pipeline.py,trading_stack/datasets.py,trading_stack/certification.py,trading_stack/promotion.py,smartapi/websocket_client.py,trading_stack/live_aggregator.py,storage/migrations/*.py" --fail-under=95
 # Output: TOTAL 95% line coverage
@@ -75,8 +77,8 @@ The deterministic research and paper execution stack is operational with compreh
 .\venv\Scripts\python.exe -m mypy ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools main.py research.py scheduler.py
 # Output: Success: no issues found in 85 source files
 
-npx pyright
-# Output: 0 errors, 450 warnings, 0 informations
+pyright
+# Output: 0 errors
 
 .\venv\Scripts\python.exe -m compileall -q main.py research.py scheduler.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
 # Output: Exit code 0
