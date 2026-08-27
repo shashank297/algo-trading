@@ -173,6 +173,7 @@ def test_smartapi_websocket_client_packet_and_sequence_branches(tmp_path):
         instrument_master=im,
         admission_validator=validator,
         quarantine_db_path=str(tmp_path / "ws_quar.duckdb"),
+        websocket_factory=MagicMock(),
     )
     client._quarantine_conn = db.conn
     client._state = ConnectionState.CONNECTED

@@ -693,7 +693,7 @@ def test_websocket_client_callbacks_and_queue_processing():
     auth.client_code = "client"
     auth.feed_token = "token"
 
-    client = SmartAPIWebSocketClient(auth=auth)
+    client = SmartAPIWebSocketClient(auth=auth, websocket_factory=MagicMock())
     client.subscribe_tick(lambda event: None)
 
     # 1. Open event
@@ -715,6 +715,7 @@ def test_websocket_client_callbacks_and_queue_processing():
         assert k in client.registry.desired_subscriptions
         client.unsubscribe([k])
         assert k not in client.registry.desired_subscriptions
+    client.stop()
 
 
 # ---------------------------------------------------------------------------
