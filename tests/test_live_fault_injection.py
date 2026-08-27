@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+import time
 import unittest
 
 import duckdb
@@ -357,11 +358,16 @@ class TestLiveFaultInjection(unittest.TestCase):
         )
         res = self.validator.validate(crossed_tick)
         client._quarantine_queue.put((res, {"test": "payload"}))
-        client._quarantine_queue.join()  # Successfully processed and drained despite DB failure!
+        deadline = time.monotonic() + 2.0
+        while client._quarantine_queue.unfinished_tasks and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(client._quarantine_queue.unfinished_tasks, 0)
 
         # Client state remains healthy
         self.assertEqual(client.state, ConnectionState.CONNECTED)
         client._state = ConnectionState.STOPPED
+        t.join(timeout=1.0)
+        self.assertFalse(t.is_alive())
 
     def test_late_cumulative_volume_does_not_regress_baseline(self) -> None:
         """Late quote tick from older window must not regress cumulative volume baseline for subsequent bars."""
@@ -437,5 +443,4 @@ class TestLiveFaultInjection(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
 
