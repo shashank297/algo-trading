@@ -509,8 +509,33 @@ def test_research_trials_cli(test_db: DuckDBManager, sample_family: ExperimentFa
     trial_id = test_db.create_research_trial(trial)
     test_db.transition_research_trial(trial_id, "SUCCEEDED", metrics={"sharpe": 1.25})
 
+    mock_config = {
+        "database": {"path": str(test_db.db_path)},
+        "smartapi": {
+            "api_key": "mock_key", "client_code": "mock_client", "pin": "1234",
+            "totp_secret": "mock_totp", "base_url": "https://apiconnect.angelone.in",
+            "instrument_master_url": "https://margincalculator.angelbroking.com",
+        },
+        "logging": {"path": "logs", "level": "INFO", "rotation": "10 MB", "retention": "7 days"},
+        "rate_limits": {
+            "requests_per_second": 3, "requests_per_minute": 180, "chunk_days_1min": 60,
+            "chunk_days_1day": 2000, "retry_max_attempts": 3, "retry_wait_seconds": 1, "retry_max_wait_seconds": 10,
+        },
+        "data": {"start_date": "2020-01-01", "timeframes": [{"interval": "1d", "label": "1d"}], "instrument_master_refresh_hours": 24},
+        "timezone": {"market_tz": "Asia/Kolkata", "market_open": "09:15", "market_close": "15:30"},
+        "research": {},
+    }
+    mock_symbols = {"symbols": [{"symbol": "RELIANCE", "token": "2885", "exchange": "NSE", "instrument_type": "EQUITY"}]}
+
+    def mock_load_yaml(path: str) -> Any:
+        if "symbols.yaml" in path:
+            return mock_symbols
+        return mock_config
+
     # Test summary view for family
-    with patch("research.DuckDBManager", side_effect=lambda path: DuckDBManager(test_db.db_path)):
+    with patch("research.load_yaml", side_effect=mock_load_yaml), \
+         patch("research.validate_config", return_value=None), \
+         patch("research.DuckDBManager", side_effect=lambda path: DuckDBManager(test_db.db_path)):
         ret = research_cli_main(["--command", "research-trials", "--experiment-family-id", sample_family.experiment_family_id])
         assert ret == 0
         captured = capsys.readouterr()
@@ -520,7 +545,9 @@ def test_research_trials_cli(test_db: DuckDBManager, sample_family: ExperimentFa
         assert len(data["trials"]) == 1
 
     # Test single trial view
-    with patch("research.DuckDBManager", side_effect=lambda path: DuckDBManager(test_db.db_path)):
+    with patch("research.load_yaml", side_effect=mock_load_yaml), \
+         patch("research.validate_config", return_value=None), \
+         patch("research.DuckDBManager", side_effect=lambda path: DuckDBManager(test_db.db_path)):
         ret = research_cli_main(["--command", "research-trials", "--trial-id", trial_id])
         assert ret == 0
         captured = capsys.readouterr()
