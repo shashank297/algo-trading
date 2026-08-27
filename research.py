@@ -65,7 +65,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    config = apply_env_overrides(load_yaml(str(PROJECT_ROOT / "config" / "config.yaml")))
+    config_file = PROJECT_ROOT / "config" / "config.yaml"
+    if not config_file.is_file():
+        config_file = PROJECT_ROOT / "config" / "config.example.yaml"
+    config = apply_env_overrides(load_yaml(str(config_file)))
     validate_config(config)
     symbols = validate_symbols(load_yaml(str(PROJECT_ROOT / "config" / "symbols.yaml")))
     symbol = args.symbol or str(symbols[0]["symbol"])

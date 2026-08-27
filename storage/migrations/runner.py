@@ -40,8 +40,8 @@ class MigrationRunner:
 
             for sql_file in sql_files:
                 version = sql_file.stem
-                sql_content = sql_file.read_text(encoding="utf-8")
-                checksum = hashlib.sha256(sql_content.encode()).hexdigest()
+                sql_content = sql_file.read_text(encoding="utf-8").replace("\r\n", "\n")
+                checksum = hashlib.sha256(sql_content.encode("utf-8")).hexdigest()
 
                 if version in applied_map:
                     # Validate checksum integrity against tampering
