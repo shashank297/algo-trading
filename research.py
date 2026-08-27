@@ -29,7 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--command",
         default="backtest",
-        choices=["backtest", "experiment", "portfolio-experiment", "mass-research", "agent-research", "paper", "rca", "promote", "inspect", "universe-status", "benchmark-register", "research-trials"],
+        choices=[
+            "backtest", "experiment", "portfolio-experiment", "mass-research",
+            "agent-research", "paper", "rca", "promote", "inspect",
+            "universe-status", "benchmark-register", "research-trials",
+            # Phase 2.2 — Multi-timeframe data
+            "build-derived-bars", "verify-market-provider",
+        ],
         help="Workflow to run. Existing calls default to backtest.",
     )
     parser.add_argument("--strategy", default="trend_following", choices=StrategyRegistry.available())
@@ -58,6 +64,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--experiment-family-id", default=None, help="Experiment family ID for research trial registry")
     parser.add_argument("--trial-id", default=None, help="Research trial ID for inspection")
     parser.add_argument("--status", default=None, help="Filter research trials by status (e.g. PLANNED, RUNNING, SUCCEEDED, FAILED, INVALIDATED, CANCELLED)")
+    # Phase 2.2 — Multi-timeframe data
+    parser.add_argument("--source-dataset", default=None, help="Canonical source dataset_id for build-derived-bars")
+    parser.add_argument("--derived-timeframe", default="15m", choices=["5m", "15m", "30m", "60m"], help="Target derived timeframe")
+    parser.add_argument("--primary-provider", default=None, help="Primary (canonical) provider name for verify-market-provider")
+    parser.add_argument("--secondary-provider", default=None, help="Secondary (observational) provider name for verify-market-provider")
+    parser.add_argument("--verification-severity", default="WARNING", choices=["WARNING", "BLOCKING"], help="How to handle provider disagreements")
+    parser.add_argument("--start-date", default=None, help="Start date for data range (YYYY-MM-DD)")
+    parser.add_argument("--end-date", default=None, help="End date for data range (YYYY-MM-DD)")
     return parser
 
 
@@ -117,6 +131,119 @@ def main(argv: list[str] | None = None) -> int:
         india_calendar = configured_nse_calendar(config)
         pipeline = StrategyPipeline(db, risk_engine=risk_engine, india_calendar=india_calendar)
         universe_service = UniverseResearchService(db)
+        # Phase 2.2 — Build derived bars
+        if args.command == "build-derived-bars":
+            from data_platform.resampling import SessionBarResampler  # noqa: PLC0415
+
+            if not args.source_dataset:
+                parser.error("--source-dataset is required for build-derived-bars")
+            if not args.symbol:
+                parser.error("--symbol is required for build-derived-bars")
+
+            bars_1m = db.get_canonical_1m_bars(
+                source_dataset_id=args.source_dataset,
+                symbol=args.symbol,
+            )
+            if bars_1m.empty:
+                raise ValueError(
+                    f"No canonical 1m bars found for source_dataset={args.source_dataset}, "
+                    f"symbol={args.symbol}."
+                )
+
+            source_adj = str(bars_1m["adjustment"].iloc[0]) if "adjustment" in bars_1m.columns else "SPLIT_ADJUSTED"
+            # Compute source content hash for lineage
+            from data_platform.resampling import _compute_derived_content_hash  # noqa: PLC0415
+            source_hash = _compute_derived_content_hash(bars_1m)
+
+            cal = india_calendar
+            resampler = SessionBarResampler()
+            try:
+                cert = resampler.derive_and_certify(
+                    source_dataset_id=args.source_dataset,
+                    bars_1m=bars_1m,
+                    target_timeframe=args.derived_timeframe,
+                    calendar=cal,
+                    source_adjustment=source_adj,
+                    source_content_hash=source_hash,
+                    db=db,
+                    symbol=args.symbol,
+                    exchange=str(bars_1m["exchange"].iloc[0]) if "exchange" in bars_1m.columns else "NSE",
+                )
+                print(json.dumps({
+                    "status": cert.dq_status,
+                    "derived_dataset_id": cert.derived_dataset_id,
+                    "symbol": cert.symbol,
+                    "timeframe": cert.timeframe,
+                    "row_count": cert.row_count,
+                    "content_hash": cert.content_hash,
+                    "resampler_version": cert.resampler_version,
+                    "calendar_version": cert.calendar_version,
+                    "source_dataset_ids": cert.source_dataset_ids,
+                    "dq_report": cert.dq_report,
+                }, default=str, indent=2))
+            except Exception as exc:
+                print(json.dumps({"status": "DQ_FAILED", "error": str(exc)}, indent=2))
+                return 1
+            return 0
+
+        # Phase 2.2 — Cross-provider verification
+        if args.command == "verify-market-provider":
+            from data_platform.provider_verification import CrossProviderVerifier, VerificationSeverity  # noqa: PLC0415
+
+            if not args.symbol:
+                parser.error("--symbol is required for verify-market-provider")
+            if not args.primary_provider:
+                parser.error("--primary-provider is required for verify-market-provider")
+            if not args.secondary_provider:
+                parser.error("--secondary-provider is required for verify-market-provider")
+
+            # Load primary bars from DB
+            sql_primary = (
+                "SELECT * FROM historical_candles "
+                "WHERE symbol = ? AND timeframe = ? AND provider_name = ? ORDER BY timestamp"
+            )
+            primary_bars = db.conn.execute(sql_primary, [args.symbol, args.derived_timeframe, args.primary_provider]).df()
+            if primary_bars.empty:
+                raise ValueError(
+                    f"No primary bars found for {args.symbol}/{args.derived_timeframe}/{args.primary_provider}."
+                )
+
+            # Load secondary bars from DB (may be empty → UNAVAILABLE)
+            secondary_bars = db.conn.execute(sql_primary, [args.symbol, args.derived_timeframe, args.secondary_provider]).df()
+
+            severity = VerificationSeverity(args.verification_severity)
+            verifier = CrossProviderVerifier()
+            try:
+                verif_report = verifier.verify(
+                    primary_bars=primary_bars,
+                    secondary_bars=secondary_bars if not secondary_bars.empty else None,
+                    symbol=args.symbol,
+                    exchange=str(primary_bars["exchange"].iloc[0]) if "exchange" in primary_bars.columns else "NSE",
+                    timeframe=args.derived_timeframe,
+                    primary_provider=args.primary_provider,
+                    secondary_provider=args.secondary_provider,
+                    severity=severity,
+                    tolerance=None,
+                    db=db,
+                )
+                print(json.dumps({
+                    "reconciliation_id": verif_report.reconciliation_id,
+                    "symbol": verif_report.symbol,
+                    "timeframe": verif_report.timeframe,
+                    "primary_provider": verif_report.primary_provider,
+                    "secondary_provider": verif_report.secondary_provider,
+                    "total_bars_primary": verif_report.total_bars_primary,
+                    "bars_match": verif_report.bars_match,
+                    "bars_tolerance_match": verif_report.bars_tolerance_match,
+                    "bars_disagreement": verif_report.bars_disagreement,
+                    "bars_unavailable": verif_report.bars_unavailable,
+                    "overall_status": verif_report.overall_status,
+                }, default=str, indent=2))
+                return 1 if verif_report.bars_disagreement > 0 and severity == VerificationSeverity.BLOCKING else 0
+            except Exception as exc:
+                print(json.dumps({"status": "VERIFICATION_FAILED", "error": str(exc)}, indent=2))
+                return 1
+
         if args.command == "benchmark-register":
             if not args.benchmark_provider:
                 parser.error("--benchmark-provider is required for benchmark-register")

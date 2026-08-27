@@ -2221,3 +2221,235 @@ class DuckDBManager:
                 self.conn.unregister(table_name)
         except Exception as exc:
             logger.debug("Skipping unregister for {}: {}", table_name, exc)
+
+    # ------------------------------------------------------------------
+    # Phase 2.2 — Derived dataset lineage and cross-provider verification
+    # ------------------------------------------------------------------
+
+    def persist_derived_dataset(self, certification: "Any") -> None:
+        """Persist a :class:`~data_platform.resampling.DerivedDatasetCertification` to ``derived_datasets``.
+
+        Args:
+            certification: A ``DerivedDatasetCertification`` instance with ``.to_storage_row()``.
+        """
+        row = certification.to_storage_row()
+        with self._write_lock:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO derived_datasets (
+                    derived_dataset_id, source_dataset_ids, source_content_hashes,
+                    symbol, exchange, timeframe, adjustment_basis,
+                    resampler_version, calendar_version,
+                    start_ts, end_ts, row_count, content_hash,
+                    dq_status, dq_report_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    row["derived_dataset_id"],
+                    row["source_dataset_ids"],
+                    row["source_content_hashes"],
+                    row["symbol"],
+                    row["exchange"],
+                    row["timeframe"],
+                    row["adjustment_basis"],
+                    row["resampler_version"],
+                    row["calendar_version"],
+                    row["start_ts"],
+                    row["end_ts"],
+                    row["row_count"],
+                    row["content_hash"],
+                    row["dq_status"],
+                    row["dq_report_json"],
+                    row["created_at"],
+                ],
+            )
+        logger.debug(
+            "Persisted derived_dataset: id={} symbol={} tf={} status={}",
+            row["derived_dataset_id"][:8],
+            row["symbol"],
+            row["timeframe"],
+            row["dq_status"],
+        )
+
+    def get_derived_datasets(
+        self,
+        *,
+        symbol: str | None = None,
+        timeframe: str | None = None,
+        source_dataset_id: str | None = None,
+    ) -> list[dict]:
+        """Query the ``derived_datasets`` registry.
+
+        Args:
+            symbol: Filter by symbol (optional).
+            timeframe: Filter by timeframe (optional).
+            source_dataset_id: Filter by source dataset_id substring match (optional).
+
+        Returns:
+            List of row dicts from ``derived_datasets``.
+        """
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if symbol is not None:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if timeframe is not None:
+            conditions.append("timeframe = ?")
+            params.append(timeframe)
+        if source_dataset_id is not None:
+            conditions.append("source_dataset_ids LIKE ?")
+            params.append(f"%{source_dataset_id}%")
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"SELECT * FROM derived_datasets {where_clause} ORDER BY created_at DESC"
+        try:
+            result = self.conn.execute(sql, params).fetchdf()
+            return result.to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("get_derived_datasets failed: {}", exc)
+            return []
+
+    def get_canonical_1m_bars(
+        self,
+        *,
+        source_dataset_id: str,
+        symbol: str | None = None,
+        exchange: str | None = None,
+    ) -> "Any":
+        """Load 1m bars from ``historical_candles`` for the given dataset_id.
+
+        Args:
+            source_dataset_id: The ``dataset_id`` of the CANONICAL_PROMOTED 1m source.
+            symbol: Symbol filter (optional, used for logging).
+            exchange: Exchange filter (optional).
+
+        Returns:
+            pandas DataFrame with OHLCV columns (UTC timestamps).
+        """
+        conditions = ["dataset_id = ?", "timeframe = '1m'"]
+        params: list[Any] = [source_dataset_id]
+
+        if symbol:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if exchange:
+            conditions.append("exchange = ?")
+            params.append(exchange)
+
+        sql = (
+            "SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume, adjustment, dataset_id "
+            f"FROM historical_candles WHERE {' AND '.join(conditions)} ORDER BY timestamp"
+        )
+        try:
+            return self.conn.execute(sql, params).df()
+        except Exception as exc:
+            logger.error("get_canonical_1m_bars failed for dataset_id={}: {}", source_dataset_id, exc)
+            raise
+
+    def persist_reconciliation(
+        self,
+        report: "Any",
+        *,
+        comparison_date: "Any | None" = None,
+    ) -> None:
+        """Persist a :class:`~data_platform.provider_verification.ProviderVerificationReport` to ``cross_provider_reconciliations``.
+
+        Args:
+            report: A ``ProviderVerificationReport`` instance.
+            comparison_date: Optional datetime for the comparison_date column.
+        """
+        row = report.to_storage_row(comparison_date=comparison_date)
+        with self._write_lock:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO cross_provider_reconciliations (
+                    reconciliation_id, symbol, exchange, timeframe,
+                    primary_provider, secondary_provider, comparison_version, comparison_date,
+                    primary_dataset_id, secondary_dataset_id,
+                    total_bars_primary, total_bars_secondary,
+                    bars_match, bars_tolerance_match, bars_disagreement, bars_unavailable,
+                    tolerance_config_json, bar_outcomes_json, overall_status, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    row["reconciliation_id"],
+                    row["symbol"],
+                    row["exchange"],
+                    row["timeframe"],
+                    row["primary_provider"],
+                    row["secondary_provider"],
+                    row["comparison_version"],
+                    row["comparison_date"],
+                    row["primary_dataset_id"],
+                    row["secondary_dataset_id"],
+                    row["total_bars_primary"],
+                    row["total_bars_secondary"],
+                    row["bars_match"],
+                    row["bars_tolerance_match"],
+                    row["bars_disagreement"],
+                    row["bars_unavailable"],
+                    row["tolerance_config_json"],
+                    row["bar_outcomes_json"],
+                    row["overall_status"],
+                    row["created_at"],
+                ],
+            )
+        logger.debug(
+            "Persisted reconciliation: id={} {} {} {} → {}",
+            row["reconciliation_id"][:8],
+            row["symbol"],
+            row["timeframe"],
+            row["primary_provider"],
+            row["overall_status"],
+        )
+
+    def get_reconciliations(
+        self,
+        *,
+        symbol: str | None = None,
+        exchange: str | None = None,
+        timeframe: str | None = None,
+        primary_provider: str | None = None,
+        secondary_provider: str | None = None,
+    ) -> list[dict]:
+        """Query the ``cross_provider_reconciliations`` table.
+
+        Args:
+            symbol: Filter by symbol (optional).
+            exchange: Filter by exchange (optional).
+            timeframe: Filter by timeframe (optional).
+            primary_provider: Filter by primary provider name (optional).
+            secondary_provider: Filter by secondary provider name (optional).
+
+        Returns:
+            List of row dicts.
+        """
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if symbol is not None:
+            conditions.append("symbol = ?")
+            params.append(symbol)
+        if exchange is not None:
+            conditions.append("exchange = ?")
+            params.append(exchange)
+        if timeframe is not None:
+            conditions.append("timeframe = ?")
+            params.append(timeframe)
+        if primary_provider is not None:
+            conditions.append("primary_provider = ?")
+            params.append(primary_provider)
+        if secondary_provider is not None:
+            conditions.append("secondary_provider = ?")
+            params.append(secondary_provider)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"SELECT * FROM cross_provider_reconciliations {where_clause} ORDER BY created_at DESC"
+        try:
+            return self.conn.execute(sql, params).fetchdf().to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("get_reconciliations failed: {}", exc)
+            return []
+
+
