@@ -27,12 +27,14 @@ CREATE TABLE IF NOT EXISTS historical_candles (
     provider_name VARCHAR,
     dataset_id VARCHAR,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, -- Insert timestamp
+    available_at TIMESTAMPTZ,
     PRIMARY KEY (symbol, timeframe, timestamp)
 );
 
 ALTER TABLE historical_candles ADD COLUMN IF NOT EXISTS adjustment VARCHAR DEFAULT 'UNADJUSTED';
 ALTER TABLE historical_candles ADD COLUMN IF NOT EXISTS provider_name VARCHAR;
 ALTER TABLE historical_candles ADD COLUMN IF NOT EXISTS dataset_id VARCHAR;
+ALTER TABLE historical_candles ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS market_data_state (
     state_id INTEGER NOT NULL DEFAULT 1,
@@ -220,7 +222,8 @@ CREATE TABLE IF NOT EXISTS market_datasets (
     row_count INTEGER NOT NULL DEFAULT 0,
     metadata_json VARCHAR DEFAULT '{}',
     created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    available_at TIMESTAMPTZ
 );
 
 ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS parent_dataset_id VARCHAR;
@@ -234,6 +237,7 @@ ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS hash_algorithm VARCHAR DEFA
 ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS hash_version VARCHAR DEFAULT 'raw-provider-v1';
 ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS row_count INTEGER DEFAULT 0;
 ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ;
 
 CREATE TABLE IF NOT EXISTS raw_bar_observations (
     raw_dataset_id VARCHAR NOT NULL,
@@ -924,6 +928,7 @@ CREATE TABLE IF NOT EXISTS index_constituents_pit (
     effective_from DATE NOT NULL,
     effective_until DATE,
     known_from DATE,
+    known_at TIMESTAMPTZ,
     weight DOUBLE,
     inclusion_reason VARCHAR,
     exclusion_reason VARCHAR,

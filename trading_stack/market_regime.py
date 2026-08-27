@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 
 from trading_stack.calendars import MarketCalendar, build_nse_calendar
+from trading_stack.bar_availability import is_bar_available
 
 IST = ZoneInfo("Asia/Kolkata")
 UTC = ZoneInfo("UTC")
@@ -47,8 +48,10 @@ class MarketRegimePolicy:
 
     def __init__(
         self,
-        policy_version: str = "1.0.0",
-        min_benchmark_history: int = 120,
+        policy_version: str = "2.3.0",
+        min_benchmark_history: int = 220,
+        min_component_coverage: float = 0.75,
+        min_breadth_coverage: float = 0.80,
         trend_20_target: float = 0.05,
         trend_60_target: float = 0.10,
         trend_dma50_target: float = 0.03,
@@ -66,6 +69,8 @@ class MarketRegimePolicy:
     ) -> None:
         self.policy_version = policy_version
         self.min_benchmark_history = min_benchmark_history
+        self.min_component_coverage = min_component_coverage
+        self.min_breadth_coverage = min_breadth_coverage
         self.trend_20_target = trend_20_target
         self.trend_60_target = trend_60_target
         self.trend_dma50_target = trend_dma50_target
@@ -85,6 +90,8 @@ class MarketRegimePolicy:
         return {
             "policy_version": self.policy_version,
             "min_benchmark_history": self.min_benchmark_history,
+            "min_component_coverage": self.min_component_coverage,
+            "min_breadth_coverage": self.min_breadth_coverage,
             "trend_20_target": self.trend_20_target,
             "trend_60_target": self.trend_60_target,
             "trend_dma50_target": self.trend_dma50_target,
@@ -223,6 +230,7 @@ class MarketRegimeEvidence:
         as_of: str = "",
         decision_time: str = "",
         cutoff_timestamp: str = "",
+        evidence_manifest: dict[str, Any] | None = None,
     ) -> None:
         self.benchmark_dataset_id = benchmark_dataset_id
         self.benchmark_content_hash = benchmark_content_hash
@@ -235,6 +243,7 @@ class MarketRegimeEvidence:
         self.as_of = as_of
         self.decision_time = decision_time
         self.cutoff_timestamp = cutoff_timestamp
+        self.evidence_manifest = evidence_manifest or {}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -249,6 +258,7 @@ class MarketRegimeEvidence:
             "as_of": self.as_of,
             "decision_time": self.decision_time,
             "cutoff_timestamp": self.cutoff_timestamp,
+            "evidence_manifest": self.evidence_manifest,
         }
 
     def compute_hash(self) -> str:
@@ -381,12 +391,12 @@ class MarketRegimeEngine:
             elif "date" in df.columns:
                 df["date"] = pd.to_datetime(df["date"]).dt.date
 
-            if context_type == MarketContextType.INTRADAY:
-                # Intraday context cannot see today's daily close
-                filtered_daily_bench = df[df["date"] < as_of_date].sort_values("date").copy()
-            else:
-                # EOD context sees completed session D
-                filtered_daily_bench = df[df["date"] <= as_of_date].sort_values("date").copy()
+            timestamp_col = pd.to_datetime(df.get("timestamp", df["date"]), errors="coerce")
+            filtered_daily_bench = df[
+                timestamp_col.map(lambda value: not pd.isna(value) and is_bar_available(
+                    pd.Timestamp(value).to_pydatetime(), "1d", decision_dt, self.calendar
+                ))
+            ].sort_values("date").copy()
 
         # Build combined benchmark price series
         bench_prices = pd.Series(dtype=float)
@@ -405,7 +415,9 @@ class MarketRegimeEngine:
                 if idf["dt"].dt.tz is None:
                     idf["dt"] = idf["dt"].dt.tz_localize(IST)
                 # Keep only bars completed at or before decision_dt
-                valid_intraday = idf[idf["dt"] <= decision_dt].sort_values("dt")
+                valid_intraday = idf[idf["dt"].map(
+                    lambda value: is_bar_available(value.to_pydatetime(), str(idf["timeframe"].iloc[0]) if "timeframe" in idf else "1m", decision_dt, self.calendar)
+                )].sort_values("dt")
                 if not valid_intraday.empty:
                     latest_bar = valid_intraday.iloc[-1]
                     bench_prices = pd.concat([bench_prices, pd.Series([float(latest_bar["close"])])], ignore_index=True)
@@ -441,24 +453,24 @@ class MarketRegimeEngine:
         sma_50_series = bench_prices.rolling(window=50).mean()
         sma_200_series = bench_prices.rolling(window=200).mean()
 
-        sma_50_now = float(sma_50_series.iloc[-1]) if len(bench_prices) >= 50 else p_now
-        sma_200_now = float(sma_200_series.iloc[-1]) if len(bench_prices) >= 200 else p_now
+        sma_50_now = float(sma_50_series.iloc[-1]) if len(bench_prices) >= 50 else None
+        sma_200_now = float(sma_200_series.iloc[-1]) if len(bench_prices) >= 200 else None
 
-        close_vs_50 = (p_now / sma_50_now - 1.0) if sma_50_now > 0 else 0.0
-        close_vs_200 = (p_now / sma_200_now - 1.0) if sma_200_now > 0 else 0.0
+        close_vs_50 = (p_now / sma_50_now - 1.0) if sma_50_now is not None and sma_50_now > 0 else None
+        close_vs_200 = (p_now / sma_200_now - 1.0) if sma_200_now is not None and sma_200_now > 0 else None
 
         # Slopes
         slope_50 = 0.0
         if len(sma_50_series) >= 60 and not np.isnan(sma_50_series.iloc[-11]):
             s_base = float(sma_50_series.iloc[-11])
             if s_base > 0:
-                slope_50 = (sma_50_now - s_base) / (10.0 * s_base)
+                slope_50 = (sma_50_now - s_base) / (10.0 * s_base) if sma_50_now is not None else None
 
         slope_200 = 0.0
         if len(sma_200_series) >= 220 and not np.isnan(sma_200_series.iloc[-21]):
             s_base200 = float(sma_200_series.iloc[-21])
             if s_base200 > 0:
-                slope_200 = (sma_200_now - s_base200) / (20.0 * s_base200)
+                slope_200 = (sma_200_now - s_base200) / (20.0 * s_base200) if sma_200_now is not None else None
 
         # 4. Calculate Volatility Features
         returns = bench_prices.pct_change().dropna()
@@ -476,7 +488,7 @@ class MarketRegimeEngine:
             norm_atr_14 = atr14 / p_now if p_now > 0 else 0.015
 
         # Realized Vol Percentile over 252 days
-        vol_p252 = 0.5
+        vol_p252 = None
         if len(returns) >= 70:
             rolling_vols = returns.rolling(20).std() * np.sqrt(252)
             valid_vols = rolling_vols.dropna().iloc[-252:]
@@ -504,13 +516,13 @@ class MarketRegimeEngine:
             missing_evidence.append("Optional India VIX not available at decision_time")
 
         # 5. Calculate Breadth Features (over PIT universe)
-        pct_above_20dma = 0.5
-        pct_above_50dma = 0.5
-        pct_above_200dma = 0.5
-        ad_ratio = 0.0
-        net_high_low = 0.0
-        ret_dispersion_20 = 0.05
-        vol_dispersion = 0.05
+        pct_above_20dma = None
+        pct_above_50dma = None
+        pct_above_200dma = None
+        ad_ratio = None
+        net_high_low = None
+        ret_dispersion_20 = None
+        vol_dispersion = None
 
         has_universe = False
         if pit_universe_members and universe_daily_bars:
@@ -522,6 +534,8 @@ class MarketRegimeEngine:
             member_vols = []
             member_high_52w = []
             member_low_52w = []
+            member_traded_values_20 = []
+            member_turnover_ratios = []
 
             for sym in pit_universe_members:
                 if sym in universe_daily_bars:
@@ -552,6 +566,13 @@ class MarketRegimeEngine:
                                 c20 = float(c_series.iloc[-20])
                                 member_ret_20d.append((c_now - c20) / c20 if c20 > 0 else 0.0)
                                 member_vols.append(float(c_series.pct_change().dropna().iloc[-20:].std() * np.sqrt(252)))
+                                if "volume" in udf_valid.columns:
+                                    traded_values = c_series * udf_valid["volume"].astype(float).reset_index(drop=True)
+                                    member_traded_values_20.append(float(traded_values.iloc[-20:].median()))
+                                    if len(traded_values) >= 60:
+                                        base = float(traded_values.iloc[-60:].mean())
+                                        if base > 0:
+                                            member_turnover_ratios.append(float(traded_values.iloc[-5:].mean()) / base)
 
                             if len(c_series) >= 50:
                                 sma50 = float(c_series.rolling(50).mean().iloc[-1])
@@ -568,10 +589,23 @@ class MarketRegimeEngine:
                                 member_low_52w.append(1.0 if c_now <= 1.02 * l252 else 0.0)
 
             if member_above_20:
+                total_members = len(pit_universe_members)
+                coverage = min(
+                    len(member_above_20), len(member_above_50), len(member_above_200), len(member_ret_1d)
+                ) / total_members
+                if coverage < self.policy.min_breadth_coverage:
+                    missing_evidence.append(
+                        f"Insufficient critical breadth coverage: {coverage:.1%} available, {self.policy.min_breadth_coverage:.0%} required"
+                    )
+                    return self._build_insufficient_snapshot(
+                        market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
+                        decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
+                        bench_count=len(bench_prices),
+                    )
                 has_universe = True
                 pct_above_20dma = float(np.mean(member_above_20))
-                pct_above_50dma = float(np.mean(member_above_50)) if member_above_50 else pct_above_20dma
-                pct_above_200dma = float(np.mean(member_above_200)) if member_above_200 else pct_above_50dma
+                pct_above_50dma = float(np.mean(member_above_50))
+                pct_above_200dma = float(np.mean(member_above_200))
 
                 advances = sum(1 for r in member_ret_1d if r > 0.001)
                 declines = sum(1 for r in member_ret_1d if r < -0.001)
@@ -587,16 +621,24 @@ class MarketRegimeEngine:
                     vol_dispersion = float(np.std(member_vols))
         else:
             missing_evidence.append("PIT universe breadth data not provided or empty")
+            return self._build_insufficient_snapshot(
+                market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
+                decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
+                bench_count=len(bench_prices),
+            )
+
+        if not has_universe:
+            missing_evidence.append("No members have complete critical breadth history")
+            return self._build_insufficient_snapshot(
+                market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
+                decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
+                bench_count=len(bench_prices),
+            )
 
         # 6. Calculate Liquidity & Stress Features
         # Turnover ratio
-        turnover_ratio = 1.0
-        adv_20 = 1_000_000.0
-        if len(bench_volumes) >= 60:
-            vol_5 = float(bench_volumes.iloc[-5:].mean())
-            vol_60 = float(bench_volumes.iloc[-60:].mean())
-            adv_20 = float(bench_volumes.iloc[-20:].mean())
-            turnover_ratio = vol_5 / vol_60 if vol_60 > 0 else 1.0
+        turnover_ratio = float(np.median(member_turnover_ratios)) if member_turnover_ratios else None
+        adv_20 = float(np.median(member_traded_values_20)) if member_traded_values_20 else None
 
         # Drawdown from 252d peak
         peak_252 = float(bench_prices.iloc[-252:].max()) if len(bench_prices) >= 252 else float(bench_prices.max())
@@ -617,7 +659,7 @@ class MarketRegimeEngine:
 
         # Vol shock
         vol_shock = max(0.0, (realized_vol_20 / realized_vol_60) - 1.0) if realized_vol_60 > 0 else 0.0
-        liq_deterioration = max(0.0, 1.0 - turnover_ratio)
+        liq_deterioration = max(0.0, 1.0 - turnover_ratio) if turnover_ratio is not None else None
 
         features = MarketRegimeFeatures(
             benchmark_ret_20=ret_20,
@@ -659,8 +701,9 @@ class MarketRegimeEngine:
 
         # Volatility scoring
         vol_abs_norm = float(np.clip((realized_vol_20 - 0.16) / 0.08, -1.0, 1.0))
-        vol_pct_norm = 2.0 * (vol_p252 - 0.5)
-        vol_score = 0.5 * vol_abs_norm + 0.5 * vol_pct_norm
+        vol_score = vol_abs_norm
+        if vol_p252 is not None:
+            vol_score = 0.5 * vol_abs_norm + 0.5 * (2.0 * (vol_p252 - 0.5))
         if vix_val is not None:
             # Anchor VIX around 15.0 level: 12.0 = -0.3, 20.0 = +0.5
             vix_norm = float(np.clip((vix_val - 15.0) / 10.0, -1.0, 1.0))
@@ -675,7 +718,7 @@ class MarketRegimeEngine:
         dispersion_score = float(np.clip((ret_dispersion_20 - 0.04) / 0.04, -1.0, 1.0))
 
         # Liquidity scoring
-        liquidity_score = float(np.clip((turnover_ratio - 1.0) / 0.4, -1.0, 1.0))
+        liquidity_score = float(np.clip((turnover_ratio - 1.0) / 0.4, -1.0, 1.0)) if turnover_ratio is not None else 0.0
 
         # Stress scoring [0.0, 1.0]
         dd_stress = min(1.0, abs(min(0.0, drawdown_252)) / 0.15)
@@ -760,6 +803,7 @@ class MarketRegimeEngine:
             as_of=as_of_str,
             decision_time=decision_time_str,
             cutoff_timestamp=cutoff_ts,
+            evidence_manifest=metadata.get("universe_manifest", {}),
         )
         evidence_hash = evidence.compute_hash()
 

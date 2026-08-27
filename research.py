@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from datetime import datetime, timedelta
@@ -12,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from main import apply_env_overrides, configured_nse_calendar, load_yaml, validate_config, validate_symbols
 from ai_research import OpenAIResearchClient, ResearchGoal, ResearchWorkflow
+from data_platform.universe import PointInTimeUniverseManager
 from experiments import ExperimentManager, ExperimentSpec, MassExperimentManager, MassExperimentSpec
 from risk.engine import RiskEngine
 from risk.models import RiskPolicy
@@ -269,6 +271,16 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     decision_time_str = f"{as_of_str}T15:30:00+05:30"
 
+            if not requested_universe and args.universe_snapshot != "CONFIGURED_UNIVERSE":
+                pit_members = PointInTimeUniverseManager.get_constituents(
+                    db, args.universe_snapshot, as_of_str, as_of_knowledge=decision_time_str,
+                )
+                universe = [member.symbol for member in pit_members]
+                if not universe:
+                    raise ValueError(
+                        f"No causally-known PIT constituents for universe {args.universe_snapshot} at {decision_time_str}."
+                    )
+
             bench_sym = args.benchmark
 
             # --- Phase 2.3 PIT-certified data loading ---
@@ -303,10 +315,27 @@ def main(argv: list[str] | None = None) -> int:
 
             # Universe bars — ALL PIT members (no truncation)
             universe_daily = {}
+            universe_manifest_members = []
             for sym in universe:
                 u_result = db.load_regime_bars(sym, "1d", decision_time_str, exchange="NSE")
                 if not u_result["bars"].empty:
                     universe_daily[sym] = u_result["bars"]
+                    universe_manifest_members.append({
+                        "symbol": sym, "usable": True, "dataset_id": u_result["dataset_id"],
+                        "content_hash": u_result["content_hash"], "certification_id": u_result.get("certification_id"),
+                        "cutoff": u_result["cutoff_applied"],
+                    })
+                else:
+                    universe_manifest_members.append({"symbol": sym, "usable": False, "reason": "NO_CAUSAL_CERTIFIED_BARS"})
+            universe_manifest_members.sort(key=lambda member: member["symbol"])
+            universe_manifest = {
+                "universe_name": args.universe_snapshot if args.universe_snapshot != "CONFIGURED_UNIVERSE" else None,
+                "members": universe_manifest_members, "total_member_count": len(universe),
+                "usable_member_count": len(universe_daily), "cutoff": decision_time_str,
+            }
+            universe_content_hash = hashlib.sha256(
+                json.dumps(universe_manifest, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
 
             engine = MarketRegimeEngine(market_calendar=india_calendar)
             snapshot = engine.evaluate_market_regime(
@@ -332,6 +361,9 @@ def main(argv: list[str] | None = None) -> int:
                     "vix_dataset_id": vix_dataset_id,
                     "vix_content_hash": vix_content_hash,
                     "cutoff_timestamp": bench_result["cutoff_applied"],
+                    "universe_content_hash": universe_content_hash,
+                    "universe_manifest": universe_manifest,
+                    "benchmark_certification_id": bench_result.get("certification_id"),
                 },
             )
             db.persist_market_regime_snapshot(snapshot)

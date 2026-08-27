@@ -27,6 +27,7 @@ class PointInTimeConstituent:
     effective_from: date = date(2000, 1, 1)
     effective_until: date | None = None
     known_from: date | None = None
+    known_at: datetime | None = None
     weight: float | None = None
     inclusion_reason: str | None = None
     exclusion_reason: str | None = None
@@ -91,9 +92,9 @@ class PointInTimeUniverseManager:
             """
             INSERT OR REPLACE INTO index_constituents_pit (
                 universe_name, instrument_id, symbol, token, exchange, effective_from,
-                effective_until, known_from, weight, inclusion_reason, exclusion_reason,
+                effective_until, known_from, known_at, weight, inclusion_reason, exclusion_reason,
                 recorded_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             [
                 constituent.universe_name.upper(),
@@ -104,6 +105,7 @@ class PointInTimeUniverseManager:
                 constituent.effective_from.isoformat(),
                 constituent.effective_until.isoformat() if constituent.effective_until else None,
                 constituent.known_from.isoformat() if constituent.known_from else None,
+                constituent.known_at.isoformat() if constituent.known_at else None,
                 constituent.weight,
                 constituent.inclusion_reason,
                 constituent.exclusion_reason,
@@ -200,7 +202,7 @@ class PointInTimeUniverseManager:
         target_date = cls._normalize_date(as_of)
         
         query = """
-            SELECT universe_name, instrument_id, symbol, token, exchange, effective_from, effective_until, known_from, weight, inclusion_reason, exclusion_reason
+            SELECT universe_name, instrument_id, symbol, token, exchange, effective_from, effective_until, known_from, known_at, weight, inclusion_reason, exclusion_reason
             FROM index_constituents_pit
             WHERE universe_name = ?
               AND effective_from <= ?
@@ -209,9 +211,16 @@ class PointInTimeUniverseManager:
         params: list[Any] = [universe_name.upper(), target_date.isoformat(), target_date.isoformat()]
 
         if as_of_knowledge is not None:
-            knowledge_date = cls._normalize_date(as_of_knowledge)
-            query += " AND (known_from IS NULL OR known_from <= ?)"
-            params.append(knowledge_date.isoformat())
+            knowledge_timestamp = pd.Timestamp(as_of_knowledge)
+            if knowledge_timestamp.tzinfo is None:
+                knowledge_timestamp = knowledge_timestamp.tz_localize("Asia/Kolkata")
+            knowledge_date = knowledge_timestamp.date()
+            query += """ AND (
+                known_from IS NULL
+                OR known_from < ?
+                OR (known_from = ? AND known_at IS NOT NULL AND known_at <= ?)
+            )"""
+            params.extend([knowledge_date.isoformat(), knowledge_date.isoformat(), knowledge_timestamp.isoformat()])
 
         query += " ORDER BY symbol ASC"
         rows = raw_conn.execute(query, params).fetchall()
@@ -231,9 +240,10 @@ class PointInTimeUniverseManager:
                     effective_from=eff_from,
                     effective_until=eff_until,
                     known_from=known_from,
-                    weight=r[8],
-                    inclusion_reason=r[9],
-                    exclusion_reason=r[10],
+                    known_at=pd.Timestamp(r[8]).to_pydatetime() if r[8] is not None else None,
+                    weight=r[9],
+                    inclusion_reason=r[10],
+                    exclusion_reason=r[11],
                 )
             )
         return result

@@ -157,8 +157,10 @@ class DuckDBManager:
         insert_df["adjustment"] = str(adjustment).upper()
         insert_df["provider_name"] = provider_name
         insert_df["dataset_id"] = dataset_id
+        if "available_at" not in insert_df.columns:
+            insert_df["available_at"] = None
         insert_df = insert_df[
-            ["symbol", "token", "exchange", "timeframe", "timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id"]
+            ["symbol", "token", "exchange", "timeframe", "timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id", "available_at"]
         ]
 
         table_name = f"temp_historical_candles_{uuid.uuid4().hex}"
@@ -230,7 +232,7 @@ class DuckDBManager:
                         volume,
                         adjustment,
                         provider_name,
-                        dataset_id
+                        dataset_id, available_at
                     )
                     SELECT
                         symbol,
@@ -245,7 +247,7 @@ class DuckDBManager:
                         volume,
                         adjustment,
                         provider_name,
-                        dataset_id
+                        dataset_id, available_at
                     FROM {table_name}
                     """
                 )
@@ -2296,6 +2298,27 @@ class DuckDBManager:
             raise ValueError("No authoritative 1m source bars exist for the requested range.")
         return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash, "provider_token": str(token or "DERIVED")}
 
+    def _has_authoritative_dq_certification(self, dataset_id: str, content_hash: str) -> tuple[bool, str | None]:
+        """Return whether a dataset has Phase 2.2 hash-bound DQ evidence."""
+        certs = self.conn.execute(
+            """SELECT certification_id, checks_json FROM data_quality_certifications
+               WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0
+               ORDER BY completed_at DESC""",
+            [dataset_id],
+        ).fetchall()
+        required = {"schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"}
+        for cert_id, checks_json in certs:
+            try:
+                bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
+            except json.JSONDecodeError:
+                continue
+            checks = self.conn.execute(
+                "SELECT check_type, issue_count FROM quality_report WHERE certification_id = ?", [cert_id]
+            ).fetchall()
+            if bound_hash == content_hash and {str(row[0]) for row in checks if int(row[1]) == 0} == required:
+                return True, str(cert_id)
+        return False, None
+
     def persist_failed_derived_dataset(self, certification: "Any") -> None:
         """Retain failed derived DQ evidence without admitting bars to research."""
         if certification.dq_status != "DQ_FAILED":
@@ -2662,6 +2685,9 @@ class DuckDBManager:
               - ``cutoff_applied``: The cutoff timestamp string applied to filter bars.
         """
         cutoff_applied = str(decision_time)
+        # Delayed imports avoid the storage/provider package cycle during bootstrap.
+        from trading_stack.bar_availability import is_bar_available
+        from trading_stack.calendars import build_nse_calendar
 
         # Determine which timeframes to attempt
         timeframes_to_try: list[str]
@@ -2683,16 +2709,23 @@ class DuckDBManager:
                       AND timeframe = ?
                       AND status = 'VERIFIED'
                       AND lifecycle_status = 'CANONICAL_PROMOTED'
-                    ORDER BY updated_at DESC
+                      AND available_at IS NOT NULL
+                      AND available_at <= ?
+                    ORDER BY available_at DESC
                     LIMIT 1
                     """,
-                    [symbol, symbol, exchange, tf],
+                    [symbol, symbol, exchange, tf, cutoff_applied],
                 ).fetchone()
 
                 if not ds_row:
                     continue  # try next timeframe
 
                 ds_id, content_hash = ds_row
+                valid_dq, certification_id = self._has_authoritative_dq_certification(
+                    str(ds_id), str(content_hash or "")
+                )
+                if not valid_dq:
+                    continue
 
                 bars = self.conn.execute(
                     """
@@ -2703,15 +2736,25 @@ class DuckDBManager:
                       AND hc.symbol = ?
                       AND hc.exchange = ?
                       AND hc.timeframe = ?
+                      AND hc.available_at IS NOT NULL
+                      AND hc.available_at <= ?
                     ORDER BY hc.timestamp
                     """,
-                    [str(ds_id), symbol, exchange, tf],
+                    [str(ds_id), symbol, exchange, tf, cutoff_applied],
                 ).df()
+
+                decision_dt = pd.Timestamp(cutoff_applied).to_pydatetime()
+                calendar = build_nse_calendar()
+                if not bars.empty:
+                    bars = bars[bars["timestamp"].map(
+                        lambda timestamp: is_bar_available(pd.Timestamp(timestamp).to_pydatetime(), tf, decision_dt, calendar)
+                    )].copy()
 
                 return {
                     "bars": bars,
                     "dataset_id": str(ds_id),
                     "content_hash": str(content_hash or ""),
+                    "certification_id": certification_id,
                     "cutoff_applied": cutoff_applied,
                 }
 
@@ -2726,6 +2769,7 @@ class DuckDBManager:
             "bars": pd.DataFrame(),
             "dataset_id": None,
             "content_hash": None,
+            "certification_id": None,
             "cutoff_applied": cutoff_applied,
         }
 

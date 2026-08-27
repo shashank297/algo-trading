@@ -1,0 +1,3 @@
+ALTER TABLE market_datasets ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ;
+ALTER TABLE historical_candles ADD COLUMN IF NOT EXISTS available_at TIMESTAMPTZ;
+ALTER TABLE index_constituents_pit ADD COLUMN IF NOT EXISTS known_at TIMESTAMPTZ;
