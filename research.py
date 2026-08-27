@@ -37,6 +37,8 @@ def build_parser() -> argparse.ArgumentParser:
             "universe-status", "benchmark-register", "research-trials",
             # Phase 2.2 — Multi-timeframe data
             "build-derived-bars", "verify-market-provider",
+            # Phase 2.3 — Market context & regime
+            "market-regime",
         ],
         help="Workflow to run. Existing calls default to backtest.",
     )
@@ -76,6 +78,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--verification-severity", default="WARNING", choices=["WARNING", "BLOCKING"], help="How to handle provider disagreements")
     parser.add_argument("--start-date", default=None, help="Start date for data range (YYYY-MM-DD)")
     parser.add_argument("--end-date", default=None, help="End date for data range (YYYY-MM-DD)")
+    # Phase 2.3 — Market context & regime
+    parser.add_argument("--as-of", default=None, help="As-of evaluation date for market-regime (YYYY-MM-DD)")
+    parser.add_argument("--context", default="EOD", choices=["EOD", "INTRADAY"], help="Context type for market-regime (EOD or INTRADAY)")
+    parser.add_argument("--decision-time", default=None, help="Point-in-time decision ISO timestamp for market-regime")
+    parser.add_argument("--market", default="NSE", help="Market identifier for market-regime (default: NSE)")
     return parser
 
 
@@ -249,6 +256,64 @@ def main(argv: list[str] | None = None) -> int:
             except Exception as exc:
                 print(json.dumps({"status": "VERIFICATION_FAILED", "error": str(exc)}, indent=2))
                 return 1
+
+        if args.command == "market-regime":
+            from trading_stack.market_regime import MarketContextType, MarketRegimeEngine
+
+            as_of_str = args.as_of or datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
+            context_type = MarketContextType(args.context.upper())
+            decision_time_str = args.decision_time
+            if not decision_time_str:
+                if context_type == MarketContextType.INTRADAY:
+                    decision_time_str = f"{as_of_str}T10:00:00+05:30"
+                else:
+                    decision_time_str = f"{as_of_str}T15:30:00+05:30"
+
+            bench_sym = args.benchmark
+            bench_daily = db.conn.execute(
+                "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol = ? AND timeframe = '1d' ORDER BY timestamp",
+                [bench_sym],
+            ).df()
+
+            bench_intraday = None
+            if context_type == MarketContextType.INTRADAY:
+                bench_intraday = db.conn.execute(
+                    "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol = ? AND timeframe IN ('1m', '5m', '15m') ORDER BY timestamp",
+                    [bench_sym],
+                ).df()
+
+            vix_df = db.conn.execute(
+                "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'NIFTY VIX', 'VIX') ORDER BY timestamp"
+            ).df()
+
+            universe_daily = {}
+            for sym in universe[:50]:
+                udf = db.conn.execute(
+                    "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol = ? AND timeframe = '1d' ORDER BY timestamp",
+                    [sym],
+                ).df()
+                if not udf.empty:
+                    universe_daily[sym] = udf
+
+            engine = MarketRegimeEngine(market_calendar=india_calendar)
+            snapshot = engine.evaluate_market_regime(
+                market=args.market,
+                benchmark=bench_sym,
+                context_type=context_type,
+                as_of=as_of_str,
+                decision_time=decision_time_str,
+                benchmark_daily_bars=bench_daily,
+                benchmark_intraday_bars=bench_intraday,
+                universe_daily_bars=universe_daily,
+                pit_universe_members=universe,
+                vix_bars=vix_df if not vix_df.empty else None,
+                evidence_metadata={
+                    "universe_snapshot_id": args.universe_snapshot if args.universe_snapshot != "CONFIGURED_UNIVERSE" else None,
+                },
+            )
+            db.persist_market_regime_snapshot(snapshot)
+            print(json.dumps(snapshot.to_dict(), default=str, indent=2))
+            return 0
 
         if args.command == "benchmark-register":
             if not args.benchmark_provider:

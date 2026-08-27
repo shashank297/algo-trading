@@ -33,6 +33,17 @@ from trading_stack.strategies import (
     TrendFollowingStrategy,
 )
 
+from trading_stack.market_regime import (
+    MarketContextType,
+    MarketRegimeComponentScores,
+    MarketRegimeEngine,
+    MarketRegimeEvidence,
+    MarketRegimeFeatures,
+    MarketRegimePolicy,
+    MarketRegimeSnapshot,
+    RawMarketRegime,
+)
+
 __all__ = [
     "AssetClass",
     "BacktestMetrics",
@@ -43,6 +54,13 @@ __all__ = [
     "FeatureFactory",
     "Fill",
     "MarketCalendar",
+    "MarketContextType",
+    "MarketRegimeComponentScores",
+    "MarketRegimeEngine",
+    "MarketRegimeEvidence",
+    "MarketRegimeFeatures",
+    "MarketRegimePolicy",
+    "MarketRegimeSnapshot",
     "MarketSpec",
     "MeanReversionStrategy",
     "OpeningRangeBreakoutStrategy",
@@ -51,6 +69,7 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "PaperBroker",
+    "RawMarketRegime",
     "StrategyRegistry",
     "StrategyMetadata",
     "StrategyScope",

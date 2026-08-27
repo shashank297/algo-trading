@@ -2626,4 +2626,123 @@ class DuckDBManager:
             logger.warning("get_reconciliations failed: {}", exc)
             return []
 
+    def persist_market_regime_snapshot(self, snapshot: Any) -> None:
+        """Persist a MarketRegimeSnapshot to the market_regime_snapshots table.
 
+        Args:
+            snapshot: MarketRegimeSnapshot instance or dict.
+        """
+        if hasattr(snapshot, "to_dict"):
+            data = snapshot.to_dict()
+        elif isinstance(snapshot, dict):
+            data = snapshot
+        else:
+            raise TypeError(f"Unsupported snapshot type: {type(snapshot)}")
+
+        with self._write_lock:
+            self.conn.execute(
+                """
+                INSERT OR REPLACE INTO market_regime_snapshots (
+                    regime_id, market, benchmark, context_type, as_of, decision_time,
+                    raw_regime, confidence, trend_score, volatility_score,
+                    breadth_score, dispersion_score, liquidity_score, stress_score,
+                    input_evidence_json, input_evidence_hash, model_version,
+                    policy_version, policy_hash, calendar_version,
+                    missing_evidence_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    data["regime_id"],
+                    data["market"],
+                    data["benchmark"],
+                    data["context_type"],
+                    data["as_of"],
+                    data["decision_time"],
+                    data["raw_regime"],
+                    data["confidence"],
+                    data["trend_score"],
+                    data["volatility_score"],
+                    data["breadth_score"],
+                    data["dispersion_score"],
+                    data["liquidity_score"],
+                    data["stress_score"],
+                    data["input_evidence_json"],
+                    data["input_evidence_hash"],
+                    data["model_version"],
+                    data["policy_version"],
+                    data["policy_hash"],
+                    data["calendar_version"],
+                    data["missing_evidence_json"],
+                    data["created_at"],
+                ],
+            )
+        logger.debug(
+            "Persisted market regime snapshot: id={} market={} as_of={} regime={} conf={}",
+            data["regime_id"][:8],
+            data["market"],
+            data["as_of"],
+            data["raw_regime"],
+            data["confidence"],
+        )
+
+    def get_market_regime_snapshot(self, regime_id: str) -> dict[str, Any] | None:
+        """Fetch a single MarketRegimeSnapshot by its unique regime_id."""
+        records = self.conn.execute(
+            "SELECT * FROM market_regime_snapshots WHERE regime_id = ?",
+            [regime_id],
+        ).fetchdf()
+        if records.empty:
+            return None
+        return records.iloc[0].to_dict()
+
+    def list_market_regime_snapshots(
+        self,
+        *,
+        market: str | None = None,
+        context_type: str | None = None,
+        as_of: Any | None = None,
+        raw_regime: str | None = None,
+        model_version: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List market regime snapshots matching filters.
+
+        Args:
+            market: Optional market filter (e.g. 'NSE').
+            context_type: Optional context filter ('EOD' or 'INTRADAY').
+            as_of: Optional as_of date filter.
+            raw_regime: Optional raw_regime filter.
+            model_version: Optional model_version filter.
+            limit: Maximum rows to return.
+
+        Returns:
+            List of snapshot row dicts.
+        """
+        conditions: list[str] = []
+        params: list[Any] = []
+
+        if market is not None:
+            conditions.append("market = ?")
+            params.append(market)
+        if context_type is not None:
+            conditions.append("context_type = ?")
+            params.append(str(context_type))
+        if as_of is not None:
+            conditions.append("as_of = ?")
+            params.append(str(as_of))
+        if raw_regime is not None:
+            conditions.append("raw_regime = ?")
+            params.append(str(raw_regime))
+        if model_version is not None:
+            conditions.append("model_version = ?")
+            params.append(str(model_version))
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        sql = f"SELECT * FROM market_regime_snapshots {where_clause} ORDER BY decision_time DESC, created_at DESC LIMIT ?"
+        params.append(limit)
+
+        try:
+            return self.conn.execute(sql, params).fetchdf().to_dict(orient="records")
+        except Exception as exc:
+            logger.warning("list_market_regime_snapshots failed: {}", exc)
+            return []
