@@ -3,9 +3,20 @@
 from __future__ import annotations
 
 import json
+import pandas as pd
 from unittest.mock import MagicMock, patch
 
 from research import main
+
+
+def _empty_regime_bars_result() -> dict:
+    """Return the canonical empty result from load_regime_bars for mocking."""
+    return {
+        "bars": pd.DataFrame(),
+        "dataset_id": None,
+        "content_hash": None,
+        "cutoff_applied": "2026-08-27T15:30:00+05:30",
+    }
 
 
 def test_cli_market_regime_eod(capsys):
@@ -22,9 +33,8 @@ def test_cli_market_regime_eod(capsys):
     with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
-        # Mock historical candles df empty to produce valid INSUFFICIENT_CONTEXT snapshot without crash
-        import pandas as pd
-        mock_db.conn.execute.return_value.df.return_value = pd.DataFrame()
+        # Mock load_regime_bars to return empty certified result (produces INSUFFICIENT_CONTEXT)
+        mock_db.load_regime_bars.return_value = _empty_regime_bars_result()
 
         exit_code = main(test_argv)
         assert exit_code == 0
@@ -58,8 +68,12 @@ def test_cli_market_regime_intraday(capsys):
     with patch("research.validate_config", return_value=None), patch("research.DuckDBManager") as mock_db_cls:
         mock_db = MagicMock()
         mock_db_cls.return_value = mock_db
-        import pandas as pd
-        mock_db.conn.execute.return_value.df.return_value = pd.DataFrame()
+        mock_db.load_regime_bars.return_value = {
+            "bars": pd.DataFrame(),
+            "dataset_id": None,
+            "content_hash": None,
+            "cutoff_applied": "2026-08-27T10:00:00+05:30",
+        }
 
         exit_code = main(test_argv)
         assert exit_code == 0

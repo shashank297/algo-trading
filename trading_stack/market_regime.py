@@ -745,6 +745,9 @@ class MarketRegimeEngine:
         confidence = float(np.clip(confidence, 0.20, 1.0))
 
         # 10. Audit Evidence & Snapshot
+        # Use caller-supplied cutoff_timestamp (from load_regime_bars) when available;
+        # it records the exact data-layer PIT cutoff that was applied.
+        cutoff_ts = metadata.get("cutoff_timestamp") or decision_time_str
         evidence = MarketRegimeEvidence(
             benchmark_dataset_id=metadata.get("benchmark_dataset_id"),
             benchmark_content_hash=metadata.get("benchmark_content_hash"),
@@ -756,7 +759,7 @@ class MarketRegimeEngine:
             vix_content_hash=metadata.get("vix_content_hash"),
             as_of=as_of_str,
             decision_time=decision_time_str,
-            cutoff_timestamp=decision_time_str,
+            cutoff_timestamp=cutoff_ts,
         )
         evidence_hash = evidence.compute_hash()
 

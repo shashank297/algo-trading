@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
 import numpy as np
 import pandas as pd
@@ -399,3 +400,175 @@ def test_duckdb_persistence_roundtrip(tmp_path):
     assert listed[0]["regime_id"] == snapshot.regime_id
 
     db.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 2.3 Enforcement Tests
+# ---------------------------------------------------------------------------
+
+
+def test_regime_bars_require_certified_datasets(tmp_path: Path) -> None:
+    """Violation 6 — load_regime_bars must reject uncertified (non-CANONICAL_PROMOTED) bars.
+
+    Bars inserted with a non-certified dataset (lifecycle_status != CANONICAL_PROMOTED)
+    must not be returned by load_regime_bars; the result must be an empty DataFrame.
+    """
+    db_path = str(tmp_path / "regime_cert_test.duckdb")
+    db = DuckDBManager(db_path)
+
+    # Insert an uncertified dataset (RAW_RECORDED, not CANONICAL_PROMOTED)
+    db.conn.execute(
+        """
+        INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe,
+            provider_name, raw_hash, status, lifecycle_status
+        ) VALUES (
+            'ds_uncert', 'NIFTY200', 'NIFTY200', 'NSE', '1d',
+            'TEST', 'raw_h1', 'UNVERIFIED', 'RAW_RECORDED'
+        )
+        """
+    )
+    # Insert bars linked to the uncertified dataset
+    db.conn.execute(
+        """
+        INSERT INTO historical_candles (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+        VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-02 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'ds_uncert')
+        """
+    )
+
+    result = db.load_regime_bars("NIFTY200", "1d", "2025-01-02T15:30:00+05:30", exchange="NSE")
+
+    assert result["bars"].empty, (
+        "load_regime_bars must return empty DataFrame when no VERIFIED+CANONICAL_PROMOTED dataset exists"
+    )
+    assert result["dataset_id"] is None
+    assert result["content_hash"] is None
+
+    db.close()
+
+
+def test_regime_bars_returns_certified_dataset(tmp_path: Path) -> None:
+    """Companion to Violation 6 — load_regime_bars returns bars for a certified dataset.
+
+    Bars whose dataset IS VERIFIED + CANONICAL_PROMOTED must be returned.
+    """
+    db_path = str(tmp_path / "regime_cert_pass.duckdb")
+    db = DuckDBManager(db_path)
+
+    db.conn.execute(
+        """
+        INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe,
+            provider_name, raw_hash, transformation_hash, status, lifecycle_status
+        ) VALUES (
+            'ds_cert', 'NIFTY200', 'NIFTY200', 'NSE', '1d',
+            'TEST', 'raw_h1', 'trans_h1', 'VERIFIED', 'CANONICAL_PROMOTED'
+        )
+        """
+    )
+    db.conn.execute(
+        """
+        INSERT INTO historical_candles (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+        VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-02 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'ds_cert')
+        """
+    )
+
+    result = db.load_regime_bars("NIFTY200", "1d", "2025-01-02T15:30:00+05:30", exchange="NSE")
+
+    assert not result["bars"].empty, "load_regime_bars must return bars for a certified dataset"
+    assert result["dataset_id"] == "ds_cert"
+    assert result["content_hash"] == "trans_h1"  # transformation_hash takes priority
+
+    db.close()
+
+
+def test_evidence_hash_binds_to_cutoff_timestamp() -> None:
+    """Violation 7 — input_evidence_hash must differ when cutoff_timestamp differs.
+
+    Two evaluate_market_regime calls with identical bar data but different decision_times
+    (meaning different cutoff_timestamps in evidence_metadata) must produce different
+    input_evidence_hash values.
+    """
+    engine = MarketRegimeEngine()
+    bars = _generate_synthetic_daily_bars(num_days=200)
+    as_of = bars["date"].iloc[-1]
+
+    decision_time_a = f"{as_of.isoformat()}T09:15:00+05:30"
+    decision_time_b = f"{as_of.isoformat()}T15:30:00+05:30"
+
+    evidence_meta_a = {
+        "benchmark_dataset_id": "ds_bench",
+        "benchmark_content_hash": "hash_bench",
+        "cutoff_timestamp": decision_time_a,
+    }
+    evidence_meta_b = {
+        "benchmark_dataset_id": "ds_bench",
+        "benchmark_content_hash": "hash_bench",
+        "cutoff_timestamp": decision_time_b,
+    }
+
+    snap_a = engine.evaluate_market_regime(
+        market="NSE",
+        benchmark="NIFTY",
+        context_type=MarketContextType.EOD,
+        as_of=as_of,
+        decision_time=decision_time_a,
+        benchmark_daily_bars=bars,
+        evidence_metadata=evidence_meta_a,
+    )
+    snap_b = engine.evaluate_market_regime(
+        market="NSE",
+        benchmark="NIFTY",
+        context_type=MarketContextType.EOD,
+        as_of=as_of,
+        decision_time=decision_time_b,
+        benchmark_daily_bars=bars,
+        evidence_metadata=evidence_meta_b,
+    )
+
+    # cutoff_timestamp differs → evidence dict differs → hash must differ
+    assert snap_a.input_evidence_hash != snap_b.input_evidence_hash, (
+        "input_evidence_hash must change when cutoff_timestamp changes"
+    )
+
+
+def test_universe_not_silently_truncated() -> None:
+    """Violation 8 — All PIT universe members must be used in breadth calculation.
+
+    With 60 members (> the old :50 cap), the engine must process all 60 members.
+    We verify this by checking that advance_decline_ratio reflects the full universe
+    size, not just a sub-50 truncation artifact.
+    """
+    engine = MarketRegimeEngine()
+    bars = _generate_synthetic_daily_bars(num_days=250, daily_return_mean=0.0005, daily_vol=0.008)
+    as_of = bars["date"].iloc[-1]
+    decision_time = f"{as_of.isoformat()}T15:30:00+05:30"
+
+    # 60 members: all with strong positive bias → all should show advances
+    n_members = 60
+    pit_members = [f"LARGE{i}" for i in range(n_members)]
+    univ_bars = _generate_synthetic_universe_bars(
+        pit_members, num_days=250, bias=0.002, vol=0.005
+    )
+
+    snap = engine.evaluate_market_regime(
+        market="NSE",
+        benchmark="NIFTY",
+        context_type=MarketContextType.EOD,
+        as_of=as_of,
+        decision_time=decision_time,
+        benchmark_daily_bars=bars,
+        universe_daily_bars=univ_bars,
+        pit_universe_members=pit_members,
+    )
+
+    # All 60 members have positive bias → ad_ratio should be clearly positive
+    # If truncated to 50, the ratio would still be positive but the universe_member_count
+    # in evidence would be wrong.
+    assert snap.input_evidence.universe_member_count == n_members, (
+        f"Expected {n_members} universe members in evidence, "
+        f"got {snap.input_evidence.universe_member_count}"
+    )
+    assert snap.component_scores.breadth_score > 0.0, (
+        "Breadth score should be positive with a fully bullish 60-member universe"
+    )

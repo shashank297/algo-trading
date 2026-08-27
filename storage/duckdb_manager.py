@@ -2626,6 +2626,109 @@ class DuckDBManager:
             logger.warning("get_reconciliations failed: {}", exc)
             return []
 
+    def load_regime_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        decision_time: str,
+        *,
+        exchange: str = "NSE",
+        intraday: bool = False,
+    ) -> dict[str, Any]:
+        """Load bars for market-regime evaluation from certified (VERIFIED + CANONICAL_PROMOTED) datasets only.
+
+        Enforces Phase 2.3 PIT-certified data requirement: only bars whose dataset is
+        both ``status='VERIFIED'`` and ``lifecycle_status='CANONICAL_PROMOTED'`` are
+        returned.  When no certified dataset exists, returns an empty DataFrame with
+        ``dataset_id=None`` so the caller can record ``missing_evidence`` rather than
+        crash.
+
+        For intraday=True the method prefers the finest available certified timeframe
+        (1m → 5m → 15m) for the symbol/exchange pair.
+
+        Args:
+            symbol: Market symbol (e.g. ``'NIFTY200'``).
+            timeframe: Requested timeframe (e.g. ``'1d'``, ``'1m'``).
+            decision_time: ISO-8601 decision timestamp used as a label for ``cutoff_applied``.
+                           The date component is extracted and used as the date-based cutoff.
+            exchange: Exchange code (default ``'NSE'``).
+            intraday: If True, search for finest certified intraday timeframe.
+
+        Returns:
+            Dict with keys:
+              - ``bars``: :class:`pd.DataFrame` with OHLCV columns (may be empty).
+              - ``dataset_id``: The certified dataset_id used (or ``None``).
+              - ``content_hash``: The certified dataset content hash (or ``None``).
+              - ``cutoff_applied``: The cutoff timestamp string applied to filter bars.
+        """
+        cutoff_applied = str(decision_time)
+
+        # Determine which timeframes to attempt
+        timeframes_to_try: list[str]
+        if intraday:
+            timeframes_to_try = ["1m", "5m", "15m", "30m", "60m"]
+        else:
+            timeframes_to_try = [timeframe]
+
+        for tf in timeframes_to_try:
+            try:
+                # Find the most recent certified dataset for this symbol/timeframe/exchange
+                ds_row = self.conn.execute(
+                    """
+                    SELECT dataset_id,
+                           COALESCE(transformation_hash, raw_hash) AS content_hash
+                    FROM market_datasets
+                    WHERE (symbol = ? OR canonical_symbol = ?)
+                      AND exchange = ?
+                      AND timeframe = ?
+                      AND status = 'VERIFIED'
+                      AND lifecycle_status = 'CANONICAL_PROMOTED'
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                    """,
+                    [symbol, symbol, exchange, tf],
+                ).fetchone()
+
+                if not ds_row:
+                    continue  # try next timeframe
+
+                ds_id, content_hash = ds_row
+
+                bars = self.conn.execute(
+                    """
+                    SELECT hc.symbol, hc.exchange, hc.timeframe, hc.timestamp,
+                           hc.open, hc.high, hc.low, hc.close, hc.volume, hc.adjustment
+                    FROM historical_candles hc
+                    WHERE hc.dataset_id = ?
+                      AND hc.symbol = ?
+                      AND hc.exchange = ?
+                      AND hc.timeframe = ?
+                    ORDER BY hc.timestamp
+                    """,
+                    [str(ds_id), symbol, exchange, tf],
+                ).df()
+
+                return {
+                    "bars": bars,
+                    "dataset_id": str(ds_id),
+                    "content_hash": str(content_hash or ""),
+                    "cutoff_applied": cutoff_applied,
+                }
+
+            except Exception as exc:
+                logger.warning(
+                    "load_regime_bars failed for {}/{}/{}: {}", symbol, exchange, tf, exc
+                )
+                continue
+
+        # No certified dataset found for any attempted timeframe
+        return {
+            "bars": pd.DataFrame(),
+            "dataset_id": None,
+            "content_hash": None,
+            "cutoff_applied": cutoff_applied,
+        }
+
     def persist_market_regime_snapshot(self, snapshot: Any) -> None:
         """Persist a MarketRegimeSnapshot to the market_regime_snapshots table.
 

@@ -270,30 +270,43 @@ def main(argv: list[str] | None = None) -> int:
                     decision_time_str = f"{as_of_str}T15:30:00+05:30"
 
             bench_sym = args.benchmark
-            bench_daily = db.conn.execute(
-                "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol = ? AND timeframe = '1d' ORDER BY timestamp",
-                [bench_sym],
-            ).df()
 
+            # --- Phase 2.3 PIT-certified data loading ---
+            # Benchmark daily bars — only from VERIFIED + CANONICAL_PROMOTED datasets
+            bench_result = db.load_regime_bars(
+                bench_sym, "1d", decision_time_str, exchange="NSE"
+            )
+            bench_daily = bench_result["bars"]
+
+            # Benchmark intraday bars — finest certified intraday tf available
             bench_intraday = None
             if context_type == MarketContextType.INTRADAY:
-                bench_intraday = db.conn.execute(
-                    "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol = ? AND timeframe IN ('1m', '5m', '15m') ORDER BY timestamp",
-                    [bench_sym],
-                ).df()
+                intra_result = db.load_regime_bars(
+                    bench_sym, "1m", decision_time_str, exchange="NSE", intraday=True
+                )
+                if not intra_result["bars"].empty:
+                    bench_intraday = intra_result["bars"]
 
-            vix_df = db.conn.execute(
-                "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol IN ('INDIA VIX', 'INDIAVIX', 'NIFTY VIX', 'VIX') ORDER BY timestamp"
-            ).df()
+            # VIX bars — check common VIX symbols
+            vix_df = None
+            vix_dataset_id = None
+            vix_content_hash = None
+            for vix_sym in ("INDIA VIX", "INDIAVIX", "NIFTY VIX", "VIX"):
+                vix_result = db.load_regime_bars(
+                    vix_sym, "1d", decision_time_str, exchange="NSE"
+                )
+                if not vix_result["bars"].empty:
+                    vix_df = vix_result["bars"]
+                    vix_dataset_id = vix_result["dataset_id"]
+                    vix_content_hash = vix_result["content_hash"]
+                    break
 
+            # Universe bars — ALL PIT members (no truncation)
             universe_daily = {}
-            for sym in universe[:50]:
-                udf = db.conn.execute(
-                    "SELECT timestamp, open, high, low, close, volume FROM historical_candles WHERE symbol = ? AND timeframe = '1d' ORDER BY timestamp",
-                    [sym],
-                ).df()
-                if not udf.empty:
-                    universe_daily[sym] = udf
+            for sym in universe:
+                u_result = db.load_regime_bars(sym, "1d", decision_time_str, exchange="NSE")
+                if not u_result["bars"].empty:
+                    universe_daily[sym] = u_result["bars"]
 
             engine = MarketRegimeEngine(market_calendar=india_calendar)
             snapshot = engine.evaluate_market_regime(
@@ -304,11 +317,21 @@ def main(argv: list[str] | None = None) -> int:
                 decision_time=decision_time_str,
                 benchmark_daily_bars=bench_daily,
                 benchmark_intraday_bars=bench_intraday,
-                universe_daily_bars=universe_daily,
-                pit_universe_members=universe,
-                vix_bars=vix_df if not vix_df.empty else None,
+                universe_daily_bars=universe_daily if universe_daily else None,
+                pit_universe_members=universe if universe else None,
+                vix_bars=vix_df,
                 evidence_metadata={
-                    "universe_snapshot_id": args.universe_snapshot if args.universe_snapshot != "CONFIGURED_UNIVERSE" else None,
+                    "universe_snapshot_id": (
+                        args.universe_snapshot
+                        if args.universe_snapshot != "CONFIGURED_UNIVERSE"
+                        else None
+                    ),
+                    # Certified dataset provenance for audit hash
+                    "benchmark_dataset_id": bench_result["dataset_id"],
+                    "benchmark_content_hash": bench_result["content_hash"],
+                    "vix_dataset_id": vix_dataset_id,
+                    "vix_content_hash": vix_content_hash,
+                    "cutoff_timestamp": bench_result["cutoff_applied"],
                 },
             )
             db.persist_market_regime_snapshot(snapshot)
