@@ -52,6 +52,7 @@ class MarketRegimePolicy:
         min_benchmark_history: int = 220,
         min_component_coverage: float = 0.75,
         min_breadth_coverage: float = 0.80,
+        min_liquidity_history: int = 60,
         trend_20_target: float = 0.05,
         trend_60_target: float = 0.10,
         trend_dma50_target: float = 0.03,
@@ -71,6 +72,7 @@ class MarketRegimePolicy:
         self.min_benchmark_history = min_benchmark_history
         self.min_component_coverage = min_component_coverage
         self.min_breadth_coverage = min_breadth_coverage
+        self.min_liquidity_history = min_liquidity_history
         self.trend_20_target = trend_20_target
         self.trend_60_target = trend_60_target
         self.trend_dma50_target = trend_dma50_target
@@ -105,6 +107,7 @@ class MarketRegimePolicy:
             "min_benchmark_history": self.min_benchmark_history,
             "min_component_coverage": self.min_component_coverage,
             "min_breadth_coverage": self.min_breadth_coverage,
+            "min_liquidity_history": self.min_liquidity_history,
             "trend_20_target": self.trend_20_target,
             "trend_60_target": self.trend_60_target,
             "trend_dma50_target": self.trend_dma50_target,
@@ -669,8 +672,8 @@ class MarketRegimeEngine:
         # Turnover ratio
         market_liquidity_series = [sum(values) for _, values in sorted(market_traded_values_by_date.items())]
         turnover_ratio = None
-        if len(market_liquidity_series) >= 60:
-            baseline_turnover = float(np.mean(market_liquidity_series[-60:]))
+        if len(market_liquidity_series) >= self.policy.min_liquidity_history:
+            baseline_turnover = float(np.mean(market_liquidity_series[-self.policy.min_liquidity_history:]))
             if baseline_turnover > 0:
                 turnover_ratio = float(np.mean(market_liquidity_series[-5:]) / baseline_turnover)
         adv_20 = float(np.median(member_traded_values_20)) if member_traded_values_20 else None
@@ -905,7 +908,7 @@ class MarketRegimeEngine:
         )
         evidence_hash = evidence.compute_hash()
 
-        regime_id_str = f"{market}:{context_type.value}:{decision_time_str}:{evidence_hash}:{self.MODEL_VERSION}:{policy_hash}:{calendar_version}"
+        regime_id_str = f"{market}:{benchmark}:{context_type.value}:{as_of_str}:{decision_time_str}:{evidence_hash}:{self.MODEL_VERSION}:{policy_hash}:{calendar_version}"
         regime_id = str(uuid.uuid5(self.NAMESPACE_REGIME, regime_id_str))
 
         return MarketRegimeSnapshot(
@@ -940,21 +943,58 @@ class MarketRegimeEngine:
         metadata: dict[str, Any],
         bench_count: int,
     ) -> MarketRegimeSnapshot:
+        cutoff_ts = metadata.get("cutoff_timestamp") or decision_time
+        policy_hash = self.policy.compute_hash()
+        calendar_version = getattr(self.calendar, "version", "1.0.0")
+        manifest = {
+            "market": market,
+            "benchmark": benchmark,
+            "context_type": context_type.value,
+            "as_of": as_of,
+            "decision_time": decision_time,
+            "benchmark_daily": {
+                "dataset_id": metadata.get("benchmark_dataset_id"),
+                "content_hash": metadata.get("benchmark_content_hash"),
+                "certification_id": metadata.get("benchmark_certification_id"),
+                "cutoff": cutoff_ts,
+                "timeframe": "1d",
+            },
+            "benchmark_intraday": metadata.get("benchmark_intraday_evidence", {"available": False}),
+            "vix": metadata.get(
+                "vix_evidence",
+                {
+                    "available": False,
+                    "dataset_id": metadata.get("vix_dataset_id"),
+                    "content_hash": metadata.get("vix_content_hash"),
+                },
+            ),
+            "universe": metadata.get("universe_manifest", {}),
+            "component_coverage": metadata.get(
+                "component_coverage",
+                {"trend": 0.0, "volatility": 0.0, "breadth": 0.0, "liquidity": 0.0},
+            ),
+            "missing_evidence": missing_evidence,
+            "model_version": self.MODEL_VERSION,
+            "policy_version": self.policy.policy_version,
+            "policy_hash": policy_hash,
+            "calendar_version": calendar_version,
+        }
         evidence = MarketRegimeEvidence(
             benchmark_dataset_id=metadata.get("benchmark_dataset_id"),
             benchmark_content_hash=metadata.get("benchmark_content_hash"),
             benchmark_bars_count=bench_count,
             universe_snapshot_id=metadata.get("universe_snapshot_id"),
-            universe_member_count=0,
+            universe_member_count=metadata.get("universe_manifest", {}).get("total_member_count", 0),
             universe_content_hash=metadata.get("universe_content_hash"),
             vix_dataset_id=metadata.get("vix_dataset_id"),
             vix_content_hash=metadata.get("vix_content_hash"),
             as_of=as_of,
             decision_time=decision_time,
-            cutoff_timestamp=decision_time,
+            cutoff_timestamp=cutoff_ts,
+            evidence_manifest=manifest,
         )
         evidence_hash = evidence.compute_hash()
-        regime_id_str = f"{market}:{benchmark}:{context_type.value}:{as_of}:{decision_time}:{evidence_hash}:{self.MODEL_VERSION}"
+        regime_id_str = f"{market}:{benchmark}:{context_type.value}:{as_of}:{decision_time}:{evidence_hash}:{self.MODEL_VERSION}:{policy_hash}:{calendar_version}"
         regime_id = str(uuid.uuid5(self.NAMESPACE_REGIME, regime_id_str))
 
         return MarketRegimeSnapshot(
@@ -972,7 +1012,9 @@ class MarketRegimeEngine:
             input_evidence_hash=evidence_hash,
             model_version=self.MODEL_VERSION,
             policy_version=self.policy.policy_version,
-            policy_hash=self.policy.compute_hash(),
-            calendar_version=getattr(self.calendar, "version", "1.0.0"),
+            policy_hash=policy_hash,
+            calendar_version=calendar_version,
             missing_evidence=missing_evidence,
+            component_evidence=manifest["component_coverage"],
         )
+

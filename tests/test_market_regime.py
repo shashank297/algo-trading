@@ -586,3 +586,125 @@ def test_universe_not_silently_truncated() -> None:
     assert snap.component_scores.breadth_score > 0.0, (
         "Breadth score should be positive with a fully bullish 60-member universe"
     )
+
+
+def test_insufficient_context_snapshot_identity():
+    """Verify INSUFFICIENT_CONTEXT snapshots are version-bound and contain full manifest."""
+    engine = MarketRegimeEngine()
+    bars = _generate_synthetic_daily_bars(num_days=50)  # Insufficient (< 220)
+    as_of = bars["date"].iloc[-1]
+    decision_time = f"{as_of.isoformat()}T15:30:00+05:30"
+
+    snap = engine.evaluate_market_regime(
+        market="NSE",
+        benchmark="NIFTY",
+        context_type=MarketContextType.EOD,
+        as_of=as_of,
+        decision_time=decision_time,
+        benchmark_daily_bars=bars,
+    )
+
+    assert snap.raw_regime == RawMarketRegime.INSUFFICIENT_CONTEXT
+    assert snap.policy_version == engine.policy.policy_version
+    assert snap.policy_hash == engine.policy.compute_hash()
+    assert snap.calendar_version == getattr(engine.calendar, "version", "1.0.0")
+    assert "benchmark_daily" in snap.input_evidence.evidence_manifest
+    assert snap.input_evidence_hash == snap.input_evidence.compute_hash()
+    assert snap.regime_id is not None and len(snap.regime_id) > 0
+
+
+def test_authoritative_dq_certification_check(tmp_path: Path):
+    """Verify load_regime_bars rejects datasets with mismatched or missing DQ certifications."""
+    db_path = str(tmp_path / "regime_dq_check.duckdb")
+    db = DuckDBManager(db_path)
+
+    # 1. Dataset with no DQ cert
+    db.conn.execute(
+        """
+        INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe,
+            provider_name, raw_hash, transformation_hash, status, lifecycle_status
+        ) VALUES (
+            'ds_no_dq', 'NIFTY200', 'NIFTY200', 'NSE', '1d',
+            'TEST', 'raw_h1', 'trans_h1', 'VERIFIED', 'CANONICAL_PROMOTED'
+        )
+        """
+    )
+    db.conn.execute("INSERT INTO market_dataset_availability VALUES ('ds_no_dq', '2025-01-02 15:30:00+05:30')")
+    db.conn.execute(
+        """
+        INSERT INTO historical_candles (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+        VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-02 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'ds_no_dq')
+        """
+    )
+    db.conn.execute("""INSERT INTO historical_candle_availability
+        VALUES ('ds_no_dq', 'NIFTY200', 'NSE', '1d', '2025-01-02 15:30:00+05:30', '2025-01-02 15:30:00+05:30')""")
+
+    result = db.load_regime_bars("NIFTY200", "1d", "2025-01-02T15:30:00+05:30", exchange="NSE")
+    assert result["bars"].empty, "Dataset without DQ certification must be rejected."
+
+    # 2. Dataset with mismatched hash in DQ cert
+    db.conn.execute(
+        """
+        INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe,
+            provider_name, raw_hash, transformation_hash, status, lifecycle_status
+        ) VALUES (
+            'ds_bad_hash', 'INFY', 'INFY', 'NSE', '1d',
+            'TEST', 'raw_h1', 'trans_actual', 'VERIFIED', 'CANONICAL_PROMOTED'
+        )
+        """
+    )
+    db.conn.execute("INSERT INTO market_dataset_availability VALUES ('ds_bad_hash', '2025-01-02 15:30:00+05:30')")
+    db.conn.execute(
+        """
+        INSERT INTO historical_candles (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+        VALUES ('INFY', 'T2', 'NSE', '1d', '2025-01-02 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'ds_bad_hash')
+        """
+    )
+    db.conn.execute("""INSERT INTO historical_candle_availability
+        VALUES ('ds_bad_hash', 'INFY', 'NSE', '1d', '2025-01-02 15:30:00+05:30', '2025-01-02 15:30:00+05:30')""")
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications
+           (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+           VALUES ('dq_bad', 'ds_bad_hash', 'test', 6, 0, '{"dataset_content_hash":"trans_DIFFERENT"}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+    )
+
+    result_bad = db.load_regime_bars("INFY", "1d", "2025-01-02T15:30:00+05:30", exchange="NSE")
+    assert result_bad["bars"].empty, "Dataset with mismatched hash in DQ cert must be rejected."
+
+    db.close()
+
+
+def test_complete_evidence_manifest_binding():
+    """Verify changing universe manifest or benchmark certification changes input_evidence_hash."""
+    engine = MarketRegimeEngine()
+    bars = _generate_synthetic_daily_bars(num_days=250)
+    as_of = bars["date"].iloc[-1]
+    decision_time = f"{as_of.isoformat()}T15:30:00+05:30"
+
+    meta_1 = {
+        "benchmark_dataset_id": "ds1",
+        "benchmark_content_hash": "hash1",
+        "universe_manifest": {"members": [{"symbol": "SBIN", "dataset_id": "ds_sbi", "content_hash": "h_sbi"}]},
+    }
+    meta_2 = {
+        "benchmark_dataset_id": "ds1",
+        "benchmark_content_hash": "hash1",
+        "universe_manifest": {"members": [{"symbol": "SBIN", "dataset_id": "ds_sbi", "content_hash": "h_sbi_MUTATED"}]},
+    }
+
+    snap_1 = engine.evaluate_market_regime(
+        market="NSE", benchmark="NIFTY", context_type=MarketContextType.EOD,
+        as_of=as_of, decision_time=decision_time, benchmark_daily_bars=bars,
+        evidence_metadata=meta_1,
+    )
+    snap_2 = engine.evaluate_market_regime(
+        market="NSE", benchmark="NIFTY", context_type=MarketContextType.EOD,
+        as_of=as_of, decision_time=decision_time, benchmark_daily_bars=bars,
+        evidence_metadata=meta_2,
+    )
+
+    assert snap_1.input_evidence_hash != snap_2.input_evidence_hash
+    assert snap_1.regime_id != snap_2.regime_id
+
