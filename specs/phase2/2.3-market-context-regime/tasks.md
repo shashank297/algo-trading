@@ -34,6 +34,6 @@
 
 ## Phase 7: Full Repository Verification & CI
 
-- [ ] T015 Run full local validation: pytest, ruff, mypy, pyright, compileall, coverage (global >= 80%, critical >= 95%), pip-audit, frontend lint/build.
-- [ ] T016 Commit directly to `main` with descriptive message and push to `origin/main`.
-- [ ] T017 Monitor and verify GitHub Actions CI run on exact pushed `main` SHA until all 6 matrix jobs are 100% green.
+- [x] T015 Run full local validation: pytest, ruff, mypy, pyright, compileall, coverage (global >= 80%, critical >= 95%), pip-audit, frontend lint/build.
+- [x] T016 Commit directly to `main` with descriptive message and push to `origin/main`.
+- [x] T017 Monitor and verify GitHub Actions CI run on exact pushed `main` SHA until all 6 matrix jobs are 100% green.
