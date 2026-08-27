@@ -460,13 +460,13 @@ class MarketRegimeEngine:
         close_vs_200 = (p_now / sma_200_now - 1.0) if sma_200_now is not None and sma_200_now > 0 else None
 
         # Slopes
-        slope_50 = 0.0
+        slope_50: float | None = 0.0
         if len(sma_50_series) >= 60 and not np.isnan(sma_50_series.iloc[-11]):
             s_base = float(sma_50_series.iloc[-11])
             if s_base > 0:
                 slope_50 = (sma_50_now - s_base) / (10.0 * s_base) if sma_50_now is not None else None
 
-        slope_200 = 0.0
+        slope_200: float | None = 0.0
         if len(sma_200_series) >= 220 and not np.isnan(sma_200_series.iloc[-21]):
             s_base200 = float(sma_200_series.iloc[-21])
             if s_base200 > 0:
@@ -635,6 +635,17 @@ class MarketRegimeEngine:
                 bench_count=len(bench_prices),
             )
 
+        if any(value is None for value in (close_vs_50, close_vs_200, pct_above_50dma, pct_above_200dma, ad_ratio)):
+            missing_evidence.append("Critical trend or breadth feature unavailable")
+            return self._build_insufficient_snapshot(
+                market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
+                decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
+                bench_count=len(bench_prices),
+            )
+
+        assert close_vs_50 is not None and close_vs_200 is not None
+        assert pct_above_50dma is not None and pct_above_200dma is not None and ad_ratio is not None
+
         # 6. Calculate Liquidity & Stress Features
         # Turnover ratio
         turnover_ratio = float(np.median(member_turnover_ratios)) if member_turnover_ratios else None
@@ -745,7 +756,7 @@ class MarketRegimeEngine:
 
         if (
             drawdown_252 <= self.policy.recovery_drawdown_threshold
-            and (scores.trend_score > 0.0 or slope_50 > 0.0)
+            and (scores.trend_score > 0.0 or (slope_50 is not None and slope_50 > 0.0))
             and scores.breadth_score >= 0.0
             and downside_freq <= 0.10
             and vol_shock <= 0.25
