@@ -261,6 +261,11 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.command == "market-regime":
             from trading_stack.market_regime import MarketContextType, MarketRegimeEngine
+            from trading_stack.regime_transition import (
+                RegimeTransitionEngine,
+                RegimeTransitionPolicy,
+                StressEvidence,
+            )
 
             if args.universe_snapshot == "CONFIGURED_UNIVERSE":
                 raise ValueError(
@@ -416,8 +421,49 @@ def main(argv: list[str] | None = None) -> int:
                     "vix_evidence": vix_evidence,
                 },
             )
-            db.persist_market_regime_snapshot(snapshot)
-            print(json.dumps(snapshot.to_dict(), default=str, indent=2))
+            transition_policy = RegimeTransitionPolicy.from_config(
+                research_config.get("regime_transition"), context_type=context_type,
+            )
+            prior_transition_state = db.get_regime_transition_state(
+                args.market, bench_sym, context_type,
+            )
+            prior_risk_state = db.get_operational_risk_state(
+                args.market, bench_sym, context_type,
+            )
+            stress_evidence = None
+            if transition_policy.stress_override_enabled:
+                benchmark_loss = None
+                extreme_gap = None
+                if len(bench_daily) >= 2:
+                    ordered_benchmark = bench_daily.copy()
+                    sort_column = "timestamp" if "timestamp" in ordered_benchmark.columns else "date"
+                    ordered_benchmark = ordered_benchmark.sort_values(sort_column)
+                    previous_close = float(ordered_benchmark["close"].iloc[-2])
+                    latest_close = float(ordered_benchmark["close"].iloc[-1])
+                    latest_open = float(ordered_benchmark["open"].iloc[-1])
+                    if previous_close > 0:
+                        benchmark_loss = max(0.0, 1.0 - latest_close / previous_close)
+                        extreme_gap = abs(latest_open / previous_close - 1.0)
+                stress_evidence = StressEvidence(
+                    observed_at=decision_time_str,
+                    benchmark_loss=benchmark_loss,
+                    volatility_shock=snapshot.features.volatility_shock_ratio,
+                    extreme_gap=extreme_gap,
+                    liquidity_collapse=snapshot.features.liquidity_deterioration,
+                    market_data_integrity_failure=(
+                        snapshot.raw_regime.value == "INSUFFICIENT_CONTEXT"
+                    ),
+                )
+            transition = RegimeTransitionEngine(transition_policy).evaluate(
+                snapshot,
+                prior_state=prior_transition_state,
+                prior_risk_state=prior_risk_state,
+                stress_evidence=stress_evidence,
+            )
+            db.persist_regime_transition(snapshot, transition)
+            output = snapshot.to_dict()
+            output.update(transition.to_dict())
+            print(json.dumps(output, default=str, indent=2))
             return 0
 
         if args.command == "benchmark-register":

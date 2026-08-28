@@ -116,3 +116,17 @@ research:
     max_gross_exposure_pct: 0.20
     max_daily_loss_pct: 0.01
     max_drawdown_pct: 0.05
+  regime_transition:
+    policy_version: "2.4.0"
+    minimum_confidence: 0.70
+    minimum_dwell_observations: 3
+    transition_buffer: 0.05
+    stress_override_enabled: false
+    stress_release_dwell: 3
+    # Enabling the override requires explicit, operator-approved thresholds.
+    stress_thresholds: null
+    contexts:
+      EOD:
+        maximum_pending_duration_seconds: 604800
+      INTRADAY:
+        maximum_pending_duration_seconds: 3600

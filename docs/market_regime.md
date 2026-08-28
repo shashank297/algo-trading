@@ -91,13 +91,19 @@ The engine strictly separates:
 
 ---
 
-## 5. Storage Lineage & Migration 017
+## 5. Storage Lineage & Operational Transition
 
 Snapshots are persisted to `market_regime_snapshots` via `DuckDBManager.persist_market_regime_snapshot()`:
 - `regime_id`: UUIDv5 generated from canonical input string and namespace.
 - `input_evidence_hash`: SHA-256 of canonical input evidence JSON.
 - `model_version`: Semantic engine version (e.g. `1.0.0`).
 - `policy_hash`: SHA-256 hash of policy threshold parameters.
+
+Phase 2.4 consumes each immutable raw snapshot through a separate operational state machine. Raw
+classification history is never rewritten. Operational regime and independent `NORMAL` / `CAUTION` /
+`STRESS` risk state are persisted per `(market, benchmark, context_type)` with append-only decision
+events; pending confirmation and stress-release counters survive restart. See
+[`regime_transition.md`](regime_transition.md).
 
 ---
 
@@ -118,6 +124,6 @@ python research.py --command market-regime --context INTRADAY --as-of 2026-08-27
 ## 7. Explicit Non-Goals (Scope Boundaries)
 
 - **No Strategy Selection**: Phase 2.3 strictly classifies market conditions. It does not select strategies or allocate capital.
-- **No Regime Hysteresis**: Dwell times, transition smoothing, and operational switching belong to Phase 2.4.
+- **Raw Classification Has No Hysteresis**: Phase 2.3 remains immutable Layer A; Phase 2.4 applies operational hysteresis as Layer B.
 - **No Asset State Classification**: Single-stock categorization belongs to Phase 2.5.
 - **Live Trading**: Remains strictly DISABLED.
