@@ -1,10 +1,10 @@
 # Production Readiness & Architecture Invariants
 
-Audit date: 2026-08-27
-Audit Scope: **Final forensic remediation & invariant enforcement**
-Verified Implementation Commit (Commit A): `10bdd650158b15a3cb6043b15249d8b2f2b0a4fa`
+Audit date: 2026-08-28
+Audit Scope: **Phase 2.3 causal evidence remediation & invariant enforcement**
+Verified Implementation Commit: `5e33bcc0516c1e6d340cd7f13776c1f2819a550e`
 
-Current decision: **READY for NIFTY 200 daily historical research; READY for forward paper trading with EOD_BATCH and TRUE_NEXT_OPEN execution modes; NOT READY for unverified minute live trading without dedicated broker feed validation and paper incubation.**
+Current decision: **Phase 2.3 causal-evidence remediation is locally verified on the SHA above. Post-remediation CI confirmation is still pending, so current main is not fully verified. Live/real-money readiness remains NOT READY.**
 
 The deterministic research and paper execution stack is operational with comprehensive anti-lookahead, fail-closed data quality invariants, exact frame lineage, generation-isolated stream recovery, and stitched out-of-sample promotion gates. Live order routing remains unavailable by design.
 
@@ -48,7 +48,14 @@ The deterministic research and paper execution stack is operational with compreh
 
 ## 2. Verification Summary
 
-- **Verified Commit A SHA**: `10bdd650158b15a3cb6043b15249d8b2f2b0a4fa`
+- **Current locally verified SHA**: `5e33bcc0516c1e6d340cd7f13776c1f2819a550e`
+- **Deterministic Test Suite**: 506 passed tests across the repository (3 expected corporate-action basis warnings).
+- **Compilation**: `compileall` completed cleanly for `main.py`, `research.py`, `trading_stack`, and `tests`.
+- **CI status for the current SHA**: pending; do not treat the historical CI/coverage/static-analysis results below as evidence for this remediation SHA.
+
+### Historical baseline evidence (prior commit only)
+
+- **Prior verified SHA**: `10bdd650158b15a3cb6043b15249d8b2f2b0a4fa`
 - **GitHub Actions Evidence**: CI run #28 succeeded on the verified SHA: Linux Python 3.12, Linux Python 3.13, Windows Python 3.12, quality, gitleaks, and frontend jobs all passed.
 - **Deterministic Test Suite**: 405 passed tests across the repository (3 expected corporate-action basis warnings).
 - **Global Test Coverage**: 84% repository-wide line coverage (exceeds 80% CI threshold).
