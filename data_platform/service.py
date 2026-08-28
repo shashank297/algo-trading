@@ -6,7 +6,7 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pandas as pd
 
@@ -31,6 +31,9 @@ from data_platform.source_semantics import (
 from data_platform.validators import RawStructuralValidator
 from storage.duckdb_manager import DuckDBManager
 
+if TYPE_CHECKING:
+    from trading_stack.calendars import MarketCalendar
+
 
 @dataclass(frozen=True)
 class CanonicalDatasetResult:
@@ -53,6 +56,7 @@ def admit_and_promote_dataset(
     policy: SourceSemanticsPolicy | None = None,
     raw_dataset_id: str | None = None,
     available_at: datetime | None = None,
+    calendar: MarketCalendar | None = None,
 ) -> CanonicalDatasetResult:
     """Institutional Ground-Truth Gateway: validates semantics, applies canonical adjustments, and stores canonical bars."""
     active_policy = policy or SourceSemanticsPolicy()
@@ -108,6 +112,14 @@ def admit_and_promote_dataset(
             bars=None,
         )
 
+    if available_at is None:
+        raise ValueError(
+            "Authoritative canonical promotion requires timezone-aware available_at evidence."
+        )
+    # Reuse the storage contract's canonical timezone validation before any
+    # authoritative canonical bars or availability evidence are persisted.
+    db._availability_timestamp(available_at)
+
     # Step 4: Run canonical price & volume adjustment
     ca_df_for_adj = ca_records if isinstance(ca_records, pd.DataFrame) else pd.DataFrame(ca_records)
     canonical_bars = PriceAdjustmentEngine.adjust_ohlcv(
@@ -117,30 +129,62 @@ def admit_and_promote_dataset(
         source_semantics=semantics,
     )
 
-    # Step 5: Persist canonical instrument alias and canonical bars
-    db.upsert_instrument_alias(
-        {
-            "canonical_symbol": snapshot.instrument.canonical_symbol,
-            "exchange": snapshot.instrument.exchange,
-            "provider_name": snapshot.provenance.provider_name,
-            "provider_symbol": snapshot.provenance.provider_symbol,
-        },
-    )
+    from trading_stack.bar_availability import bar_available_at
+    from trading_stack.calendars import MarketCalendar
+    from trading_stack.domain import infer_market_spec
 
-    token = getattr(snapshot.instrument, "provider_token", None) or snapshot.provenance.provider_symbol
-    db.upsert_candles(
-        canonical_bars,
-        snapshot.instrument.canonical_symbol,
-        token,
-        snapshot.instrument.exchange,
-        snapshot.timeframe,
-        adjustment=target_adjustment.value,
-        provider_name=snapshot.provenance.provider_name,
-        dataset_id=snapshot.dataset_id,
-        available_at=available_at,
+    market_calendar = calendar or MarketCalendar(
+        infer_market_spec(
+            snapshot.instrument.canonical_symbol,
+            snapshot.instrument.exchange,
+            "EQUITY",
+        )
     )
-    if available_at is not None:
-        db.record_market_dataset_availability(snapshot.dataset_id, available_at)
+    source_available_at = db._availability_timestamp(available_at)
+    candle_availability: list[tuple[datetime | str, datetime | str]] = []
+    for timestamp in canonical_bars["timestamp"]:
+        bar_timestamp = cast(datetime, pd.Timestamp(timestamp).to_pydatetime())
+        candle_availability.append((
+            bar_timestamp,
+            max(source_available_at, bar_available_at(bar_timestamp, snapshot.timeframe, market_calendar)),
+        ))
+    dataset_available_at = max(available for _, available in candle_availability)
+
+    # Step 5: Persist canonical instrument alias, bars, lifecycle, and availability atomically.
+    token = getattr(snapshot.instrument, "provider_token", None) or snapshot.provenance.provider_symbol
+    with db.transaction():
+        db.upsert_instrument_alias(
+            {
+                "canonical_symbol": snapshot.instrument.canonical_symbol,
+                "exchange": snapshot.instrument.exchange,
+                "provider_name": snapshot.provenance.provider_name,
+                "provider_symbol": snapshot.provenance.provider_symbol,
+            },
+        )
+        db.upsert_candles(
+            canonical_bars,
+            snapshot.instrument.canonical_symbol,
+            token,
+            snapshot.instrument.exchange,
+            snapshot.timeframe,
+            adjustment=target_adjustment.value,
+            provider_name=snapshot.provenance.provider_name,
+            dataset_id=snapshot.dataset_id,
+        )
+        db.record_historical_candle_availability_batch(
+            snapshot.dataset_id,
+            snapshot.instrument.canonical_symbol,
+            snapshot.instrument.exchange,
+            snapshot.timeframe,
+            candle_availability,
+        )
+        db.record_market_dataset_availability(snapshot.dataset_id, dataset_available_at)
+        if raw_dataset_id is not None:
+            db.update_dataset_lifecycle_status(
+                dataset_id=snapshot.dataset_id,
+                status=DatasetLifecycleStatus.CANONICAL_PROMOTED.value,
+                parent_dataset_id=raw_dataset_id,
+            )
 
     return CanonicalDatasetResult(
         raw_dataset_id=parent_id,
@@ -171,6 +215,7 @@ def ingest_raw_provider_dataset(
     corporate_actions: pd.DataFrame | list[Any] | None = None,
     target_adjustment: PriceAdjustment = PriceAdjustment.SPLIT_ADJUSTED,
     existing_raw_dataset_id: str | None = None,
+    calendar: MarketCalendar | None = None,
 ) -> RawIntakeResult:
     """Universal forensic ingestion gateway for raw provider responses.
     
@@ -283,14 +328,10 @@ def ingest_raw_provider_dataset(
         policy=policy,
         raw_dataset_id=raw_id,
         available_at=available_at,
+        calendar=calendar,
     )
 
     if promotion.status == SourceValidationStatus.VERIFIED or (promotion.bars is not None and not promotion.bars.empty):
-        db.update_dataset_lifecycle_status(
-            dataset_id=snapshot.dataset_id,
-            status=DatasetLifecycleStatus.CANONICAL_PROMOTED.value,
-            parent_dataset_id=raw_id,
-        )
         return RawIntakeResult(
             raw_dataset_id=raw_id,
             raw_hash=raw_hash,
@@ -372,19 +413,34 @@ def recover_incomplete_raw_intakes(
             parsed_rows.append(row_dict)
 
         decl_adj = PriceAdjustment(declared_adj_str) if declared_adj_str else None
-        res = ingest_raw_provider_dataset(
-            bars=parsed_rows,
-            symbol=symbol,
-            exchange=exchange,
-            timeframe=timeframe,
-            provider_name=provider_name,
-            provider_symbol=provider_symbol,
-            provider_token=provider_token,
-            declared_adjustment=decl_adj,
-            db=db,
-            policy=policy,
-            existing_raw_dataset_id=dataset_id,
-        )
+        try:
+            res = ingest_raw_provider_dataset(
+                bars=parsed_rows,
+                symbol=symbol,
+                exchange=exchange,
+                timeframe=timeframe,
+                provider_name=provider_name,
+                provider_symbol=provider_symbol,
+                provider_token=provider_token,
+                declared_adjustment=decl_adj,
+                db=db,
+                policy=policy,
+                existing_raw_dataset_id=dataset_id,
+            )
+        except ValueError as exc:
+            if "available_at" not in str(exc):
+                raise
+            # Legacy raw intake contains no authoritative knowledge-time evidence.
+            # It remains forensic-only rather than being promoted on a job-time guess.
+            res = RawIntakeResult(
+                raw_dataset_id=dataset_id,
+                raw_hash=compute_raw_provider_hash(parsed_rows),
+                raw_status=DatasetLifecycleStatus.STRUCTURALLY_VALID.value,
+                canonical_dataset_id=None,
+                canonical_status=None,
+                quarantine_reasons=(),
+                bars=None,
+            )
         results.append(res)
 
     return results
@@ -407,6 +463,9 @@ class DataPlatform:
         self,
         request: BarRequest,
         corporate_actions: Any | None = None,
+        *,
+        available_at: datetime | None = None,
+        calendar: MarketCalendar | None = None,
     ) -> DatasetSnapshot:
         """Fetch a homogeneous snapshot and enforce Ground-Truth semantics admission before storing."""
         snapshot = self.providers.fetch_bars(request)
@@ -422,6 +481,8 @@ class DataPlatform:
             corporate_actions=corporate_actions,
             target_adjustment=target_adj,
             policy=self.policy,
+            available_at=available_at,
+            calendar=calendar,
         )
 
         if result.bars is None or result.status != SourceValidationStatus.VERIFIED:

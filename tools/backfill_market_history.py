@@ -30,12 +30,24 @@ from data_platform.contracts import PriceAdjustment
 from data_platform.service import ingest_raw_provider_dataset
 from smartapi import HistoricalDataClient, InstrumentMaster, RateLimiter, SmartAPIAuth
 from storage import DuckDBManager
+from trading_stack.bar_availability import bar_available_at
+from trading_stack.calendars import MarketCalendar
+from trading_stack.domain import infer_market_spec
 from utils import LoggerSetup, get_ist_now
 
 
 INTERVALS = {"1m": "ONE_MINUTE", "1d": "ONE_DAY"}
 SOURCE_BOUNDARY_EMPTY_WINDOWS = 3
 PERSISTENCE_BATCH_WINDOWS = 12
+
+
+def _source_availability_for_backfill(frame: pd.DataFrame, symbol: str, exchange: str, timeframe: str) -> datetime:
+    """Use the provider's completed-bar publication contract, never retrieval time."""
+    calendar = MarketCalendar(infer_market_spec(symbol, exchange, "EQUITY"))
+    return max(
+        bar_available_at(pd.Timestamp(timestamp).to_pydatetime(), timeframe, calendar)
+        for timestamp in frame["timestamp"]
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -198,6 +210,7 @@ def _persist_backfill_batch(
     if not windows:
         return 0, "SUCCESS"
     frame = pd.concat([item[0] for item in windows], ignore_index=True)
+    available_at = _source_availability_for_backfill(frame, symbol, exchange, timeframe)
 
     result = ingest_raw_provider_dataset(
         bars=frame,
@@ -209,6 +222,7 @@ def _persist_backfill_batch(
         provider_token=token,
         declared_adjustment=PriceAdjustment.UNADJUSTED,
         timezone_name="Asia/Kolkata",
+        available_at=available_at,
         db=db,
         target_adjustment=PriceAdjustment.SPLIT_ADJUSTED,
     )

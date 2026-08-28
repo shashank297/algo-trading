@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -210,6 +210,7 @@ class TestHistoricalGateway(unittest.TestCase):
 
         res_good = ingest_raw_provider_dataset(
             bars=good_df, symbol="CORRECT_SYM", exchange="NSE", timeframe="1d", provider_name="angel_one", db=self.db,
+            available_at=datetime(2026, 8, 20, 15, 30, tzinfo=timezone.utc),
         )
         self.assertEqual(res_good.raw_status, "STRUCTURALLY_VALID")
         self.assertIsNotNone(res_good.canonical_dataset_id)
@@ -303,7 +304,34 @@ class TestHistoricalGateway(unittest.TestCase):
         recovered = recover_incomplete_raw_intakes(self.db)
         self.assertEqual(len(recovered), 1)
         self.assertEqual(recovered[0].raw_status, "STRUCTURALLY_VALID")
-        self.assertIsNotNone(recovered[0].canonical_dataset_id)
+        self.assertIsNone(recovered[0].canonical_dataset_id)
+        self.assertIsNone(recovered[0].canonical_status)
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM historical_candles WHERE symbol = 'STRANDED_SYM'").fetchone()[0],
+            0,
+        )
+
+    def test_missing_authoritative_availability_keeps_raw_forensics_without_canonical_rows(self) -> None:
+        """Missing availability rejects promotion after raw intake and before canonical persistence."""
+        with self.assertRaisesRegex(ValueError, "available_at"):
+            ingest_raw_provider_dataset(
+                bars=self.bars,
+                symbol="NO_AVAIL",
+                exchange="NSE",
+                timeframe="1d",
+                provider_name="angel_one",
+                declared_adjustment=PriceAdjustment.UNADJUSTED,
+                db=self.db,
+            )
+
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM raw_bar_observations WHERE symbol = 'NO_AVAIL'").fetchone()[0],
+            len(self.bars),
+        )
+        self.assertEqual(
+            self.db.conn.execute("SELECT COUNT(*) FROM historical_candles WHERE symbol = 'NO_AVAIL'").fetchone()[0],
+            0,
+        )
 
     def test_structurally_valid_but_semantically_blocked_dataset_never_promotes(self) -> None:
         """A structurally valid dataset that fails source semantics admission (e.g. contract conflict) has canonical_dataset_id=None and is not stored in historical_candles."""

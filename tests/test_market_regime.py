@@ -105,6 +105,30 @@ def test_regime_engine_determinism():
     assert snap1.component_scores.volatility_score == snap2.component_scores.volatility_score
 
 
+def test_liquidity_percentile_requires_exact_252_session_history() -> None:
+    """Liquidity percentile stays absent through 251 sessions and is causal thereafter."""
+    engine = MarketRegimeEngine()
+    members = ["LIQ_A", "LIQ_B", "LIQ_C", "LIQ_D", "LIQ_E"]
+
+    def evaluate(session_count: int):
+        benchmark = _generate_synthetic_daily_bars(num_days=session_count)
+        snapshot = engine.evaluate_market_regime(
+            market="NSE",
+            benchmark="NIFTY",
+            context_type=MarketContextType.EOD,
+            as_of=benchmark["date"].iloc[-1],
+            decision_time=f"{benchmark['date'].iloc[-1].isoformat()}T15:30:00+05:30",
+            benchmark_daily_bars=benchmark,
+            universe_daily_bars=_generate_synthetic_universe_bars(members, num_days=session_count),
+            pit_universe_members=members,
+        )
+        return snapshot.features.liquidity_percentile
+
+    assert evaluate(251) is None
+    assert evaluate(252) is not None
+    assert evaluate(260) is not None
+
+
 def test_synthetic_bull_low_vol():
     """Test steady upward trend with low volatility classifies as BULL_LOW_VOL."""
     engine = MarketRegimeEngine()
@@ -687,7 +711,19 @@ def test_complete_evidence_manifest_binding():
     meta_1 = {
         "benchmark_dataset_id": "ds1",
         "benchmark_content_hash": "hash1",
-        "universe_manifest": {"members": [{"symbol": "SBIN", "dataset_id": "ds_sbi", "content_hash": "h_sbi"}]},
+        "benchmark_daily_evidence": {
+            "available": True, "dataset_id": "ds1", "content_hash": "hash1",
+            "certification_id": "cert_bench", "dataset_available_at": "2025-12-31T15:30:00+05:30",
+            "last_bar_available_at": "2025-12-31T15:30:00+05:30",
+        },
+        "benchmark_intraday_evidence": {"available": False, "reason": "NOT_INTRADAY_CONTEXT"},
+        "vix_evidence": {"available": False, "reason": "NO_CAUSAL_CERTIFIED_VIX"},
+        "universe_manifest": {"members": [
+            {"symbol": "SBIN", "usable": True, "dataset_id": "ds_sbi", "content_hash": "h_sbi",
+             "certification_id": "cert_sbi", "effective_from": "2025-01-01", "known_at": "2025-01-01T09:00:00+05:30"},
+            {"symbol": "EXCLUDED", "usable": False, "reason": "INSUFFICIENT_HISTORY",
+             "effective_from": "2025-01-01", "known_at": "2025-01-01T09:00:00+05:30"},
+        ]},
     }
     meta_2 = {
         "benchmark_dataset_id": "ds1",
@@ -708,6 +744,10 @@ def test_complete_evidence_manifest_binding():
 
     assert snap_1.input_evidence_hash != snap_2.input_evidence_hash
     assert snap_1.regime_id != snap_2.regime_id
+    manifest = snap_1.input_evidence.evidence_manifest
+    assert manifest["benchmark_daily"]["certification_id"] == "cert_bench"
+    assert manifest["vix"]["reason"] == "NO_CAUSAL_CERTIFIED_VIX"
+    assert manifest["universe"]["members"][1]["usable"] is False
 
 
 def test_intraday_evidence_manifest_binds_intraday_dataset_provenance() -> None:

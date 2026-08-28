@@ -53,6 +53,7 @@ class MarketRegimePolicy:
         min_component_coverage: float = 0.75,
         min_breadth_coverage: float = 0.80,
         min_liquidity_history: int = 60,
+        liquidity_percentile_history: int = 252,
         trend_20_target: float = 0.05,
         trend_60_target: float = 0.10,
         trend_dma50_target: float = 0.03,
@@ -73,6 +74,7 @@ class MarketRegimePolicy:
         self.min_component_coverage = min_component_coverage
         self.min_breadth_coverage = min_breadth_coverage
         self.min_liquidity_history = min_liquidity_history
+        self.liquidity_percentile_history = liquidity_percentile_history
         self.trend_20_target = trend_20_target
         self.trend_60_target = trend_60_target
         self.trend_dma50_target = trend_dma50_target
@@ -108,6 +110,7 @@ class MarketRegimePolicy:
             "min_component_coverage": self.min_component_coverage,
             "min_breadth_coverage": self.min_breadth_coverage,
             "min_liquidity_history": self.min_liquidity_history,
+            "liquidity_percentile_history": self.liquidity_percentile_history,
             "trend_20_target": self.trend_20_target,
             "trend_60_target": self.trend_60_target,
             "trend_dma50_target": self.trend_dma50_target,
@@ -682,8 +685,8 @@ class MarketRegimeEngine:
                 turnover_ratio = float(np.mean(market_liquidity_series[-5:]) / baseline_turnover)
         adv_20 = float(np.median(member_traded_values_20)) if member_traded_values_20 else None
         liquidity_percentile = None
-        if len(market_liquidity_series) >= 20:
-            trailing_liquidity = market_liquidity_series[-252:]
+        if len(market_liquidity_series) >= self.policy.liquidity_percentile_history:
+            trailing_liquidity = market_liquidity_series[-self.policy.liquidity_percentile_history:]
             liquidity_percentile = float(
                 np.mean(np.asarray(trailing_liquidity) <= trailing_liquidity[-1])
             )
@@ -880,12 +883,9 @@ class MarketRegimeEngine:
         manifest = {
             "market": market, "benchmark": benchmark, "context_type": context_type.value,
             "as_of": as_of_str, "decision_time": decision_time_str,
-            "benchmark_daily": {
-                "dataset_id": metadata.get("benchmark_dataset_id"),
-                "content_hash": metadata.get("benchmark_content_hash"),
-                "certification_id": metadata.get("benchmark_certification_id"),
-                "cutoff": cutoff_ts, "timeframe": "1d",
-            },
+            "benchmark_daily": metadata.get("benchmark_daily_evidence", {
+                "available": False, "reason": "NO_CAUSAL_CERTIFIED_BENCHMARK",
+            }),
             "benchmark_intraday": metadata.get("benchmark_intraday_evidence", {"available": False}),
             "vix": metadata.get("vix_evidence", {"available": vix_val is not None, "dataset_id": metadata.get("vix_dataset_id"), "content_hash": metadata.get("vix_content_hash")}),
             "universe": metadata.get("universe_manifest", {}),
@@ -956,13 +956,9 @@ class MarketRegimeEngine:
             "context_type": context_type.value,
             "as_of": as_of,
             "decision_time": decision_time,
-            "benchmark_daily": {
-                "dataset_id": metadata.get("benchmark_dataset_id"),
-                "content_hash": metadata.get("benchmark_content_hash"),
-                "certification_id": metadata.get("benchmark_certification_id"),
-                "cutoff": cutoff_ts,
-                "timeframe": "1d",
-            },
+            "benchmark_daily": metadata.get("benchmark_daily_evidence", {
+                "available": False, "reason": "NO_CAUSAL_CERTIFIED_BENCHMARK",
+            }),
             "benchmark_intraday": metadata.get("benchmark_intraday_evidence", {"available": False}),
             "vix": metadata.get(
                 "vix_evidence",

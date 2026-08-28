@@ -286,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
                 db, args.universe_snapshot, as_of_str, as_of_knowledge=decision_time_str,
             )
             universe = [member.symbol for member in pit_members]
+            pit_by_symbol = {member.symbol: member for member in pit_members}
             if not universe:
                 raise ValueError(
                     f"No causally-known PIT constituents for universe {args.universe_snapshot} at {decision_time_str}."
@@ -300,9 +301,22 @@ def main(argv: list[str] | None = None) -> int:
             )
             bench_daily = bench_result["bars"]
 
+            def loaded_evidence(result: dict[str, Any], symbol: str, *, unavailable_reason: str) -> dict[str, Any]:
+                if result["bars"].empty:
+                    return {"available": False, "reason": unavailable_reason}
+                return {
+                    "available": True, "symbol": symbol, "timeframe": result["timeframe"],
+                    "dataset_id": result["dataset_id"], "content_hash": result["content_hash"],
+                    "certification_id": result.get("certification_id"),
+                    "cutoff_applied": result["cutoff_applied"],
+                    "dataset_available_at": result.get("dataset_available_at"),
+                    "last_bar_timestamp": result.get("last_bar_timestamp"),
+                    "last_bar_available_at": result.get("last_bar_available_at"),
+                }
+
             # Benchmark intraday bars — finest certified intraday tf available
             bench_intraday = None
-            benchmark_intraday_evidence = {"available": False}
+            benchmark_intraday_evidence = {"available": False, "reason": "NOT_INTRADAY_CONTEXT"}
             if context_type == MarketContextType.INTRADAY:
                 intra_result = db.load_regime_bars(
                     bench_sym, "1m", decision_time_str, exchange="NSE", intraday=True,
@@ -310,19 +324,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 if not intra_result["bars"].empty:
                     bench_intraday = intra_result["bars"]
-                benchmark_intraday_evidence = {
-                    "available": not intra_result["bars"].empty,
-                    "dataset_id": intra_result["dataset_id"],
-                    "content_hash": intra_result["content_hash"],
-                    "certification_id": intra_result.get("certification_id"),
-                    "timeframe": intra_result.get("timeframe"),
-                    "cutoff": intra_result["cutoff_applied"],
-                }
+                benchmark_intraday_evidence = loaded_evidence(
+                    intra_result, bench_sym, unavailable_reason="NO_CAUSAL_CERTIFIED_INTRADAY_BENCHMARK",
+                )
 
             # VIX bars — check common VIX symbols
             vix_df = None
             vix_dataset_id = None
             vix_content_hash = None
+            vix_evidence = {"available": False, "reason": "NO_CAUSAL_CERTIFIED_VIX"}
             for vix_sym in ("INDIA VIX", "INDIAVIX", "NIFTY VIX", "VIX"):
                 vix_result = db.load_regime_bars(
                     vix_sym, "1d", decision_time_str, exchange="NSE"
@@ -331,6 +341,9 @@ def main(argv: list[str] | None = None) -> int:
                     vix_df = vix_result["bars"]
                     vix_dataset_id = vix_result["dataset_id"]
                     vix_content_hash = vix_result["content_hash"]
+                    vix_evidence = loaded_evidence(
+                        vix_result, vix_sym, unavailable_reason="NO_CAUSAL_CERTIFIED_VIX",
+                    )
                     break
 
             # Universe bars — ALL PIT members (no truncation)
@@ -338,15 +351,28 @@ def main(argv: list[str] | None = None) -> int:
             universe_manifest_members = []
             for sym in universe:
                 u_result = db.load_regime_bars(sym, "1d", decision_time_str, exchange="NSE")
+                member = pit_by_symbol[sym]
+                effective_from = getattr(member, "effective_from", None)
+                effective_until = getattr(member, "effective_until", None)
+                known_from = getattr(member, "known_from", None)
+                known_at = getattr(member, "known_at", None)
+                member_manifest = {
+                    "symbol": sym,
+                    "effective_from": effective_from.isoformat() if effective_from is not None else None,
+                    "effective_until": effective_until.isoformat() if effective_until is not None else None,
+                    "known_from": known_from.isoformat() if known_from is not None else None,
+                    "known_at": known_at.isoformat() if known_at is not None else None,
+                }
                 if not u_result["bars"].empty:
                     universe_daily[sym] = u_result["bars"]
-                    universe_manifest_members.append({
-                        "symbol": sym, "usable": True, "dataset_id": u_result["dataset_id"],
-                        "content_hash": u_result["content_hash"], "certification_id": u_result.get("certification_id"),
-                        "cutoff": u_result["cutoff_applied"],
-                    })
+                    member_manifest.update(loaded_evidence(
+                        u_result, sym, unavailable_reason="NO_CAUSAL_CERTIFIED_BARS",
+                    ))
                 else:
-                    universe_manifest_members.append({"symbol": sym, "usable": False, "reason": "NO_CAUSAL_CERTIFIED_BARS"})
+                    member_manifest.update({"usable": False, "reason": "NO_CAUSAL_CERTIFIED_BARS"})
+                if not u_result["bars"].empty:
+                    member_manifest["usable"] = True
+                universe_manifest_members.append(member_manifest)
             universe_manifest_members.sort(key=lambda member: member["symbol"])
             universe_manifest = {
                 "universe_name": args.universe_snapshot,
@@ -383,7 +409,11 @@ def main(argv: list[str] | None = None) -> int:
                     "universe_content_hash": universe_content_hash,
                     "universe_manifest": universe_manifest,
                     "benchmark_certification_id": bench_result.get("certification_id"),
+                    "benchmark_daily_evidence": loaded_evidence(
+                        bench_result, bench_sym, unavailable_reason="NO_CAUSAL_CERTIFIED_BENCHMARK",
+                    ),
                     "benchmark_intraday_evidence": benchmark_intraday_evidence,
+                    "vix_evidence": vix_evidence,
                 },
             )
             db.persist_market_regime_snapshot(snapshot)

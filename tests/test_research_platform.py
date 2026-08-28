@@ -104,7 +104,10 @@ class ResearchPlatformTests(unittest.TestCase):
         request = self._request()
         platform = DataPlatform(self.db, ProviderRegistry([FailingProvider(), StaticProvider(self.frame)], self.db))
 
-        snapshot = platform.fetch_and_store(request)
+        snapshot = platform.fetch_and_store(
+            request,
+            available_at=datetime(2026, 8, 28, 15, 30, tzinfo=timezone.utc),
+        )
 
         self.assertEqual(snapshot.provenance.provider_name, "static")
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM market_datasets WHERE provider_name = 'static'").fetchone()[0], 1)

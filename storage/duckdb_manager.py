@@ -2819,7 +2819,8 @@ class DuckDBManager:
                 ds_row = self.conn.execute(
                     """
                     SELECT md.dataset_id,
-                           COALESCE(md.transformation_hash, md.raw_hash) AS content_hash
+                           COALESCE(md.transformation_hash, md.raw_hash) AS content_hash,
+                           mda.available_at AS dataset_available_at
                     FROM market_datasets md
                     INNER JOIN market_dataset_availability mda ON mda.dataset_id = md.dataset_id
                     WHERE (md.symbol = ? OR md.canonical_symbol = ?)
@@ -2837,7 +2838,7 @@ class DuckDBManager:
                 if not ds_row:
                     continue  # try next timeframe
 
-                ds_id, content_hash = ds_row
+                ds_id, content_hash, dataset_available_at = ds_row
                 valid_dq, certification_id = self._has_authoritative_dq_certification(
                     str(ds_id), str(content_hash or ""), cutoff_applied
                 )
@@ -2847,7 +2848,8 @@ class DuckDBManager:
                 bars = self.conn.execute(
                     """
                     SELECT hc.symbol, hc.exchange, hc.timeframe, hc.timestamp,
-                           hc.open, hc.high, hc.low, hc.close, hc.volume, hc.adjustment
+                           hc.open, hc.high, hc.low, hc.close, hc.volume, hc.adjustment,
+                           hca.available_at AS candle_available_at
                     FROM historical_candles hc
                     INNER JOIN historical_candle_availability hca
                       ON hca.dataset_id = hc.dataset_id
@@ -2875,6 +2877,13 @@ class DuckDBManager:
                         lambda timestamp: is_bar_available(pd.Timestamp(timestamp).to_pydatetime(), tf, decision_dt, calendar)
                     )].copy()
 
+                last_bar_timestamp = None
+                last_bar_available_at = None
+                if not bars.empty:
+                    last_bar = bars.iloc[-1]
+                    last_bar_timestamp = pd.Timestamp(last_bar["timestamp"]).isoformat()
+                    last_bar_available_at = pd.Timestamp(last_bar["candle_available_at"]).isoformat()
+
                 return {
                     "bars": bars,
                     "dataset_id": str(ds_id),
@@ -2882,6 +2891,9 @@ class DuckDBManager:
                     "certification_id": certification_id,
                     "cutoff_applied": cutoff_applied,
                     "timeframe": tf,
+                    "dataset_available_at": pd.Timestamp(dataset_available_at).isoformat(),
+                    "last_bar_timestamp": last_bar_timestamp,
+                    "last_bar_available_at": last_bar_available_at,
                 }
 
             except Exception as exc:
@@ -2898,6 +2910,9 @@ class DuckDBManager:
             "certification_id": None,
             "cutoff_applied": cutoff_applied,
             "timeframe": None,
+            "dataset_available_at": None,
+            "last_bar_timestamp": None,
+            "last_bar_available_at": None,
         }
 
     def persist_market_regime_snapshot(self, snapshot: Any) -> None:
