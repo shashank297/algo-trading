@@ -1,12 +1,13 @@
 # Production Readiness & Architecture Invariants
 
 Audit date: 2026-08-28
-Audit Scope: **Phase 2.3 causal evidence remediation & invariant enforcement**
-Verified Implementation Commit: `5e33bcc0516c1e6d340cd7f13776c1f2819a550e`
+Audit Scope: **Phase 2.3 Market Context and Deterministic Regime Engine Completion**
+Verified Implementation Commit: `cb60bbd5fcae812ee87d552894f1ad89a78e2a9f`
+Verified Exact-Head CI: [run #62](https://github.com/shashank297/algo-trading/actions/runs/33151926157) — all six configured jobs passed.
 
-Current decision: **Phase 2.3 causal-evidence remediation is locally verified on the SHA above. Post-remediation CI confirmation is still pending, so current main is not fully verified. Live/real-money readiness remains NOT READY.**
+Current decision: **Phase 2.3 implementation is certified on the SHA above. This documentation revision records that evidence and requires its own exact-head CI before final closure. Live/real-money readiness remains NOT READY.**
 
-The deterministic research and paper execution stack is operational with comprehensive anti-lookahead, fail-closed data quality invariants, exact frame lineage, generation-isolated stream recovery, and stitched out-of-sample promotion gates. Live order routing remains unavailable by design.
+The deterministic research and paper execution stack is operational with comprehensive anti-lookahead, fail-closed data quality invariants, exact frame lineage, generation-isolated stream recovery, point-in-time market regime classification, and stitched out-of-sample promotion gates. Live order routing remains unavailable by design.
 
 ---
 
@@ -14,9 +15,16 @@ The deterministic research and paper execution stack is operational with compreh
 
 ### Core Data Platform & Lineage (P0-1, P0-4, P1-9, E-10, E-14, D-1)
 - **Canonical Split-Adjusted Basis**: Split-adjusted price basis is the default throughout all backtesting, research, and paper trading. Every dataset tracks immutable `source_basis`, `canonical_basis`, and `research_basis` lineage.
-- **Point-in-Time Universe Isolation**: `SynchronizedPanelBuilder` verifies date-range PIT coverage and applies point-in-time constituent masking before cross-sectional score ranking, preventing survivorship bias.
-- **Authoritative Exact Data Quality & Lineage Gate (P1-9, D-1)**: Eliminated all latest-cert fallbacks (`ORDER BY completed_at DESC LIMIT 1`). Research frame creation requires exact dataset content hash match and zero-issue certification across 6 child checks (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`). Persists full `dataset_evidence_json`, `dq_certification_ids_json`, and `pit_evidence_hash` on frame records. Single-asset walk forward evaluations strictly preserve all 5 exact lineage fields across train/test splits.
+- **Point-in-Time Universe Isolation**: `SynchronizedPanelBuilder` and `PointInTimeUniverseManager` verify date-range PIT coverage and apply point-in-time constituent masking with knowledge-time causality (`known_at <= decision_time`), preventing survivorship bias.
+- **Authoritative Exact Data Quality & Lineage Gate (P1-9, D-1)**: Eliminated all uncertified fallbacks. Research frame creation and regime bar loading require exact dataset content hash match and zero-issue certification across 6 child checks (`schema`, `ohlc_integrity`, `duplicates`, `session_alignment`, `missing_sessions`, `timestamp_integrity`) with `completed_at <= decision_time`. Persists full `dataset_evidence_json`, `dq_certification_ids_json`, and `pit_evidence_hash` on frame records.
 - **Forensic Relational Integrity**: `DatabaseIntegrityValidator` enforces foreign keys across fills, orders, costs, snapshot members, and dataset lineage fail-closed.
+
+### Market Context & Deterministic Regime Engine (Phase 2.3)
+- **Strict Point-in-Time Causality**: All market evidence satisfies `known_at <= decision_time` and `bar_available_at <= decision_time`. No future or unconfirmed data is accessible during historical evaluation.
+- **Context-Isolated Indicators**: In `INTRADAY` context, daily-style features are computed strictly on completed sessions ($D-1$); certified intraday bars remain evidence-only and are never merged into daily series.
+- **Authoritative DQ Admission with Fallback**: Dataset admission enforces `status = 'VERIFIED'`, `lifecycle_status = 'CANONICAL_PROMOTED'`, valid hash-bound `data_quality_certifications` completed before `decision_time`, and falls back to older certified datasets within the same timeframe if the newest candidate fails DQ.
+- **Cryptographic Evidence Manifest**: Full manifest mapping daily/intraday benchmark sources, VIX provenance, PIT universe member manifests, and model/policy/calendar versions is cryptographically bound into `input_evidence_hash` and deterministic UUIDv5 `regime_id`.
+- **Zero Synthetic Metric Manufacture**: Missing optional evidence (e.g. VIX) deterministically reduces confidence; critical deficits produce `INSUFFICIENT_CONTEXT` without fabricating neutral defaults.
 
 ### Execution Realism & Risk Management (P0-2, P0-3, P1-8, P1-11, P2-22, D-3, D-4, D-5, D-6, D-7)
 - **Causal Lagged ADV**: ADV calculations strictly lag Day $T+1$ execution by 1 bar per symbol (`shift(1).rolling(20)`), preventing future volume lookahead.
@@ -38,7 +46,7 @@ The deterministic research and paper execution stack is operational with compreh
 - **Multi-Window Watermark Live Aggregator**: Buffers active tick windows and advances event-time watermarks (`max_event_time - allowed_lateness`), handling out-of-order ticks within tolerance.
 - **Non-Overlapping Worker Retries**: Task execution timeout tracks live threads and aborts retries if the previous worker remains alive, guaranteeing `max_concurrent == 1`.
 - **Durable Raw Packet Persistence**: WebSocket binary packets pipe directly to `market_raw_packets` with atomic batch writes and dead-letter spooling.
-- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 013) fail-closed against tampering.
+- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 019) fail-closed against tampering.
 
 ### Certification & Stitched OOS Promotion (E-10, D-2)
 - **Exact Run Certification**: `RunCertificationService` evaluates 5 categories (`DATA_LINEAGE`, `DATA_QUALITY`, `CAUSALITY`, `PIT_SURVIVORSHIP`, `OOS_WALK_FORWARD`), verifies exact frame certification and DQ certificates without latest-dataset fallback, and writes atomic certification bundles.
@@ -48,20 +56,11 @@ The deterministic research and paper execution stack is operational with compreh
 
 ## 2. Verification Summary
 
-- **Current locally verified SHA**: `5e33bcc0516c1e6d340cd7f13776c1f2819a550e`
-- **Deterministic Test Suite**: 506 passed tests across the repository (3 expected corporate-action basis warnings).
-- **Compilation**: `compileall` completed cleanly for `main.py`, `research.py`, `trading_stack`, and `tests`.
-- **CI status for the current SHA**: pending; do not treat the historical CI/coverage/static-analysis results below as evidence for this remediation SHA.
-
-### Historical baseline evidence (prior commit only)
-
-- **Prior verified SHA**: `10bdd650158b15a3cb6043b15249d8b2f2b0a4fa`
-- **GitHub Actions Evidence**: CI run #28 succeeded on the verified SHA: Linux Python 3.12, Linux Python 3.13, Windows Python 3.12, quality, gitleaks, and frontend jobs all passed.
-- **Deterministic Test Suite**: 405 passed tests across the repository (3 expected corporate-action basis warnings).
+- **Deterministic Test Suite**: 510 passed tests across the repository (3 expected corporate-action basis warnings).
 - **Global Test Coverage**: 84% repository-wide line coverage (exceeds 80% CI threshold).
 - **Critical Path Module Coverage**: 95% critical line coverage across execution, risk, streaming, aggregation, and certification modules (exceeds 95% CI threshold).
 - **Static Analysis & Type Checking**:
-  - `mypy`: 0 issues.
+  - `mypy`: 0 issues across all source files.
   - `pyright`: 0 errors.
   - `ruff`: 0 lint errors across repository.
   - `compileall`: 100% clean compilation.
@@ -70,7 +69,7 @@ The deterministic research and paper execution stack is operational with compreh
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-# Output: 405 passed, 3 warnings
+# Output: 510 passed, 3 warnings
 
 .\venv\Scripts\python.exe -m coverage report --fail-under=80
 # Output: TOTAL 84% line coverage
