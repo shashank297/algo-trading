@@ -15,17 +15,28 @@ import pandas as pd
 
 from main import apply_env_overrides, configured_nse_calendar, load_yaml, validate_config, validate_symbols
 from ai_research import OpenAIResearchClient, ResearchGoal, ResearchWorkflow
+from experiments import (
+    ExperimentManager,
+    ExperimentSpec,
+    MassExperimentManager,
+    MassExperimentSpec,
+    RobustnessEvaluator,
+    RobustnessPolicy,
+)
+
 from data_platform.universe import PointInTimeUniverseManager
-from experiments import ExperimentManager, ExperimentSpec, MassExperimentManager, MassExperimentSpec
 from risk.engine import RiskEngine
 from risk.models import RiskPolicy
 from storage import DuckDBManager
+from trading_stack.domain import StrategyScope
 from trading_stack.pipeline import StrategyPipeline
 from trading_stack.promotion import PromotionEngine
 from trading_stack.rca import RCAEngine
 from trading_stack.strategies import StrategyRegistry
 from trading_stack.universe import UniverseResearchService
+
 from utils import LoggerSetup
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 
@@ -43,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
             "build-derived-bars", "verify-market-provider",
             # Phase 2.3 — Market context & regime
             "market-regime",
+            # Phase 2.6 — Statistical research framework
+            "robustness",
         ],
         help="Workflow to run. Existing calls default to backtest.",
     )
@@ -87,7 +100,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--context", default="EOD", choices=["EOD", "INTRADAY"], help="Context type for market-regime (EOD or INTRADAY)")
     parser.add_argument("--decision-time", default=None, help="Point-in-time decision ISO timestamp for market-regime")
     parser.add_argument("--market", default="NSE", help="Market identifier for market-regime (default: NSE)")
+    # Phase 2.6 — Statistical research framework
+    parser.add_argument("--robustness-id", default=None, help="Robustness evaluation ID for inspection")
+    parser.add_argument("--purge-window", type=int, default=None, help="Purge window in bars for nested walk-forward")
+    parser.add_argument("--embargo-window", type=int, default=None, help="Embargo window in bars for nested walk-forward")
     return parser
+
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -535,7 +553,55 @@ def main(argv: list[str] | None = None) -> int:
                 "total_trials": len(trials),
             }, default=str, indent=2))
             return 0
+        if args.command == "robustness":
+            if args.robustness_id:
+                record = db.get_robustness_evaluation(args.robustness_id)
+                if not record:
+                    raise ValueError(f"Robustness evaluation '{args.robustness_id}' not found.")
+                print(json.dumps(record, default=str, indent=2))
+                return 0
+
+            rob_policy_dict = research_config.get("statistical_robustness", {})
+            policy = RobustnessPolicy(**rob_policy_dict) if rob_policy_dict else RobustnessPolicy()
+            rob_evaluator = RobustnessEvaluator(db, policy=policy, india_calendar=india_calendar)
+
+            experiment_universe = universe if args.strategy in StrategyRegistry.available() and StrategyRegistry.metadata(args.strategy).scope == StrategyScope.CROSS_SECTIONAL else [symbol]
+            experiment_costs = cost_model or (
+                research_config.get("indian_delivery_costs", {})
+                if args.strategy in StrategyRegistry.available() and StrategyRegistry.metadata(args.strategy).scope == StrategyScope.CROSS_SECTIONAL
+                else research_config.get("costs", {})
+            )
+
+            parent_run_id = f"rob-{hashlib.sha256(f'{args.strategy}-{args.timeframe}-{time.time()}'.encode()).hexdigest()[:12]}"
+            spec = ExperimentSpec(
+                strategy_name=args.strategy,
+                universe=experiment_universe,
+                timeframe=args.timeframe,
+                mode=args.mode,
+                parameters=parameters,
+                cost_model=experiment_costs,
+                universe_snapshot_id=args.universe_snapshot,
+                benchmark_symbol=args.benchmark or None,
+                experiment_family_id=args.experiment_family_id,
+            )
+
+            train_sz = int(rob_policy_dict.get("train_size", 252))
+            val_sz = int(rob_policy_dict.get("val_size", 63))
+            test_sz = int(rob_policy_dict.get("test_size", 63))
+            bundle = rob_evaluator.evaluate(
+                parent_run_id=parent_run_id,
+                spec=spec,
+                train_size=train_sz,
+                val_size=val_sz,
+                test_size=test_sz,
+                purge_window=args.purge_window,
+                embargo_window=args.embargo_window,
+                starting_capital=args.capital,
+            )
+            print(json.dumps(bundle.model_dump(mode="json"), default=str, indent=2))
+            return 0
         if args.command == "inspect":
+
             rows = db.conn.execute(
                 """
                 SELECT experiment_id, strategy_name, status, started_at, finished_at
