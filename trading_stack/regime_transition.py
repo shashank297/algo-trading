@@ -328,22 +328,35 @@ class RegimeTransitionEngine:
         state = prior_state or RegimeTransitionState(*key)
         risk_state = prior_risk_state or RiskTransitionState(*key)
         self._validate_state_key(key, state, risk_state)
+        policy_hash = self.policy.compute_hash()
         incoming_stress_hash = stress_evidence.compute_hash() if stress_evidence else None
-        if state.last_raw_regime_id == snapshot.regime_id:
+        policy_changed = bool(
+            (state.policy_hash and state.policy_hash != policy_hash)
+            or (risk_state.policy_hash and risk_state.policy_hash != policy_hash)
+        )
+        policy_reassessment = state.last_raw_regime_id == snapshot.regime_id and policy_changed
+        if (
+            state.last_raw_regime_id == snapshot.regime_id
+            and state.policy_hash == policy_hash
+            and risk_state.policy_hash == policy_hash
+        ):
             if incoming_stress_hash != risk_state.last_stress_evidence_hash:
                 raise ValueError("conflicting stress evidence for replayed raw snapshot")
             return self._replay_result(snapshot, state, risk_state)
         if stress_evidence and _aware_datetime(stress_evidence.observed_at, "observed_at") > decision_time:
             raise ValueError("stress evidence from the future is not admissible")
-        if state.last_decision_time and decision_time <= _aware_datetime(state.last_decision_time, "last_decision_time"):
+        if (
+            state.last_decision_time
+            and decision_time <= _aware_datetime(state.last_decision_time, "last_decision_time")
+            and not policy_reassessment
+        ):
             raise ValueError("distinct raw regime observations require strictly increasing decision times")
-        if risk_state.last_decision_time and decision_time <= _aware_datetime(
-            risk_state.last_decision_time, "risk last_decision_time"
+        if (
+            risk_state.last_decision_time
+            and decision_time <= _aware_datetime(risk_state.last_decision_time, "risk last_decision_time")
+            and not policy_reassessment
         ):
             raise ValueError("distinct risk observations require strictly increasing decision times")
-
-        policy_hash = self.policy.compute_hash()
-        policy_changed = bool(state.policy_hash and state.policy_hash != policy_hash)
         if policy_changed:
             state = replace(
                 state,

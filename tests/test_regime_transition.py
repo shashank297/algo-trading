@@ -203,6 +203,26 @@ def test_integrity_failure_escalates_without_conflating_market_regime() -> None:
     assert result.risk_state.risk_state == OperationalRiskState.STRESS
 
 
+def test_insufficient_context_does_not_imply_market_data_integrity_failure() -> None:
+    engine = RegimeTransitionEngine(_stress_policy())
+    snapshot = _snapshot(RawMarketRegime.INSUFFICIENT_CONTEXT, 0, confidence=0.0)
+    result = engine.evaluate(snapshot, stress_evidence=StressEvidence(snapshot.decision_time))
+    assert result.transition_event.decision == TransitionDecision.INSUFFICIENT_CONTEXT
+    assert result.risk_state.risk_state == OperationalRiskState.NORMAL
+
+
+def test_policy_change_is_not_an_idempotent_replay() -> None:
+    snapshot = _snapshot(RawMarketRegime.BULL_LOW_VOL, 0)
+    first = RegimeTransitionEngine().evaluate(snapshot)
+    changed_policy = RegimeTransitionPolicy(policy_version="2.4.1", minimum_dwell_observations=2)
+    reevaluated = RegimeTransitionEngine(changed_policy).evaluate(
+        snapshot, first.state, first.risk_state,
+    )
+    assert not reevaluated.replayed
+    assert reevaluated.state.policy_hash == changed_policy.compute_hash()
+    assert reevaluated.transition_event.decision == TransitionDecision.HELD
+
+
 def test_future_and_out_of_order_inputs_fail_closed() -> None:
     engine = RegimeTransitionEngine(_stress_policy())
     snapshot = _snapshot(RawMarketRegime.BULL_LOW_VOL, 2)
@@ -254,6 +274,60 @@ def test_raw_snapshot_persistence_is_immutable_and_replay_idempotent(tmp_path: P
 def test_policy_requires_explicit_stress_thresholds() -> None:
     with pytest.raises(ValueError, match="explicit stress_thresholds"):
         RegimeTransitionPolicy(stress_override_enabled=True)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"policy_version": ""}, "policy_version"),
+        ({"minimum_confidence": -0.1}, "minimum_confidence"),
+        ({"transition_buffer": -0.1}, "transition_buffer"),
+        ({"minimum_confidence": 0.9, "transition_buffer": 0.2}, "plus transition_buffer"),
+        ({"minimum_dwell_observations": 0}, "minimum_dwell_observations"),
+        ({"maximum_pending_duration": timedelta(0)}, "maximum_pending_duration"),
+        ({"stress_release_dwell": 0}, "stress_release_dwell"),
+    ],
+)
+def test_policy_validation_is_fail_closed(kwargs: dict[str, object], message: str) -> None:
+    with pytest.raises(ValueError, match=message):
+        RegimeTransitionPolicy(**kwargs)
+
+
+def test_stress_threshold_validation_and_caution_target() -> None:
+    with pytest.raises(ValueError, match="non-negative"):
+        StressThresholds(benchmark_loss_caution=-0.01)
+    with pytest.raises(ValueError, match="below caution"):
+        StressThresholds(benchmark_loss_caution=0.02, benchmark_loss_stress=0.01)
+    thresholds = StressThresholds.from_dict({"benchmark_loss_caution": 0.02, "benchmark_loss_stress": 0.05})
+    snapshot = _snapshot(RawMarketRegime.BULL_LOW_VOL, 0)
+    result = RegimeTransitionEngine(
+        RegimeTransitionPolicy(stress_override_enabled=True, stress_thresholds=thresholds)
+    ).evaluate(
+        snapshot,
+        stress_evidence=StressEvidence(snapshot.decision_time, benchmark_loss=0.03),
+    )
+    assert result.risk_state.risk_state == OperationalRiskState.CAUTION
+
+
+def test_invalid_stress_and_state_context_fail_closed() -> None:
+    with pytest.raises(ValueError, match="timezone-aware"):
+        StressEvidence("2026-08-27T15:30:00", benchmark_loss=0.01)
+    with pytest.raises(ValueError, match="non-negative severity"):
+        StressEvidence("2026-08-27T15:30:00+05:30", benchmark_loss=-0.01)
+    engine = RegimeTransitionEngine()
+    snapshot = _snapshot(RawMarketRegime.BULL_LOW_VOL, 0)
+    initial = engine.evaluate(snapshot)
+    with pytest.raises(ValueError, match="conflicting stress evidence"):
+        engine.evaluate(snapshot, initial.state, initial.risk_state, StressEvidence(snapshot.decision_time))
+    wrong_state = replace(initial.state, benchmark="OTHER")
+    with pytest.raises(ValueError, match="does not match"):
+        engine.evaluate(_snapshot(RawMarketRegime.BULL_LOW_VOL, 1), wrong_state, initial.risk_state)
+
+
+def test_initial_low_confidence_is_not_initialized() -> None:
+    result = RegimeTransitionEngine().evaluate(_snapshot(RawMarketRegime.BULL_LOW_VOL, 0, confidence=0.74))
+    assert result.transition_event.decision == TransitionDecision.LOW_CONFIDENCE
+    assert result.state.operational_regime is None
 
 
 def test_exact_reproducibility_and_context_policy_defaults() -> None:

@@ -14,7 +14,12 @@ immutable raw history and causal reproducibility.
 - Persist independent state for every market/benchmark/EOD-or-INTRADAY key and restore pending counters after restart.
 - Model `NORMAL`, `CAUTION`, and `STRESS` independently. Use only explicit policy thresholds, escalate
   immediately, and require recovery dwell for release.
-- Reject naive, future, or out-of-order evidence. Make exact replay idempotent and deterministic.
+- Reject naive, future, or out-of-order evidence. Make exact replay idempotent only for matching raw,
+  policy, and stress-evidence identities; a policy change is a new audited decision.
+- For INTRADAY, calculate emergency loss/gap only from certified completed current-session intraday bars
+  against the prior completed daily close, without changing Phase 2.3 daily features.
+- Treat only explicit completed DQ rejection with no certified fallback as a data-integrity stress signal;
+  missing history and `INSUFFICIENT_CONTEXT` remain non-integrity conditions.
 - Persist every non-replay regime and risk decision as an immutable event in the same transaction as
   the raw snapshot and current states.
 

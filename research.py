@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 from main import apply_env_overrides, configured_nse_calendar, load_yaml, validate_config, validate_symbols
 from ai_research import OpenAIResearchClient, ResearchGoal, ResearchWorkflow
 from data_platform.universe import PointInTimeUniverseManager
@@ -439,19 +441,31 @@ def main(argv: list[str] | None = None) -> int:
                     sort_column = "timestamp" if "timestamp" in ordered_benchmark.columns else "date"
                     ordered_benchmark = ordered_benchmark.sort_values(sort_column)
                     previous_close = float(ordered_benchmark["close"].iloc[-2])
-                    latest_close = float(ordered_benchmark["close"].iloc[-1])
-                    latest_open = float(ordered_benchmark["open"].iloc[-1])
-                    if previous_close > 0:
-                        benchmark_loss = max(0.0, 1.0 - latest_close / previous_close)
-                        extreme_gap = abs(latest_open / previous_close - 1.0)
+                    if context_type == MarketContextType.INTRADAY:
+                        if bench_intraday is not None and not bench_intraday.empty and previous_close > 0:
+                            intraday = bench_intraday.copy()
+                            session_date = pd.Timestamp(as_of_str).date()
+                            intraday = intraday[
+                                pd.to_datetime(intraday["timestamp"]).dt.date == session_date
+                            ].sort_values("timestamp")
+                            if not intraday.empty:
+                                benchmark_loss = max(0.0, 1.0 - float(intraday["close"].iloc[-1]) / previous_close)
+                                extreme_gap = abs(float(intraday["open"].iloc[0]) / previous_close - 1.0)
+                    else:
+                        latest_close = float(ordered_benchmark["close"].iloc[-1])
+                        latest_open = float(ordered_benchmark["open"].iloc[-1])
+                        if previous_close > 0:
+                            benchmark_loss = max(0.0, 1.0 - latest_close / previous_close)
+                            extreme_gap = abs(latest_open / previous_close - 1.0)
                 stress_evidence = StressEvidence(
                     observed_at=decision_time_str,
                     benchmark_loss=benchmark_loss,
                     volatility_shock=snapshot.features.volatility_shock_ratio,
                     extreme_gap=extreme_gap,
                     liquidity_collapse=snapshot.features.liquidity_deterioration,
-                    market_data_integrity_failure=(
-                        snapshot.raw_regime.value == "INSUFFICIENT_CONTEXT"
+                    market_data_integrity_failure=any(
+                        result.get("integrity_failure", False)
+                        for result in (bench_result, intra_result if context_type == MarketContextType.INTRADAY else {}, vix_result)
                     ),
                 )
             transition = RegimeTransitionEngine(transition_policy).evaluate(

@@ -23,6 +23,11 @@ configured benchmark-loss, volatility-shock, gap, liquidity-collapse, or data-in
 escalate risk immediately. De-escalation requires `stress_release_dwell` consecutive recovery
 observations; absence of causal stress evidence never releases an elevated state.
 
+For INTRADAY decisions, immediate loss and gap evidence is calculated from certified completed
+current-session intraday bars against the prior completed daily close. Those bars never enter the
+Phase 2.3 daily feature series. Ordinary missing history or `INSUFFICIENT_CONTEXT` is not an integrity
+failure; only an explicit, completed DQ rejection with no certified fallback can trigger that signal.
+
 ## Persistence and replay
 
 Migration 020 adds current operational/risk state tables and separate immutable event tables. Each
@@ -32,4 +37,5 @@ is idempotent; conflicting raw payloads, stale revisions, naive timestamps, futu
 out-of-order observations fail closed.
 
 `research.py --command market-regime` prints the raw snapshot plus `operational_regime`, `hysteresis`,
-and `stress_state`.
+and `stress_state`. Replay requires the same raw snapshot, transition-policy hash, and stress-evidence
+hash; a policy change creates a new decision and resets pending dwell safely.
