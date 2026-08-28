@@ -1,11 +1,11 @@
 # Production Readiness & Architecture Invariants
 
 Audit date: 2026-08-28
-Audit Scope: **Phase 2.3 Market Context and Deterministic Regime Engine Completion**
-Verified Implementation Commit: `cb60bbd5fcae812ee87d552894f1ad89a78e2a9f`
-Verified Exact-Head CI: [run #62](https://github.com/shashank297/algo-trading/actions/runs/33151926157) — all six configured jobs passed.
+Audit Scope: **Phase 2.3 final causal-evidence remediation and Phase 2.4 implementation evidence**
+Verified Implementation Commit: `bb0726b8461ccc1c36efec8f120ce22f6e466355`
+Verified Exact-Head PR CI: [run #74](https://github.com/shashank297/algo-trading/pull/2/checks) — all six configured jobs passed.
 
-Current decision: **Phase 2.3 implementation is certified on the SHA above. This documentation revision records that evidence and requires its own exact-head CI before final closure. Live/real-money readiness remains NOT READY.**
+Current decision: **Phase 2.3 remediation is closed on the verified implementation SHA above. Phase 2.4 is implemented and awaits protected-branch merge. This certification-record commit must receive exact-head green CI before final remote certification. Live/real-money readiness remains NOT READY.**
 
 The deterministic research and paper execution stack is operational with comprehensive anti-lookahead, fail-closed data quality invariants, exact frame lineage, generation-isolated stream recovery, point-in-time market regime classification, and stitched out-of-sample promotion gates. Live order routing remains unavailable by design.
 
@@ -22,7 +22,7 @@ The deterministic research and paper execution stack is operational with compreh
 ### Market Context & Deterministic Regime Engine (Phase 2.3)
 - **Strict Point-in-Time Causality**: All market evidence satisfies `known_at <= decision_time` and `bar_available_at <= decision_time`. No future or unconfirmed data is accessible during historical evaluation.
 - **Context-Isolated Indicators**: In `INTRADAY` context, daily-style features are computed strictly on completed sessions ($D-1$); certified intraday bars remain evidence-only and are never merged into daily series.
-- **Authoritative DQ Admission with Fallback**: Dataset admission enforces `status = 'VERIFIED'`, `lifecycle_status = 'CANONICAL_PROMOTED'`, valid hash-bound `data_quality_certifications` completed before `decision_time`, and falls back to older certified datasets within the same timeframe if the newest candidate fails DQ.
+- **Authoritative DQ Admission with Causal Fallback**: Dataset admission enforces `status = 'VERIFIED'`, `lifecycle_status = 'CANONICAL_PROMOTED'`, valid hash-bound `data_quality_certifications` completed before `decision_time`, and falls back newest-to-oldest within each timeframe until a candidate has causally usable bars. Intraday priority remains `1m → 5m → 15m → 30m → 60m`.
 - **Cryptographic Evidence Manifest**: Full manifest mapping daily/intraday benchmark sources, VIX provenance, PIT universe member manifests, and model/policy/calendar versions is cryptographically bound into `input_evidence_hash` and deterministic UUIDv5 `regime_id`.
 - **Zero Synthetic Metric Manufacture**: Missing optional evidence (e.g. VIX) deterministically reduces confidence; critical deficits produce `INSUFFICIENT_CONTEXT` without fabricating neutral defaults.
 
@@ -46,7 +46,12 @@ The deterministic research and paper execution stack is operational with compreh
 - **Multi-Window Watermark Live Aggregator**: Buffers active tick windows and advances event-time watermarks (`max_event_time - allowed_lateness`), handling out-of-order ticks within tolerance.
 - **Non-Overlapping Worker Retries**: Task execution timeout tracks live threads and aborts retries if the previous worker remains alive, guaranteeing `max_concurrent == 1`.
 - **Durable Raw Packet Persistence**: WebSocket binary packets pipe directly to `market_raw_packets` with atomic batch writes and dead-letter spooling.
-- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 019) fail-closed against tampering.
+- **Schema Evolution Runner**: `MigrationRunner` executes checksum-validated migration scripts (001 through 020) fail-closed against tampering.
+
+### Operational Regime Transition (Phase 2.4)
+- **Two-Layer Regime State**: Immutable Phase 2.3 raw snapshots remain distinct from restart-safe operational regime and risk-state transitions.
+- **Causal Hysteresis and Stress Evidence**: Policy-aware replay, confirmation dwell, confidence buffering, and separate `NORMAL`/`CAUTION`/`STRESS` state prevent regime thrashing without changing raw classifications.
+- **Merge Status**: Implemented on the verified PR head above; protected-branch approval and merge remain required before `main` certification.
 
 ### Certification & Stitched OOS Promotion (E-10, D-2)
 - **Exact Run Certification**: `RunCertificationService` evaluates 5 categories (`DATA_LINEAGE`, `DATA_QUALITY`, `CAUSALITY`, `PIT_SURVIVORSHIP`, `OOS_WALK_FORWARD`), verifies exact frame certification and DQ certificates without latest-dataset fallback, and writes atomic certification bundles.
@@ -56,12 +61,12 @@ The deterministic research and paper execution stack is operational with compreh
 
 ## 2. Verification Summary
 
-- **Deterministic Test Suite**: 510 passed tests across the repository (3 expected corporate-action basis warnings).
-- **Global Test Coverage**: 84% repository-wide line coverage (exceeds 80% CI threshold).
-- **Critical Path Module Coverage**: 95% critical line coverage across execution, risk, streaming, aggregation, and certification modules (exceeds 95% CI threshold).
+- **Deterministic Test Suite**: 537 passed tests across the repository (3 expected corporate-action basis warnings).
+- **Global Test Coverage**: 85% repository-wide line coverage (exceeds 80% CI threshold).
+- **Critical Path Module Coverage**: 96% critical line coverage, including `trading_stack/regime_transition.py` (exceeds 95% CI threshold).
 - **Static Analysis & Type Checking**:
-  - `mypy`: 0 issues across all source files.
-  - `pyright`: 0 errors.
+  - `mypy`: 0 issues across 92 source files.
+  - `pyright`: 0 errors / 538 warnings.
   - `ruff`: 0 lint errors across repository.
   - `compileall`: 100% clean compilation.
   - `pip-audit`: No known vulnerabilities found.
@@ -69,22 +74,22 @@ The deterministic research and paper execution stack is operational with compreh
 
 ```powershell
 .\venv\Scripts\python.exe -m pytest -q
-# Output: 510 passed, 3 warnings
+# Output: 537 passed, 3 warnings
 
 .\venv\Scripts\python.exe -m coverage report --fail-under=80
-# Output: TOTAL 84% line coverage
+# Output: TOTAL 85% line coverage
 
-.\venv\Scripts\python.exe -m coverage report --include="risk/*.py,trading_stack/paper.py,trading_stack/portfolio.py,trading_stack/portfolio_paper.py,trading_stack/pipeline.py,trading_stack/datasets.py,trading_stack/certification.py,trading_stack/promotion.py,smartapi/websocket_client.py,trading_stack/live_aggregator.py,storage/migrations/*.py" --fail-under=95
-# Output: TOTAL 95% line coverage
+.\venv\Scripts\python.exe -m coverage report --include="risk/*.py,trading_stack/paper.py,trading_stack/portfolio.py,trading_stack/portfolio_paper.py,trading_stack/pipeline.py,trading_stack/datasets.py,trading_stack/certification.py,trading_stack/promotion.py,trading_stack/regime_transition.py,smartapi/websocket_client.py,trading_stack/live_aggregator.py,storage/migrations/*.py" --fail-under=95
+# Output: TOTAL 96% line coverage
 
 .\venv\Scripts\python.exe -m ruff check .
 # Output: All checks passed!
 
 .\venv\Scripts\python.exe -m mypy ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools main.py research.py scheduler.py
-# Output: Success: no issues found in 85 source files
+# Output: Success: no issues found in 92 source files
 
 pyright
-# Output: 0 errors
+# Output: 0 errors / 538 warnings
 
 .\venv\Scripts\python.exe -m compileall -q main.py research.py scheduler.py ai_research data_platform experiments operations orchestration risk smartapi storage trading_stack validators tools tests
 # Output: Exit code 0
@@ -95,6 +100,11 @@ pyright
 cd tools/dashboard/ui ; npm run build ; cd ../../..
 # Output: vite build complete (0 errors)
 ```
+
+### Branch Governance
+
+- `main` requires a pull request with one approving review, current-branch status, and all six configured checks: Ubuntu 3.12, Ubuntu 3.13, Windows 3.12, quality, frontend, and secrets.
+- Force pushes, branch deletion, and administrator bypass are disabled.
 
 ---
 
