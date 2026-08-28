@@ -2929,58 +2929,14 @@ class DuckDBManager:
         }
 
     def persist_market_regime_snapshot(self, snapshot: Any) -> None:
-        """Persist a MarketRegimeSnapshot to the market_regime_snapshots table.
+        """Persist an immutable MarketRegimeSnapshot.
 
-        Args:
-            snapshot: MarketRegimeSnapshot instance or dict.
+        Identical replays are idempotent.  A conflicting payload for an existing
+        ``regime_id`` raises rather than rewriting historical raw output.
         """
-        if hasattr(snapshot, "to_dict"):
-            data = snapshot.to_dict()
-        elif isinstance(snapshot, dict):
-            data = snapshot
-        else:
-            raise TypeError(f"Unsupported snapshot type: {type(snapshot)}")
-
         with self._write_lock:
-            self.conn.execute(
-                """
-                INSERT OR REPLACE INTO market_regime_snapshots (
-                    regime_id, market, benchmark, context_type, as_of, decision_time,
-                    raw_regime, confidence, trend_score, volatility_score,
-                    breadth_score, dispersion_score, liquidity_score, stress_score,
-                    input_evidence_json, input_evidence_hash, model_version,
-                    policy_version, policy_hash, calendar_version,
-                    missing_evidence_json, input_evidence_manifest_json,
-                    component_evidence_json, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                [
-                    data["regime_id"],
-                    data["market"],
-                    data["benchmark"],
-                    data["context_type"],
-                    data["as_of"],
-                    data["decision_time"],
-                    data["raw_regime"],
-                    data["confidence"],
-                    data["trend_score"],
-                    data["volatility_score"],
-                    data["breadth_score"],
-                    data["dispersion_score"],
-                    data["liquidity_score"],
-                    data["stress_score"],
-                    data["input_evidence_json"],
-                    data["input_evidence_hash"],
-                    data["model_version"],
-                    data["policy_version"],
-                    data["policy_hash"],
-                    data["calendar_version"],
-                    data["missing_evidence_json"],
-                    data.get("input_evidence_manifest_json"),
-                    data.get("component_evidence_json"),
-                    data["created_at"],
-                ],
-            )
+            data = self._market_regime_snapshot_data(snapshot)
+            self._persist_market_regime_snapshot_locked(data)
         logger.debug(
             "Persisted market regime snapshot: id={} market={} as_of={} regime={} conf={}",
             data["regime_id"][:8],
@@ -2989,6 +2945,263 @@ class DuckDBManager:
             data["raw_regime"],
             data["confidence"],
         )
+
+    @staticmethod
+    def _market_regime_snapshot_data(snapshot: Any) -> dict[str, Any]:
+        if hasattr(snapshot, "to_dict"):
+            return snapshot.to_dict()
+        if isinstance(snapshot, dict):
+            return dict(snapshot)
+        raise TypeError(f"Unsupported snapshot type: {type(snapshot)}")
+
+    @staticmethod
+    def _canonical_json(value: Any) -> str:
+        if value is None:
+            return "null"
+        parsed = json.loads(value) if isinstance(value, str) else value
+        return json.dumps(parsed, sort_keys=True, separators=(",", ":"), default=str)
+
+    def _market_regime_semantic_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+        json_fields = {
+            "input_evidence_json", "missing_evidence_json",
+            "input_evidence_manifest_json", "component_evidence_json",
+        }
+        fields = (
+            "regime_id", "market", "benchmark", "context_type", "as_of", "decision_time",
+            "raw_regime", "confidence", "trend_score", "volatility_score", "breadth_score",
+            "dispersion_score", "liquidity_score", "stress_score", "input_evidence_json",
+            "input_evidence_hash", "model_version", "policy_version", "policy_hash",
+            "calendar_version", "missing_evidence_json", "input_evidence_manifest_json",
+            "component_evidence_json",
+        )
+        payload: dict[str, Any] = {}
+        for field in fields:
+            value = data.get(field)
+            if field in json_fields:
+                value = self._canonical_json(value)
+            elif field in {"as_of", "decision_time"}:
+                value = pd.Timestamp(value).isoformat()
+            elif isinstance(value, float) and pd.isna(value):
+                value = None
+            payload[field] = value
+        return payload
+
+    def _persist_market_regime_snapshot_locked(self, data: dict[str, Any]) -> None:
+        columns = (
+            "regime_id", "market", "benchmark", "context_type", "as_of", "decision_time",
+            "raw_regime", "confidence", "trend_score", "volatility_score", "breadth_score",
+            "dispersion_score", "liquidity_score", "stress_score", "input_evidence_json",
+            "input_evidence_hash", "model_version", "policy_version", "policy_hash",
+            "calendar_version", "missing_evidence_json", "input_evidence_manifest_json",
+            "component_evidence_json", "created_at",
+        )
+        existing = self.conn.execute(
+            f"SELECT {', '.join(columns)} FROM market_regime_snapshots WHERE regime_id = ?",
+            [data["regime_id"]],
+        ).fetchone()
+        if existing is not None:
+            existing_data = dict(zip(columns, existing))
+            if self._market_regime_semantic_payload(existing_data) != self._market_regime_semantic_payload(data):
+                raise ValueError(f"Conflicting immutable raw regime snapshot: {data['regime_id']}")
+            return
+        placeholders = ", ".join("?" for _ in columns)
+        self.conn.execute(
+            f"INSERT INTO market_regime_snapshots ({', '.join(columns)}) VALUES ({placeholders})",
+            [data.get(column) for column in columns],
+        )
+
+    def get_regime_transition_state(
+        self, market: str, benchmark: str, context_type: Any,
+    ) -> Any | None:
+        """Load restart-safe operational state for one context."""
+        from trading_stack.market_regime import MarketContextType
+        from trading_stack.regime_transition import OperationalMarketRegime, RegimeTransitionState
+
+        context = context_type.value if hasattr(context_type, "value") else str(context_type)
+        row = self.conn.execute(
+            """SELECT operational_regime, pending_candidate_regime, candidate_started_at,
+                      candidate_observations, candidate_confidence, last_raw_regime_id,
+                      last_decision_time, policy_version, policy_hash, revision
+               FROM operational_regime_states
+               WHERE market = ? AND benchmark = ? AND context_type = ?""",
+            [market, benchmark, context],
+        ).fetchone()
+        if row is None:
+            return None
+        return RegimeTransitionState(
+            market=market, benchmark=benchmark, context_type=MarketContextType(context),
+            operational_regime=OperationalMarketRegime(row[0]) if row[0] else None,
+            pending_candidate_regime=OperationalMarketRegime(row[1]) if row[1] else None,
+            candidate_started_at=row[2], candidate_observations=int(row[3]),
+            candidate_confidence=row[4], last_raw_regime_id=row[5], last_decision_time=row[6],
+            policy_version=row[7], policy_hash=row[8], revision=int(row[9]),
+        )
+
+    def get_operational_risk_state(
+        self, market: str, benchmark: str, context_type: Any,
+    ) -> Any | None:
+        """Load restart-safe operational risk state for one context."""
+        from trading_stack.market_regime import MarketContextType
+        from trading_stack.regime_transition import OperationalRiskState, RiskTransitionState
+
+        context = context_type.value if hasattr(context_type, "value") else str(context_type)
+        row = self.conn.execute(
+            """SELECT risk_state, release_candidate_state, release_started_at,
+                      release_observations, last_stress_evidence_hash, last_decision_time,
+                      policy_version, policy_hash, revision
+               FROM operational_risk_states
+               WHERE market = ? AND benchmark = ? AND context_type = ?""",
+            [market, benchmark, context],
+        ).fetchone()
+        if row is None:
+            return None
+        return RiskTransitionState(
+            market=market, benchmark=benchmark, context_type=MarketContextType(context),
+            risk_state=OperationalRiskState(row[0]),
+            release_candidate_state=OperationalRiskState(row[1]) if row[1] else None,
+            release_started_at=row[2], release_observations=int(row[3]),
+            last_stress_evidence_hash=row[4], last_decision_time=row[5],
+            policy_version=row[6], policy_hash=row[7], revision=int(row[8]),
+        )
+
+    def persist_regime_transition(self, snapshot: Any, result: Any) -> None:
+        """Atomically persist raw evidence, transition events, and both current states."""
+        data = self._market_regime_snapshot_data(snapshot)
+        with self._write_lock:
+            self.conn.execute("BEGIN TRANSACTION")
+            try:
+                self._persist_market_regime_snapshot_locked(data)
+                if result.replayed:
+                    self.conn.execute("COMMIT")
+                    return
+                state = result.state
+                risk_state = result.risk_state
+                context = state.context_type.value
+                current_state = self.conn.execute(
+                    "SELECT revision FROM operational_regime_states WHERE market=? AND benchmark=? AND context_type=?",
+                    [state.market, state.benchmark, context],
+                ).fetchone()
+                current_risk = self.conn.execute(
+                    "SELECT revision FROM operational_risk_states WHERE market=? AND benchmark=? AND context_type=?",
+                    [state.market, state.benchmark, context],
+                ).fetchone()
+                expected_state_revision = state.revision - 1
+                expected_risk_revision = risk_state.revision - 1
+                if (int(current_state[0]) if current_state else 0) != expected_state_revision:
+                    raise ValueError("Operational regime state revision conflict")
+                if (int(current_risk[0]) if current_risk else 0) != expected_risk_revision:
+                    raise ValueError("Operational risk state revision conflict")
+
+                event = result.transition_event
+                self.conn.execute(
+                    """INSERT INTO regime_transition_events VALUES
+                       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    [
+                        event.transition_id, state.market, state.benchmark, context, data["decision_time"],
+                        data["regime_id"],
+                        event.previous_operational_regime.value if event.previous_operational_regime else None,
+                        event.raw_candidate_regime.value,
+                        event.candidate_started_at, event.candidate_observations,
+                        event.candidate_confidence, event.decision.value, event.reason,
+                        event.operational_regime_after.value if event.operational_regime_after else None,
+                        result.policy.policy_version, result.policy.compute_hash(),
+                    ],
+                )
+                stress = result.risk_event.stress_evidence
+                self.conn.execute(
+                    """INSERT INTO risk_state_transition_events VALUES
+                       (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+                    [
+                        result.risk_event.risk_transition_id, state.market, state.benchmark, context,
+                        data["decision_time"], data["regime_id"], result.risk_event.previous_risk_state.value,
+                        json.dumps(stress.to_dict(), sort_keys=True) if stress else None,
+                        stress.compute_hash() if stress else None, result.risk_event.decision.value,
+                        result.risk_event.reason,
+                        result.risk_event.release_candidate_state.value if result.risk_event.release_candidate_state else None,
+                        result.risk_event.release_observations, result.risk_event.risk_state_after.value,
+                        result.policy.policy_version, result.policy.compute_hash(),
+                    ],
+                )
+                self._write_regime_state(state)
+                self._write_risk_state(risk_state)
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+
+    def _write_regime_state(self, state: Any) -> None:
+        context = state.context_type.value
+        self.conn.execute(
+            "DELETE FROM operational_regime_states WHERE market=? AND benchmark=? AND context_type=?",
+            [state.market, state.benchmark, context],
+        )
+        self.conn.execute(
+            """INSERT INTO operational_regime_states VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            [
+                state.market, state.benchmark, context,
+                state.operational_regime.value if state.operational_regime else None,
+                state.pending_candidate_regime.value if state.pending_candidate_regime else None,
+                state.candidate_started_at, state.candidate_observations, state.candidate_confidence,
+                state.last_raw_regime_id, state.last_decision_time, state.policy_version,
+                state.policy_hash, state.revision,
+            ],
+        )
+
+    def _write_risk_state(self, state: Any) -> None:
+        context = state.context_type.value
+        self.conn.execute(
+            "DELETE FROM operational_risk_states WHERE market=? AND benchmark=? AND context_type=?",
+            [state.market, state.benchmark, context],
+        )
+        self.conn.execute(
+            """INSERT INTO operational_risk_states VALUES
+               (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)""",
+            [
+                state.market, state.benchmark, context, state.risk_state.value,
+                state.release_candidate_state.value if state.release_candidate_state else None,
+                state.release_started_at, state.release_observations, state.last_stress_evidence_hash,
+                state.last_decision_time, state.policy_version, state.policy_hash, state.revision,
+            ],
+        )
+
+    def list_regime_transition_events(
+        self, *, market: str | None = None, context_type: str | None = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List immutable operational-regime decisions in causal order."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if market:
+            clauses.append("market = ?")
+            params.append(market)
+        if context_type:
+            clauses.append("context_type = ?")
+            params.append(context_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        frame = self.conn.execute(
+            f"SELECT * FROM regime_transition_events {where} ORDER BY decision_time, transition_id LIMIT ?",
+            [*params, limit],
+        ).fetchdf()
+        return frame.to_dict("records")
+
+    def list_risk_state_transition_events(
+        self, *, market: str | None = None, context_type: str | None = None, limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List immutable operational risk decisions in causal order."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if market:
+            clauses.append("market = ?")
+            params.append(market)
+        if context_type:
+            clauses.append("context_type = ?")
+            params.append(context_type)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        frame = self.conn.execute(
+            f"SELECT * FROM risk_state_transition_events {where} ORDER BY decision_time, risk_transition_id LIMIT ?",
+            [*params, limit],
+        ).fetchdf()
+        return frame.to_dict("records")
 
     def get_market_regime_snapshot(self, regime_id: str) -> dict[str, Any] | None:
         """Fetch a single MarketRegimeSnapshot by its unique regime_id."""

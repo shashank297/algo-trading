@@ -43,6 +43,14 @@ from trading_stack.market_regime import (
     MarketRegimeSnapshot,
     RawMarketRegime,
 )
+from trading_stack.regime_transition import (
+    OperationalMarketRegime,
+    OperationalRiskState,
+    RegimeTransitionEngine,
+    RegimeTransitionPolicy,
+    StressEvidence,
+    StressThresholds,
+)
 
 __all__ = [
     "AssetClass",
@@ -68,12 +76,18 @@ __all__ = [
     "OrderSide",
     "OrderStatus",
     "OrderType",
+    "OperationalMarketRegime",
+    "OperationalRiskState",
     "PaperBroker",
     "RawMarketRegime",
+    "RegimeTransitionEngine",
+    "RegimeTransitionPolicy",
     "StrategyRegistry",
     "StrategyMetadata",
     "StrategyScope",
     "StrategyRun",
+    "StressEvidence",
+    "StressThresholds",
     "TimeInForce",
     "TrendFollowingStrategy",
     "VectorizedBacktester",
