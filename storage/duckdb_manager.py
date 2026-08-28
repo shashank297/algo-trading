@@ -2459,10 +2459,10 @@ class DuckDBManager:
             if content_hash is not None and content_hash != "":
                 try:
                     bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
-                    if bound_hash and bound_hash != content_hash:
+                    if not bound_hash or bound_hash != content_hash:
                         return False
                 except json.JSONDecodeError:
-                    pass
+                    return False
             return True
         except Exception as exc:
             logger.warning("is_certification_valid failed: {}", exc)
