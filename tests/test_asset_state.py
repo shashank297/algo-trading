@@ -349,11 +349,17 @@ def test_storage_is_idempotent_restart_safe_and_conflicts_fail(tmp_path) -> None
 
 
 class _FakeDB:
-    def __init__(self, asset: pd.DataFrame, benchmark: pd.DataFrame) -> None:
+    def __init__(
+        self,
+        asset: pd.DataFrame,
+        benchmark: pd.DataFrame,
+        valid_certifications: set[str] | None = None,
+    ) -> None:
         self.asset = asset
         self.benchmark = benchmark
         self.calls: list[dict[str, Any]] = []
         self.persisted: Any = None
+        self.valid_certifications: set[str] = valid_certifications or set()
 
     def load_regime_bars(self, symbol: str, timeframe: str, decision_time: str, **kwargs: Any) -> dict[str, Any]:
         self.calls.append({"symbol": symbol, "timeframe": timeframe, **kwargs})
@@ -371,6 +377,15 @@ class _FakeDB:
             "integrity_failure": False,
             "integrity_failure_reason": None,
         }
+
+    def is_certification_valid(
+        self,
+        certification_id: str,
+        *,
+        content_hash: str | None = None,
+        decision_time: Any | None = None,
+    ) -> bool:
+        return certification_id in self.valid_certifications
 
     def persist_asset_state_snapshot(self, snapshot: Any) -> None:
         self.persisted = snapshot
@@ -552,3 +567,188 @@ def test_numeric_and_canonical_edge_contracts() -> None:
         asset_state_module._canonical_value(datetime(2025, 1, 1))
     with pytest.raises(ValueError, match="timezone-aware"):
         asset_state_module._canonical_value(pd.Timestamp("2025-01-01"))
+
+
+def test_missing_uncomputable_liquidity_fails_closed() -> None:
+    # 15 bars: fewer than liquidity window (20), so median_traded_value_20 is None
+    short_bars = _bars(count=15)
+    snapshot = _evaluate(short_bars, _bars(count=15, daily_return=0.002))
+    assert snapshot.features.median_traded_value_20 is None
+    assert snapshot.eligibility is AssetEligibility.INELIGIBLE
+    assert EligibilityReason.INSUFFICIENT_LIQUIDITY.value in snapshot.eligibility_reasons
+
+    # All volume NaN: median_traded_value_20 is None even with 130 bars
+    nan_volume = _bars(count=130)
+    nan_volume["volume"] = np.nan
+    nan_snapshot = _evaluate(nan_volume, _bars(count=130, daily_return=0.002))
+    assert nan_snapshot.features.median_traded_value_20 is None
+    assert nan_snapshot.eligibility is AssetEligibility.INELIGIBLE
+    assert EligibilityReason.INSUFFICIENT_LIQUIDITY.value in nan_snapshot.eligibility_reasons
+
+
+def test_service_enforces_authoritative_metadata_certification(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    asset = _bars()
+    benchmark = _bars(daily_return=0.002)
+    decision = asset["timestamp"].max().to_pydatetime()
+    db_path = str(tmp_path / "cert_test.duckdb")
+    db = DuckDBManager(db_path)
+
+    # Insert one real valid certification in data_quality_certifications
+    real_cert_id = "real-cert-123"
+    real_hash = "sector-hash-123"
+    checks_json = json.dumps({"dataset_content_hash": real_hash})
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications (
+            certification_id, dataset_id, validator_version, check_count,
+            issue_count, checks_json, status, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            real_cert_id, "sector-dataset", "1.0.0", 6, 0,
+            checks_json, "CERTIFIED", decision - timedelta(days=2), decision - timedelta(days=1),
+        ],
+    )
+
+    monkeypatch.setattr(
+        PointInTimeUniverseManager,
+        "get_constituents",
+        classmethod(lambda cls, conn, universe_name, as_of, as_of_knowledge=None: [_constituent()]),
+    )
+    monkeypatch.setattr(
+        db,
+        "load_regime_bars",
+        lambda symbol, **kwargs: {
+            "bars": (benchmark if symbol == "NIFTY200" else asset).copy(),
+            "dataset_id": f"{symbol}-dataset",
+            "content_hash": f"{symbol}-hash",
+            "certification_id": f"{symbol}-cert",
+            "cutoff_applied": kwargs.get("decision_time", ""),
+            "timeframe": "1d",
+            "dataset_available_at": asset["candle_available_at"].max().isoformat(),
+            "last_bar_timestamp": asset["timestamp"].max().isoformat(),
+            "last_bar_available_at": asset["candle_available_at"].max().isoformat(),
+            "integrity_failure": False,
+            "integrity_failure_reason": None,
+        },
+    )
+
+    valid_sector = PITMetadataEvidence(
+        metadata_id="sec-1",
+        field="sector",
+        value="FINANCIALS",
+        content_hash=real_hash,
+        certification_id=real_cert_id,
+        effective_from=date(2020, 1, 1),
+        effective_until=None,
+        known_at=decision - timedelta(days=1),
+    )
+    fake_sector = replace(valid_sector, certification_id="fake-cert-unregistered")
+    fake_event = PITEarningsEventEvidence(
+        event_id="earn-fake",
+        event_at=decision + timedelta(days=5),
+        known_at=decision - timedelta(days=2),
+        content_hash="fake-hash",
+        certification_id="fake-cert-unregistered",
+    )
+
+    service = AssetStateService(db)
+
+    # 1. Unregistered certification IDs are rejected and remain None / excluded
+    rejected_snapshot = service.evaluate(
+        symbol="RELIANCE",
+        exchange="NSE",
+        universe_name="NIFTY200",
+        benchmark_symbol="NIFTY200",
+        as_of=asset["timestamp"].max().date(),
+        decision_time=decision,
+        context_type=MarketContextType.EOD,
+        sector_metadata=fake_sector,
+        earnings_events=[fake_event],
+    )
+    assert rejected_snapshot.sector is None
+    assert rejected_snapshot.earnings_proximity is None
+    assert rejected_snapshot.input_evidence["metadata"]["sector"] is None
+    assert rejected_snapshot.input_evidence["metadata"]["earnings_events"] == []
+
+    # 2. Registered authoritative certification is admitted
+    admitted_snapshot = service.evaluate(
+        symbol="RELIANCE",
+        exchange="NSE",
+        universe_name="NIFTY200",
+        benchmark_symbol="NIFTY200",
+        as_of=asset["timestamp"].max().date(),
+        decision_time=decision,
+        context_type=MarketContextType.EOD,
+        sector_metadata=valid_sector,
+    )
+    assert admitted_snapshot.sector == "FINANCIALS"
+    assert admitted_snapshot.input_evidence["metadata"]["sector"] is not None
+
+    # 3. Direct raw connection fallback in AssetStateService
+    raw_service = AssetStateService(db.conn)
+    assert raw_service._verify_certification(real_cert_id, real_hash, decision) is True
+    assert raw_service._verify_certification(real_cert_id, "mismatched-hash", decision) is False
+    assert raw_service._verify_certification("fake-cert", real_hash, decision) is False
+    assert raw_service._verify_certification(None, None, decision) is False
+
+    # 4. Certification with issues or non-CERTIFIED status fails
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications (
+            certification_id, dataset_id, validator_version, check_count,
+            issue_count, checks_json, status, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            "failed-cert", "sector-dataset", "1.0.0", 6, 1,
+            checks_json, "FAILED", decision - timedelta(days=2), decision - timedelta(days=1),
+        ],
+    )
+    assert db.is_certification_valid("failed-cert") is False
+    assert raw_service._verify_certification("failed-cert", real_hash, decision) is False
+
+    # 5. Invalid/broken DB connection gracefully fails closed
+    class _BrokenDB:
+        conn = None
+    assert AssetStateService(_BrokenDB())._verify_certification("real-cert", None, decision) is False
+
+    db.close()
+
+
+def test_pit_membership_historical_known_from_requires_strict_known_at() -> None:
+    bars = _bars()
+    decision = bars["timestamp"].max().to_pydatetime()
+
+    # Historical known_from (years before decision date) but known_at is None -> FAILS CLOSED
+    historical_no_known_at = replace(
+        _constituent(),
+        known_from=date(2020, 1, 1),
+        known_at=None,
+    )
+    res_no_known_at = _evaluate(constituent=historical_no_known_at, decision_time=decision)
+    assert EligibilityReason.MISSING_PIT_EVIDENCE.value in res_no_known_at.eligibility_reasons
+
+    # Historical known_from but known_at is naive -> FAILS CLOSED
+    historical_naive_known_at = replace(
+        _constituent(),
+        known_from=date(2020, 1, 1),
+        known_at=datetime(2020, 1, 1),
+    )
+    res_naive = _evaluate(constituent=historical_naive_known_at, decision_time=decision)
+    assert EligibilityReason.MISSING_PIT_EVIDENCE.value in res_naive.eligibility_reasons
+
+    # Historical known_from but known_at is in the future relative to decision_time -> FAILS CLOSED
+    historical_future_known_at = replace(
+        _constituent(),
+        known_from=date(2020, 1, 1),
+        known_at=decision + timedelta(seconds=1),
+    )
+    res_future = _evaluate(constituent=historical_future_known_at, decision_time=decision)
+    assert EligibilityReason.MISSING_PIT_EVIDENCE.value in res_future.eligibility_reasons
+
+    # Historical known_from with valid causal timezone-aware known_at <= decision_time -> ADMITTED
+    historical_valid = replace(
+        _constituent(),
+        known_from=date(2020, 1, 1),
+        known_at=decision - timedelta(days=10),
+    )
+    res_valid = _evaluate(constituent=historical_valid, decision_time=decision)
+    assert EligibilityReason.MISSING_PIT_EVIDENCE.value not in res_valid.eligibility_reasons
+    assert res_valid.eligibility is AssetEligibility.ELIGIBLE
