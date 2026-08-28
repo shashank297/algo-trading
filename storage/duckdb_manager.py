@@ -2422,6 +2422,17 @@ class DuckDBManager:
                 return True, str(cert_id)
         return False, None
 
+    def _has_completed_dq_integrity_failure(self, dataset_id: str, decision_time: str) -> bool:
+        """Return whether an explicit causal DQ failure rejected this exact dataset."""
+        row = self.conn.execute(
+            """SELECT 1 FROM data_quality_certifications
+               WHERE dataset_id = ? AND completed_at <= ?
+                 AND (status <> 'CERTIFIED' OR issue_count > 0)
+               LIMIT 1""",
+            [dataset_id, decision_time],
+        ).fetchone()
+        return row is not None
+
     def persist_failed_derived_dataset(self, certification: "Any") -> None:
         """Retain failed derived DQ evidence without admitting bars to research."""
         if certification.dq_status != "DQ_FAILED":
@@ -2813,6 +2824,8 @@ class DuckDBManager:
         else:
             timeframes_to_try = [timeframe]
 
+        dq_integrity_failure = False
+
         for tf in timeframes_to_try:
             try:
                 # Find certified candidate datasets for this symbol/timeframe/exchange ordered by availability
@@ -2837,77 +2850,63 @@ class DuckDBManager:
                 if not ds_rows:
                     continue  # try next timeframe
 
-                ds_id: Any = None
-                content_hash: Any = None
-                dataset_available_at: Any = None
-                certification_id: str | None = None
-                found_certified = False
-
                 for row_id, row_hash, row_avail in ds_rows:
                     valid_dq, cert_id = self._has_authoritative_dq_certification(
                         str(row_id), str(row_hash or ""), cutoff_applied
                     )
-                    if valid_dq:
-                        ds_id = row_id
-                        content_hash = row_hash
-                        dataset_available_at = row_avail
-                        certification_id = cert_id
-                        found_certified = True
-                        break
+                    if not valid_dq:
+                        dq_integrity_failure = (
+                            dq_integrity_failure
+                            or self._has_completed_dq_integrity_failure(str(row_id), cutoff_applied)
+                        )
+                        continue
+                    bars = self.conn.execute(
+                        """
+                        SELECT hc.symbol, hc.exchange, hc.timeframe, hc.timestamp,
+                               hc.open, hc.high, hc.low, hc.close, hc.volume, hc.adjustment,
+                               hca.available_at AS candle_available_at
+                        FROM historical_candles hc
+                        INNER JOIN historical_candle_availability hca
+                          ON hca.dataset_id = hc.dataset_id
+                         AND hca.symbol = hc.symbol
+                         AND hca.exchange = hc.exchange
+                         AND hca.timeframe = hc.timeframe
+                         AND hca.timestamp = hc.timestamp
+                        WHERE hc.dataset_id = ?
+                          AND hc.symbol = ?
+                          AND hc.exchange = ?
+                          AND hc.timeframe = ?
+                          AND hca.available_at <= ?
+                        ORDER BY hc.timestamp
+                        """,
+                        [str(row_id), symbol, exchange, tf, cutoff_applied],
+                    ).df()
 
-                if not found_certified or ds_id is None:
-                    continue
-
-                bars = self.conn.execute(
-                    """
-                    SELECT hc.symbol, hc.exchange, hc.timeframe, hc.timestamp,
-                           hc.open, hc.high, hc.low, hc.close, hc.volume, hc.adjustment,
-                           hca.available_at AS candle_available_at
-                    FROM historical_candles hc
-                    INNER JOIN historical_candle_availability hca
-                      ON hca.dataset_id = hc.dataset_id
-                     AND hca.symbol = hc.symbol
-                     AND hca.exchange = hc.exchange
-                     AND hca.timeframe = hc.timeframe
-                     AND hca.timestamp = hc.timestamp
-                    WHERE hc.dataset_id = ?
-                      AND hc.symbol = ?
-                      AND hc.exchange = ?
-                      AND hc.timeframe = ?
-                      AND hca.available_at <= ?
-                    ORDER BY hc.timestamp
-                    """,
-                    [str(ds_id), symbol, exchange, tf, cutoff_applied],
-                ).df()
-
-                decision_dt = pd.Timestamp(cutoff_applied).to_pydatetime()
-                calendar = build_nse_calendar()
-                if not bars.empty:
+                    decision_dt = pd.Timestamp(cutoff_applied).to_pydatetime()
+                    calendar = build_nse_calendar()
                     if normalized_context == "INTRADAY" and tf == "1d":
                         decision_session = pd.Timestamp(decision_dt).date()
                         bars = bars[pd.to_datetime(bars["timestamp"]).dt.date < decision_session].copy()
                     bars = bars[bars["timestamp"].map(
                         lambda timestamp: is_bar_available(pd.Timestamp(timestamp).to_pydatetime(), tf, decision_dt, calendar)
                     )].copy()
+                    if bars.empty:
+                        continue
 
-                last_bar_timestamp = None
-                last_bar_available_at = None
-                if not bars.empty:
                     last_bar = bars.iloc[-1]
-                    last_bar_timestamp = pd.Timestamp(last_bar["timestamp"]).isoformat()
-                    last_bar_available_at = pd.Timestamp(last_bar["candle_available_at"]).isoformat()
-
-                return {
-                    "bars": bars,
-                    "dataset_id": str(ds_id),
-                    "content_hash": str(content_hash or ""),
-                    "certification_id": certification_id,
-                    "cutoff_applied": cutoff_applied,
-                    "timeframe": tf,
-                    "dataset_available_at": pd.Timestamp(dataset_available_at).isoformat(),
-                    "last_bar_timestamp": last_bar_timestamp,
-                    "last_bar_available_at": last_bar_available_at,
-                }
+                    return {
+                        "bars": bars,
+                        "dataset_id": str(row_id),
+                        "content_hash": str(row_hash or ""),
+                        "certification_id": cert_id,
+                        "cutoff_applied": cutoff_applied,
+                        "timeframe": tf,
+                        "dataset_available_at": pd.Timestamp(row_avail).isoformat(),
+                        "last_bar_timestamp": pd.Timestamp(last_bar["timestamp"]).isoformat(),
+                        "last_bar_available_at": pd.Timestamp(last_bar["candle_available_at"]).isoformat(),
+                        "integrity_failure": False,
+                        "integrity_failure_reason": None,
+                    }
 
             except Exception as exc:
                 logger.warning(
@@ -2926,6 +2925,8 @@ class DuckDBManager:
             "dataset_available_at": None,
             "last_bar_timestamp": None,
             "last_bar_available_at": None,
+            "integrity_failure": dq_integrity_failure,
+            "integrity_failure_reason": "EXPLICIT_DQ_FAILURE" if dq_integrity_failure else None,
         }
 
     def persist_market_regime_snapshot(self, snapshot: Any) -> None:

@@ -971,4 +971,94 @@ def test_same_timeframe_dq_fallback(tmp_path: Path) -> None:
     assert result["dataset_id"] == "ds-older-valid"
     assert result["content_hash"] == "hash-old"
     assert result["certification_id"] == "cert-old"
+    assert result["integrity_failure"] is False
+
+    # A newer DQ-certified dataset with no causally usable candle must also fall back.
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications
+           (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+           VALUES ('cert-new-valid', 'ds-newer-invalid', 'test', 6, 0, '{"dataset_content_hash":"hash-new"}',
+                   'CERTIFIED', '2025-01-02 16:00:00+05:30', '2025-01-02 16:00:00+05:30')"""
+    )
+    for check in ("schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"):
+        db.conn.execute(
+            """INSERT INTO quality_report (symbol, timeframe, dataset_id, certification_id, check_type, issue_count, details, checked_at)
+               VALUES ('NIFTY200', '1d', 'ds-newer-invalid', 'cert-new-valid', ?, 0, '{}', '2025-01-02 16:00:00+05:30')""",
+            [check],
+        )
+    db.conn.execute(
+        """UPDATE historical_candle_availability SET available_at = '2025-01-04 15:30:00+05:30'
+           WHERE dataset_id = 'ds-newer-invalid'"""
+    )
+    causal_fallback = db.load_regime_bars("NIFTY200", "1d", "2025-01-03T15:30:00+05:30", exchange="NSE")
+    assert causal_fallback["dataset_id"] == "ds-older-valid"
+    assert causal_fallback["certification_id"] == "cert-old"
+    db.conn.execute("DELETE FROM data_quality_certifications WHERE certification_id = 'cert-new-valid'")
+
+    # An explicit completed DQ failure is an integrity signal only when no certified fallback remains.
+    db.conn.execute("DELETE FROM data_quality_certifications WHERE certification_id = 'cert-old'")
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications
+           (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+           VALUES ('cert-new-failed', 'ds-newer-invalid', 'test', 6, 1, '{}',
+                   'FAILED', '2025-01-02 16:00:00+05:30', '2025-01-02 16:00:00+05:30')"""
+    )
+    failed = db.load_regime_bars("NIFTY200", "1d", "2025-01-03T15:30:00+05:30", exchange="NSE")
+    assert failed["bars"].empty
+    assert failed["integrity_failure"] is True
+    assert failed["integrity_failure_reason"] == "EXPLICIT_DQ_FAILURE"
+    db.close()
+
+
+def test_intraday_same_timeframe_fallback_precedes_lower_timeframe(tmp_path: Path) -> None:
+    """An empty newest 1m candidate cannot bypass an older usable 1m dataset for 5m."""
+    db = DuckDBManager(str(tmp_path / "intraday_dq_fallback.duckdb"))
+
+    def seed(
+        dataset_id: str, timeframe: str, content_hash: str, dataset_available_at: str, candle_available_at: str,
+        timestamp: str,
+    ) -> None:
+        db.conn.execute(
+            """INSERT INTO market_datasets (
+                dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name,
+                raw_hash, transformation_hash, status, lifecycle_status
+            ) VALUES (?, 'NIFTY200', 'NIFTY200', 'NSE', ?, 'TEST', ?, ?, 'VERIFIED', 'CANONICAL_PROMOTED')""",
+            [dataset_id, timeframe, f"raw-{dataset_id}", content_hash],
+        )
+        db.conn.execute("INSERT INTO market_dataset_availability VALUES (?, ?)", [dataset_id, dataset_available_at])
+        db.conn.execute(
+            """INSERT INTO historical_candles
+               (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+               VALUES ('NIFTY200', 'T1', 'NSE', ?, ?, 100, 101, 99, 100, 1000, ?)""",
+            [timeframe, timestamp, dataset_id],
+        )
+        db.conn.execute(
+            """INSERT INTO historical_candle_availability
+               VALUES (?, 'NIFTY200', 'NSE', ?, ?, ?)""",
+            [dataset_id, timeframe, timestamp, candle_available_at],
+        )
+        cert_id = f"cert-{dataset_id}"
+        db.conn.execute(
+            """INSERT INTO data_quality_certifications
+               (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+               VALUES (?, ?, 'test', 6, 0, ?, 'CERTIFIED', '2025-01-02 09:30:00+05:30', '2025-01-02 09:30:00+05:30')""",
+            [cert_id, dataset_id, f'{{"dataset_content_hash":"{content_hash}"}}'],
+        )
+        for check in ("schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"):
+            db.conn.execute(
+                """INSERT INTO quality_report (symbol, timeframe, dataset_id, certification_id, check_type, issue_count, details, checked_at)
+                   VALUES ('NIFTY200', ?, ?, ?, ?, 0, '{}', '2025-01-02 09:30:00+05:30')""",
+                [timeframe, dataset_id, cert_id, check],
+            )
+
+    seed("newest-empty-1m", "1m", "hash-new", "2025-01-02 09:40:00+05:30", "2025-01-02 10:30:00+05:30", "2025-01-02 09:17:00+05:30")
+    seed("older-usable-1m", "1m", "hash-old", "2025-01-02 09:35:00+05:30", "2025-01-02 09:16:00+05:30", "2025-01-02 09:15:00+05:30")
+    seed("usable-5m", "5m", "hash-5m", "2025-01-02 09:45:00+05:30", "2025-01-02 09:20:00+05:30", "2025-01-02 09:15:00+05:30")
+
+    result = db.load_regime_bars(
+        "NIFTY200", "1m", "2025-01-02T10:00:00+05:30", exchange="NSE", intraday=True, context_type="INTRADAY",
+    )
+    assert result["dataset_id"] == "older-usable-1m"
+    assert result["timeframe"] == "1m"
+    assert result["certification_id"] == "cert-older-usable-1m"
     db.close()
