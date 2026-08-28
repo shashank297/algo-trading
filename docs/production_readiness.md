@@ -5,7 +5,7 @@ Audit Scope: **Phase 2.3 final causal-evidence remediation and Phase 2.4 impleme
 Verified Implementation Commit: `bb0726b8461ccc1c36efec8f120ce22f6e466355`
 Verified Exact-Head PR CI: [run #74](https://github.com/shashank297/algo-trading/pull/2/checks) — all six configured jobs passed.
 
-Current decision: **Phase 2.3 remediation is closed on the verified implementation SHA above. Phase 2.4 is implemented and awaits protected-branch merge. This certification-record commit must receive exact-head green CI before final remote certification. Live/real-money readiness remains NOT READY.**
+Current decision: **Phase 2.3 remediation is closed on the verified implementation SHA above. Phase 2.4 is implemented and the protected-branch merge is complete. This certification-record commit must receive exact-head green CI before final remote certification. Live/real-money readiness remains NOT READY.**
 
 The deterministic research and paper execution stack is operational with comprehensive anti-lookahead, fail-closed data quality invariants, exact frame lineage, generation-isolated stream recovery, point-in-time market regime classification, and stitched out-of-sample promotion gates. Live order routing remains unavailable by design.
 
