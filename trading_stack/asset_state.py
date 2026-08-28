@@ -831,8 +831,8 @@ class AssetStateEngine:
             if not np.isfinite(prices.to_numpy(dtype=float)).all() or (prices <= 0).any().any():
                 observed.add(EligibilityReason.INVALID_PRICE)
         if (
-            features.median_traded_value_20 is not None
-            and features.median_traded_value_20 < policy.minimum_median_traded_value
+            features.median_traded_value_20 is None
+            or features.median_traded_value_20 < policy.minimum_median_traded_value
         ):
             observed.add(EligibilityReason.INSUFFICIENT_LIQUIDITY)
         return [reason for reason in EligibilityReason if reason in observed]
@@ -861,6 +861,45 @@ class AssetStateService:
     ) -> None:
         self.db = db
         self.engine = AssetStateEngine(policy, model_version=model_version)
+
+    def _verify_certification(
+        self,
+        certification_id: str | None,
+        content_hash: str | None,
+        decision_time: datetime,
+    ) -> bool:
+        if not certification_id:
+            return False
+        if hasattr(self.db, "is_certification_valid"):
+            return bool(
+                self.db.is_certification_valid(
+                    certification_id,
+                    content_hash=content_hash,
+                    decision_time=decision_time,
+                )
+            )
+        conn = getattr(self.db, "conn", self.db)
+        try:
+            iso_decision = decision_time.isoformat()
+            row = conn.execute(
+                """SELECT checks_json, status, issue_count FROM data_quality_certifications
+                   WHERE certification_id = ? AND completed_at <= ?""",
+                [certification_id, iso_decision],
+            ).fetchone()
+            if row is not None:
+                checks_json, status, issue_count = row
+                if status == "CERTIFIED" and int(issue_count) == 0:
+                    if content_hash:
+                        try:
+                            bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
+                            if bound_hash and bound_hash != content_hash:
+                                return False
+                        except json.JSONDecodeError:
+                            pass
+                    return True
+            return False
+        except Exception:
+            return False
 
     def evaluate(
         self,
@@ -906,6 +945,29 @@ class AssetStateService:
         benchmark_result = self.db.load_regime_bars(
             symbol=benchmark_symbol, **loader_arguments
         )
+
+        verified_sector = (
+            sector_metadata
+            if sector_metadata
+            and self._verify_certification(sector_metadata.certification_id, sector_metadata.content_hash, decision)
+            else None
+        )
+        verified_market_cap = (
+            market_cap_metadata
+            if market_cap_metadata
+            and self._verify_certification(market_cap_metadata.certification_id, market_cap_metadata.content_hash, decision)
+            else None
+        )
+        verified_earnings = (
+            [
+                event
+                for event in (earnings_events or ())
+                if self._verify_certification(event.certification_id, event.content_hash, decision)
+            ]
+            if earnings_events is not None
+            else None
+        )
+
         snapshot = self.engine.evaluate(
             symbol=symbol,
             exchange=exchange,
@@ -919,9 +981,9 @@ class AssetStateService:
             asset_evidence=CertifiedBarEvidence.from_loader_result(asset_result),
             benchmark_evidence=CertifiedBarEvidence.from_loader_result(benchmark_result),
             constituent=constituent,
-            sector_metadata=sector_metadata,
-            market_cap_metadata=market_cap_metadata,
-            earnings_events=earnings_events,
+            sector_metadata=verified_sector,
+            market_cap_metadata=verified_market_cap,
+            earnings_events=verified_earnings,
         )
         if persist:
             self.db.persist_asset_state_snapshot(snapshot)
@@ -965,6 +1027,13 @@ def _bars_hash(bars: pd.DataFrame) -> str:
 def _constituent_manifest(constituent: PointInTimeConstituent | None) -> dict[str, Any] | None:
     if constituent is None:
         return None
+    known_at_val: Any
+    if isinstance(constituent.known_at, datetime):
+        known_at_val = _utc_iso(constituent.known_at) if constituent.known_at.tzinfo is not None else constituent.known_at.isoformat()
+    elif isinstance(constituent.known_at, pd.Timestamp):
+        known_at_val = constituent.known_at.tz_convert("UTC").isoformat() if constituent.known_at.tzinfo is not None else constituent.known_at.isoformat()
+    else:
+        known_at_val = constituent.known_at
     return _canonical_value(
         {
             "universe_name": constituent.universe_name,
@@ -975,7 +1044,7 @@ def _constituent_manifest(constituent: PointInTimeConstituent | None) -> dict[st
             "effective_from": constituent.effective_from,
             "effective_until": constituent.effective_until,
             "known_from": constituent.known_from,
-            "known_at": constituent.known_at,
+            "known_at": known_at_val,
             "weight": constituent.weight,
             "inclusion_reason": constituent.inclusion_reason,
             "exclusion_reason": constituent.exclusion_reason,
@@ -988,20 +1057,17 @@ def _constituent_is_causal(
     as_of: date,
     decision_time: datetime,
 ) -> bool:
-    if constituent is None or constituent.known_from is None:
+    if constituent is None:
+        return False
+    if constituent.known_at is None or constituent.known_at.tzinfo is None or constituent.known_at > decision_time:
+        return False
+    if constituent.known_from is None or constituent.known_from > decision_time.date():
         return False
     if constituent.effective_from > as_of:
         return False
     if constituent.effective_until is not None and constituent.effective_until <= as_of:
         return False
-    if constituent.known_from < decision_time.date():
-        return True
-    return bool(
-        constituent.known_from == decision_time.date()
-        and constituent.known_at is not None
-        and constituent.known_at.tzinfo is not None
-        and constituent.known_at <= decision_time
-    )
+    return True
 
 
 def _return_over(values: pd.Series, window: int) -> float | None:

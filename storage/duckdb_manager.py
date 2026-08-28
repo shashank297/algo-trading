@@ -2433,6 +2433,41 @@ class DuckDBManager:
         ).fetchone()
         return row is not None
 
+    def is_certification_valid(
+        self,
+        certification_id: str,
+        *,
+        content_hash: str | None = None,
+        decision_time: str | datetime | None = None,
+    ) -> bool:
+        """Return whether a certification exists, is CERTIFIED with zero issues, and completed by decision_time."""
+        if not certification_id:
+            return False
+        try:
+            query = "SELECT checks_json, status, issue_count FROM data_quality_certifications WHERE certification_id = ?"
+            params: list[Any] = [certification_id]
+            if decision_time is not None:
+                decision_str = decision_time.isoformat() if isinstance(decision_time, datetime) else str(decision_time)
+                query += " AND completed_at <= ?"
+                params.append(decision_str)
+            row = self.conn.execute(query, params).fetchone()
+            if row is None:
+                return False
+            checks_json, status, issue_count = row
+            if status != "CERTIFIED" or int(issue_count) != 0:
+                return False
+            if content_hash is not None and content_hash != "":
+                try:
+                    bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
+                    if bound_hash and bound_hash != content_hash:
+                        return False
+                except json.JSONDecodeError:
+                    pass
+            return True
+        except Exception as exc:
+            logger.warning("is_certification_valid failed: {}", exc)
+            return False
+
     def persist_failed_derived_dataset(self, certification: "Any") -> None:
         """Retain failed derived DQ evidence without admitting bars to research."""
         if certification.dq_status != "DQ_FAILED":
