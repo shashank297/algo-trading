@@ -130,3 +130,23 @@ research:
         maximum_pending_duration_seconds: 604800
       INTRADAY:
         maximum_pending_duration_seconds: 3600
+  asset_state:
+    policy_version: "2.5.0"
+    minimum_history_sessions: 121
+    momentum_windows: [20, 60, 120]
+    momentum_weights: [0.25, 0.35, 0.40]
+    momentum_targets: [0.10, 0.20, 0.30]
+    trend_window: 60
+    trend_annualized_target: 0.30
+    volatility_window: 20
+    volatility_low: 0.15
+    volatility_high: 0.45
+    atr_window: 14
+    normalized_atr_low: 0.015
+    normalized_atr_high: 0.060
+    beta_window: 60
+    high_beta_threshold: 1.20
+    minimum_median_traded_value: 50000000.0
+    full_liquidity_traded_value: 500000000.0
+    gap_return_threshold: 0.02
+    gap_frequency_target: 0.20
