@@ -704,11 +704,98 @@ def test_service_enforces_authoritative_metadata_certification(tmp_path: Any, mo
     assert db.is_certification_valid("failed-cert") is False
     assert raw_service._verify_certification("failed-cert", real_hash, decision) is False
 
-    # 5. Invalid/broken DB connection gracefully fails closed
+    # 5. Missing dataset_content_hash in checks_json when content_hash requested -> REJECT
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications (
+            certification_id, dataset_id, validator_version, check_count,
+            issue_count, checks_json, status, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            "empty-checks-cert", "sector-dataset", "1.0.0", 6, 0,
+            "{}", "CERTIFIED", decision - timedelta(days=2), decision - timedelta(days=1),
+        ],
+    )
+    assert db.is_certification_valid("empty-checks-cert", content_hash="metadata-hash-123") is False
+    assert raw_service._verify_certification("empty-checks-cert", "metadata-hash-123", decision) is False
+    assert db.is_certification_valid("empty-checks-cert") is True
+
+    # 6. Invalid/broken DB connection gracefully fails closed
     class _BrokenDB:
         conn = None
     assert AssetStateService(_BrokenDB())._verify_certification("real-cert", None, decision) is False
 
+    db.close()
+
+
+def test_missing_certification_content_hash_adversarial_rejection(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    asset = _bars()
+    benchmark = _bars(daily_return=0.002)
+    decision = asset["timestamp"].max().to_pydatetime()
+    db = DuckDBManager(str(tmp_path / "hash_binding.duckdb"))
+
+    # CERTIFIED, issue_count = 0, but checks_json does not contain dataset_content_hash
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications (
+            certification_id, dataset_id, validator_version, check_count,
+            issue_count, checks_json, status, started_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        [
+            "cert-missing-hash", "sector-dataset", "1.0.0", 6, 0,
+            json.dumps({"unrelated_key": "val"}), "CERTIFIED", decision - timedelta(days=2), decision - timedelta(days=1),
+        ],
+    )
+
+    monkeypatch.setattr(
+        PointInTimeUniverseManager,
+        "get_constituents",
+        classmethod(lambda cls, conn, universe_name, as_of, as_of_knowledge=None: [_constituent()]),
+    )
+    monkeypatch.setattr(
+        db,
+        "load_regime_bars",
+        lambda symbol, **kwargs: {
+            "bars": (benchmark if symbol == "NIFTY200" else asset).copy(),
+            "dataset_id": f"{symbol}-dataset",
+            "content_hash": f"{symbol}-hash",
+            "certification_id": f"{symbol}-cert",
+            "cutoff_applied": kwargs.get("decision_time", ""),
+            "timeframe": "1d",
+            "dataset_available_at": asset["candle_available_at"].max().isoformat(),
+            "last_bar_timestamp": asset["timestamp"].max().isoformat(),
+            "last_bar_available_at": asset["candle_available_at"].max().isoformat(),
+            "integrity_failure": False,
+            "integrity_failure_reason": None,
+        },
+    )
+
+    # Evidence has non-empty content_hash
+    metadata = PITMetadataEvidence(
+        metadata_id="sec-adv",
+        field="sector",
+        value="FINANCIALS",
+        content_hash="client-provided-hash-999",
+        certification_id="cert-missing-hash",
+        effective_from=date(2020, 1, 1),
+        effective_until=None,
+        known_at=decision - timedelta(days=1),
+    )
+
+    # Must fail closed: certification does not bind the requested content_hash
+    assert db.is_certification_valid("cert-missing-hash", content_hash="client-provided-hash-999", decision_time=decision) is False
+
+    service = AssetStateService(db)
+    snapshot = service.evaluate(
+        symbol="RELIANCE",
+        exchange="NSE",
+        universe_name="NIFTY200",
+        benchmark_symbol="NIFTY200",
+        as_of=asset["timestamp"].max().date(),
+        decision_time=decision,
+        context_type=MarketContextType.EOD,
+        sector_metadata=metadata,
+    )
+    assert snapshot.sector is None
+    assert snapshot.input_evidence["metadata"]["sector"] is None
     db.close()
 
 
