@@ -416,6 +416,10 @@ class MarketRegimeEngine:
                     pd.Timestamp(value).to_pydatetime(), "1d", decision_dt, self.calendar
                 ))
             ].sort_values("date").copy()
+            if context_type == MarketContextType.INTRADAY:
+                filtered_daily_bench = filtered_daily_bench[
+                    filtered_daily_bench["date"] < as_of_date
+                ].copy()
 
         # Build combined benchmark price series
         bench_prices = pd.Series(dtype=float)
@@ -1017,4 +1021,3 @@ class MarketRegimeEngine:
             missing_evidence=missing_evidence,
             component_evidence=manifest["component_coverage"],
         )
-

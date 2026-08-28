@@ -65,9 +65,10 @@ def test_future_close_mutation():
         benchmark_intraday_bars=intraday_bars,
     )
 
-    # Mutate day D's daily close in the historical table to an extreme value
+    # Mutate day D's final daily values; INTRADAY must use D-1 daily evidence only.
     mutated_bars = bars.copy()
     mutated_bars.loc[mutated_bars["date"] == as_of, "close"] = 999_999.0
+    mutated_bars.loc[mutated_bars["date"] == as_of, "volume"] = 999_999_999.0
 
     snap2 = engine.evaluate_market_regime(
         market="NSE",

@@ -2395,13 +2395,19 @@ class DuckDBManager:
         return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash,
                 "provider_token": str(token or "DERIVED"), "dataset_available_at": dataset_available_at}
 
-    def _has_authoritative_dq_certification(self, dataset_id: str, content_hash: str) -> tuple[bool, str | None]:
+    def _has_authoritative_dq_certification(
+        self,
+        dataset_id: str,
+        content_hash: str,
+        decision_time: str,
+    ) -> tuple[bool, str | None]:
         """Return whether a dataset has Phase 2.2 hash-bound DQ evidence."""
         certs = self.conn.execute(
             """SELECT certification_id, checks_json FROM data_quality_certifications
                WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0
+                 AND completed_at <= ?
                ORDER BY completed_at DESC""",
-            [dataset_id],
+            [dataset_id, decision_time],
         ).fetchall()
         required = {"schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"}
         for cert_id, checks_json in certs:
@@ -2764,6 +2770,7 @@ class DuckDBManager:
         *,
         exchange: str = "NSE",
         intraday: bool = False,
+        context_type: str = "EOD",
     ) -> dict[str, Any]:
         """Load bars for market-regime evaluation from certified (VERIFIED + CANONICAL_PROMOTED) datasets only.
 
@@ -2792,6 +2799,9 @@ class DuckDBManager:
               - ``cutoff_applied``: The cutoff timestamp string applied to filter bars.
         """
         cutoff_applied = str(decision_time)
+        normalized_context = str(context_type).upper()
+        if normalized_context not in {"EOD", "INTRADAY"}:
+            raise ValueError(f"Unsupported market-regime context: {context_type!r}")
         # Delayed imports avoid the storage/provider package cycle during bootstrap.
         from trading_stack.bar_availability import is_bar_available
         from trading_stack.calendars import build_nse_calendar
@@ -2829,7 +2839,7 @@ class DuckDBManager:
 
                 ds_id, content_hash = ds_row
                 valid_dq, certification_id = self._has_authoritative_dq_certification(
-                    str(ds_id), str(content_hash or "")
+                    str(ds_id), str(content_hash or ""), cutoff_applied
                 )
                 if not valid_dq:
                     continue
@@ -2858,6 +2868,9 @@ class DuckDBManager:
                 decision_dt = pd.Timestamp(cutoff_applied).to_pydatetime()
                 calendar = build_nse_calendar()
                 if not bars.empty:
+                    if normalized_context == "INTRADAY" and tf == "1d":
+                        decision_session = pd.Timestamp(decision_dt).date()
+                        bars = bars[pd.to_datetime(bars["timestamp"]).dt.date < decision_session].copy()
                     bars = bars[bars["timestamp"].map(
                         lambda timestamp: is_bar_available(pd.Timestamp(timestamp).to_pydatetime(), tf, decision_dt, calendar)
                     )].copy()
@@ -2868,6 +2881,7 @@ class DuckDBManager:
                     "content_hash": str(content_hash or ""),
                     "certification_id": certification_id,
                     "cutoff_applied": cutoff_applied,
+                    "timeframe": tf,
                 }
 
             except Exception as exc:
@@ -2883,6 +2897,7 @@ class DuckDBManager:
             "content_hash": None,
             "certification_id": None,
             "cutoff_applied": cutoff_applied,
+            "timeframe": None,
         }
 
     def persist_market_regime_snapshot(self, snapshot: Any) -> None:

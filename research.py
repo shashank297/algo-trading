@@ -267,6 +267,11 @@ def main(argv: list[str] | None = None) -> int:
                     "market-regime requires an authoritative PIT universe identity; "
                     "CONFIGURED_UNIVERSE is not valid for historical causal breadth."
                 )
+            if requested_universe:
+                raise ValueError(
+                    "market-regime derives its complete breadth universe from the authoritative "
+                    "PIT snapshot; --universe is not permitted."
+                )
 
             as_of_str = args.as_of or datetime.now(ZoneInfo("Asia/Kolkata")).date().isoformat()
             context_type = MarketContextType(args.context.upper())
@@ -277,33 +282,42 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     decision_time_str = f"{as_of_str}T15:30:00+05:30"
 
-            if not requested_universe:
-                pit_members = PointInTimeUniverseManager.get_constituents(
-                    db, args.universe_snapshot, as_of_str, as_of_knowledge=decision_time_str,
+            pit_members = PointInTimeUniverseManager.get_constituents(
+                db, args.universe_snapshot, as_of_str, as_of_knowledge=decision_time_str,
+            )
+            universe = [member.symbol for member in pit_members]
+            if not universe:
+                raise ValueError(
+                    f"No causally-known PIT constituents for universe {args.universe_snapshot} at {decision_time_str}."
                 )
-                universe = [member.symbol for member in pit_members]
-                if not universe:
-                    raise ValueError(
-                        f"No causally-known PIT constituents for universe {args.universe_snapshot} at {decision_time_str}."
-                    )
 
             bench_sym = args.benchmark
 
             # --- Phase 2.3 PIT-certified data loading ---
             # Benchmark daily bars — only from VERIFIED + CANONICAL_PROMOTED datasets
             bench_result = db.load_regime_bars(
-                bench_sym, "1d", decision_time_str, exchange="NSE"
+                bench_sym, "1d", decision_time_str, exchange="NSE", context_type=context_type.value
             )
             bench_daily = bench_result["bars"]
 
             # Benchmark intraday bars — finest certified intraday tf available
             bench_intraday = None
+            benchmark_intraday_evidence = {"available": False}
             if context_type == MarketContextType.INTRADAY:
                 intra_result = db.load_regime_bars(
-                    bench_sym, "1m", decision_time_str, exchange="NSE", intraday=True
+                    bench_sym, "1m", decision_time_str, exchange="NSE", intraday=True,
+                    context_type=context_type.value,
                 )
                 if not intra_result["bars"].empty:
                     bench_intraday = intra_result["bars"]
+                benchmark_intraday_evidence = {
+                    "available": not intra_result["bars"].empty,
+                    "dataset_id": intra_result["dataset_id"],
+                    "content_hash": intra_result["content_hash"],
+                    "certification_id": intra_result.get("certification_id"),
+                    "timeframe": intra_result.get("timeframe"),
+                    "cutoff": intra_result["cutoff_applied"],
+                }
 
             # VIX bars — check common VIX symbols
             vix_df = None
@@ -369,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
                     "universe_content_hash": universe_content_hash,
                     "universe_manifest": universe_manifest,
                     "benchmark_certification_id": bench_result.get("certification_id"),
+                    "benchmark_intraday_evidence": benchmark_intraday_evidence,
                 },
             )
             db.persist_market_regime_snapshot(snapshot)

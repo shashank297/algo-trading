@@ -28,6 +28,16 @@ def test_cli_market_regime_rejects_configured_universe() -> None:
             main(["--command", "market-regime", "--universe-snapshot", "CONFIGURED_UNIVERSE"])
 
 
+def test_cli_market_regime_rejects_explicit_universe_override() -> None:
+    """Regime breadth must always derive from the complete authoritative PIT universe."""
+    with patch("research.validate_config", return_value=None), patch("research.DuckDBManager"):
+        with pytest.raises(ValueError, match="--universe is not permitted"):
+            main([
+                "--command", "market-regime", "--universe-snapshot", "TEST_PIT",
+                "--universe", "TEST",
+            ])
+
+
 def test_cli_market_regime_eod(capsys):
     """Test research.py CLI with --command market-regime in EOD mode."""
     test_argv = [

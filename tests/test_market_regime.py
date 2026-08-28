@@ -478,7 +478,8 @@ def test_regime_bars_returns_certified_dataset(tmp_path: Path) -> None:
     db.conn.execute(
         """INSERT INTO data_quality_certifications
            (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
-           VALUES ('dq_cert', 'ds_cert', 'test', 6, 0, '{"dataset_content_hash":"trans_h1"}', 'CERTIFIED', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"""
+           VALUES ('dq_cert', 'ds_cert', 'test', 6, 0, '{"dataset_content_hash":"trans_h1"}', 'CERTIFIED',
+                   '2025-01-02 15:30:00+05:30', '2025-01-02 15:30:00+05:30')"""
     )
     for check in ("schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"):
         db.conn.execute(
@@ -708,3 +709,92 @@ def test_complete_evidence_manifest_binding():
     assert snap_1.input_evidence_hash != snap_2.input_evidence_hash
     assert snap_1.regime_id != snap_2.regime_id
 
+
+def test_intraday_evidence_manifest_binds_intraday_dataset_provenance() -> None:
+    """An INTRADAY decision hash must identify the certified intraday source."""
+    engine = MarketRegimeEngine()
+    bars = _generate_synthetic_daily_bars(num_days=250)
+    as_of = bars["date"].iloc[-1]
+    decision_time = f"{as_of.isoformat()}T10:00:00+05:30"
+    intraday_bars = pd.DataFrame([{
+        "timestamp": f"{as_of.isoformat()}T09:45:00+05:30",
+        "open": 100.0, "high": 101.0, "low": 99.0, "close": 100.5, "volume": 10_000,
+    }])
+    base_metadata = {
+        "benchmark_dataset_id": "daily-dataset",
+        "benchmark_content_hash": "daily-hash",
+        "benchmark_certification_id": "daily-cert",
+        "benchmark_intraday_evidence": {
+            "available": True,
+            "dataset_id": "intraday-dataset-a",
+            "content_hash": "intraday-hash-a",
+            "certification_id": "intraday-cert-a",
+            "timeframe": "1m",
+            "cutoff": decision_time,
+        },
+    }
+    changed_metadata = {
+        **base_metadata,
+        "benchmark_intraday_evidence": {
+            **base_metadata["benchmark_intraday_evidence"],
+            "dataset_id": "intraday-dataset-b",
+            "content_hash": "intraday-hash-b",
+            "certification_id": "intraday-cert-b",
+        },
+    }
+
+    first = engine.evaluate_market_regime(
+        market="NSE", benchmark="NIFTY", context_type=MarketContextType.INTRADAY,
+        as_of=as_of, decision_time=decision_time, benchmark_daily_bars=bars,
+        benchmark_intraday_bars=intraday_bars, evidence_metadata=base_metadata,
+    )
+    second = engine.evaluate_market_regime(
+        market="NSE", benchmark="NIFTY", context_type=MarketContextType.INTRADAY,
+        as_of=as_of, decision_time=decision_time, benchmark_daily_bars=bars,
+        benchmark_intraday_bars=intraday_bars, evidence_metadata=changed_metadata,
+    )
+
+    manifest = first.input_evidence.evidence_manifest["benchmark_intraday"]
+    assert manifest["dataset_id"] == "intraday-dataset-a"
+    assert manifest["content_hash"] == "intraday-hash-a"
+    assert first.input_evidence_hash != second.input_evidence_hash
+
+
+def test_regime_bars_reject_future_dq_certification(tmp_path: Path) -> None:
+    """A DQ certificate completed after the decision cannot authorize historical evidence."""
+    db = DuckDBManager(str(tmp_path / "future_dq_cert.duckdb"))
+    db.conn.execute(
+        """INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name,
+            raw_hash, transformation_hash, status, lifecycle_status
+        ) VALUES ('future-cert-dataset', 'NIFTY200', 'NIFTY200', 'NSE', '1d', 'TEST',
+                  'raw-hash', 'content-hash', 'VERIFIED', 'CANONICAL_PROMOTED')"""
+    )
+    db.conn.execute("INSERT INTO market_dataset_availability VALUES ('future-cert-dataset', '2025-01-01 15:30:00+05:30')")
+    db.conn.execute(
+        """INSERT INTO historical_candles
+           (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+           VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-01 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'future-cert-dataset')"""
+    )
+    db.conn.execute(
+        """INSERT INTO historical_candle_availability
+           VALUES ('future-cert-dataset', 'NIFTY200', 'NSE', '1d', '2025-01-01 15:30:00+05:30', '2025-01-01 15:30:00+05:30')"""
+    )
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications
+           (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+           VALUES ('future-cert', 'future-cert-dataset', 'test', 6, 0, '{"dataset_content_hash":"content-hash"}',
+                   'CERTIFIED', '2025-01-03 15:30:00+05:30', '2025-01-03 15:30:00+05:30')"""
+    )
+    for check in ("schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"):
+        db.conn.execute(
+            """INSERT INTO quality_report (symbol, timeframe, dataset_id, certification_id, check_type, issue_count, details, checked_at)
+               VALUES ('NIFTY200', '1d', 'future-cert-dataset', 'future-cert', ?, 0, '{}', '2025-01-03 15:30:00+05:30')""",
+            [check],
+        )
+
+    result = db.load_regime_bars("NIFTY200", "1d", "2025-01-02T15:30:00+05:30", exchange="NSE")
+
+    assert result["bars"].empty
+    assert result["dataset_id"] is None
+    db.close()
