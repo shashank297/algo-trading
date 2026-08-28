@@ -3268,3 +3268,109 @@ class DuckDBManager:
         except Exception as exc:
             logger.warning("list_market_regime_snapshots failed: {}", exc)
             return []
+
+    def persist_asset_state_snapshot(self, snapshot: Any) -> None:
+        """Persist an immutable asset-state snapshot with idempotent replay."""
+        data = snapshot.to_dict() if hasattr(snapshot, "to_dict") else dict(snapshot)
+        columns = (
+            "asset_state_id", "symbol", "exchange", "context_type", "as_of",
+            "decision_time", "trend_score", "momentum_score", "volatility_score",
+            "liquidity_score", "gap_risk_score", "mean_reversion_score",
+            "relative_strength_score", "beta", "atr", "normalized_atr", "sector",
+            "market_cap_bucket", "earnings_proximity", "behavior_cluster",
+            "cluster_confidence", "eligibility", "eligibility_reasons_json",
+            "features_json", "input_evidence_manifest_json", "input_evidence_hash",
+            "input_hashes_json", "model_version", "policy_version", "policy_hash",
+            "created_at",
+        )
+        with self._write_lock:
+            self.conn.execute("BEGIN TRANSACTION")
+            try:
+                existing = self.conn.execute(
+                    f"SELECT {', '.join(columns)} FROM asset_state_snapshots WHERE asset_state_id = ?",
+                    [data["asset_state_id"]],
+                ).fetchone()
+                if existing is not None:
+                    existing_data = dict(zip(columns, existing))
+                    if self._asset_state_semantic_payload(existing_data) != self._asset_state_semantic_payload(data):
+                        raise ValueError(
+                            f"Conflicting immutable asset state snapshot: {data['asset_state_id']}"
+                        )
+                    self.conn.execute("COMMIT")
+                    return
+                placeholders = ", ".join("?" for _ in columns)
+                self.conn.execute(
+                    f"INSERT INTO asset_state_snapshots ({', '.join(columns)}) VALUES ({placeholders})",
+                    [data.get(column) for column in columns],
+                )
+                self.conn.execute("COMMIT")
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+
+    def _asset_state_semantic_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+        json_fields = {
+            "eligibility_reasons_json", "features_json",
+            "input_evidence_manifest_json", "input_hashes_json",
+        }
+        payload: dict[str, Any] = {}
+        for field, value in data.items():
+            if field == "created_at":
+                continue
+            if field in json_fields:
+                value = self._canonical_json(value)
+            elif field == "as_of":
+                value = pd.Timestamp(value).date().isoformat()
+            elif field == "decision_time":
+                timestamp = pd.Timestamp(value)
+                value = timestamp.tz_convert("UTC").isoformat() if timestamp.tzinfo else timestamp.isoformat()
+            elif isinstance(value, float) and pd.isna(value):
+                value = None
+            payload[field] = value
+        return payload
+
+    def get_asset_state_snapshot(self, asset_state_id: str) -> dict[str, Any] | None:
+        """Fetch one immutable asset-state snapshot by deterministic identity."""
+        frame = self.conn.execute(
+            "SELECT * FROM asset_state_snapshots WHERE asset_state_id = ?",
+            [asset_state_id],
+        ).fetchdf()
+        return None if frame.empty else frame.iloc[0].to_dict()
+
+    def list_asset_state_snapshots(
+        self,
+        *,
+        symbol: str | None = None,
+        exchange: str | None = None,
+        context_type: str | None = None,
+        as_of: Any | None = None,
+        behavior_cluster: str | None = None,
+        eligibility: str | None = None,
+        model_version: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List asset-state snapshots using deterministic indexed filters."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        filters = {
+            "symbol": symbol,
+            "exchange": exchange,
+            "context_type": context_type,
+            "as_of": str(as_of) if as_of is not None else None,
+            "behavior_cluster": behavior_cluster,
+            "eligibility": eligibility,
+            "model_version": model_version,
+        }
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in filters.items():
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        return self.conn.execute(
+            f"SELECT * FROM asset_state_snapshots {where} "
+            "ORDER BY decision_time DESC, asset_state_id LIMIT ?",
+            params,
+        ).fetchdf().to_dict(orient="records")
