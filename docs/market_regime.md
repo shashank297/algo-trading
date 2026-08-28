@@ -33,7 +33,7 @@ The engine strictly separates:
 - **`EOD` (End of Day)**: Evaluated after the official trading session close. Uses completed daily bars up to session $D$.
 - **`INTRADAY`**: Evaluated at decision timestamp $T$ on session $D$.
   - Daily-style rolling features use completed historical sessions through $D-1$.
-  - Intraday price/volume features use only completed derived bars timestamped $\le T$.
+  - Certified intraday bars are retained as causal evidence, but do not become synthetic daily observations.
   - Today's daily close, end-of-day volume, post-$T$ intraday bars, and post-$T$ breadth are NEVER visible.
 
 ---
@@ -43,12 +43,12 @@ The engine strictly separates:
 | Regime | Description | Key Conditions |
 |---|---|---|
 | `BULL_LOW_VOL` | Strong bull market with low volatility and broad participation | $\text{trend\_score} \ge +0.25$, $\text{breadth\_score} \ge +0.15$, $\text{vol\_score} \le +0.15$, $\text{stress} \le 0.40$ |
-| `BULL_HIGH_VOL` | Bullish market with elevated realized or implied volatility | $\text{trend\_score} \ge +0.15$, $\text{breadth\_score} \ge +0.05$, $\text{vol\_score} > +0.15$ |
-| `SIDEWAYS_LOW_VOL` | Rangebound market with compressed volatility | $|\text{trend\_score}| < 0.25$, $\text{vol\_score} \le +0.10$ |
-| `SIDEWAYS_HIGH_VOL` | Rangebound or erratic market with elevated volatility | $|\text{trend\_score}| < 0.25$, $\text{vol\_score} > +0.10$ or elevated stress |
+| `BULL_HIGH_VOL` | Bullish market with elevated realized or implied volatility | $\text{trend\_score} \ge +0.25$, $\text{breadth\_score} \ge +0.05$, $\text{vol\_score} > +0.15$ |
+| `SIDEWAYS_LOW_VOL` | Rangebound market with compressed volatility | $\text{vol\_score} \le +0.15$, $\text{stress} < 0.45$, not meeting Bull/Bear/Recovery |
+| `SIDEWAYS_HIGH_VOL` | Rangebound or erratic market with elevated volatility | $\text{vol\_score} > +0.15$ or $\text{stress} \ge 0.45$, not meeting Bull/Bear/Recovery |
 | `BEAR_HIGH_VOL` | Downtrend with elevated volatility and high stress | $\text{trend\_score} \le -0.20$, $\text{breadth\_score} \le -0.10$ or $\text{stress} \ge 0.45$ |
-| `RECOVERY` | Post-drawdown recovery with expanding breadth and positive momentum | $\text{drawdown} \le -10\%$, $\text{trend\_score} > 0$ (or slope $> 0$), $\text{breadth\_score} \ge 0.0$, $\text{stress} < 0.40$ |
-| `INSUFFICIENT_CONTEXT` | Critical evidence missing or insufficient history | Benchmark history $< 120$ days or missing PIT universe |
+| `RECOVERY` | Post-drawdown recovery with expanding breadth and positive momentum | $\text{drawdown} \le -10\%$, $\text{trend\_score} > 0$ (or slope $> 0$), $\text{breadth\_score} \ge 0.0$, $\text{downside\_freq} \le 0.10$, $\text{vol\_shock} \le 0.25$ |
+| `INSUFFICIENT_CONTEXT` | Critical evidence missing or insufficient history | Benchmark history $< 220$ days, breadth coverage $< 80\%$, or missing critical trend/breadth |
 
 ---
 
@@ -59,6 +59,7 @@ The engine strictly separates:
 - Moving average ratios: Close vs. 50 DMA, Close vs. 200 DMA.
 - Normalized DMA slopes: 50 DMA slope over 10 bars, 200 DMA slope over 20 bars.
 - Normalized `trend_score` in $[-1.0, +1.0]$.
+- Versioned weights: hard-required `R20` 0.20, `R60` 0.20, close-vs-50DMA 0.15, and close-vs-200DMA 0.20; optional `R120` 0.10 and each DMA slope 0.075. Trend requires all hard features and at least 75% available weighted evidence.
 
 ### Volatility Family
 - Realized annualized volatility: 20-day ($\sigma_{20}$), 60-day ($\sigma_{60}$).
@@ -66,16 +67,19 @@ The engine strictly separates:
 - Rolling 252-day volatility percentile ($P_{\text{vol}}$).
 - Optional certified India VIX level (if unavailable, deterministic confidence penalty of $-0.15$).
 - Normalized `volatility_score` in $[-1.0, +1.0]$.
+- Hard-required evidence is realized 20/60-session volatility and normalized ATR (0.30/0.25/0.25); optional volatility percentile and VIX carry 0.10 each. Volatility requires all hard features and at least 75% available weighted evidence.
 
 ### Breadth Family (Point-in-Time Universe)
 - Constituent % above 20 DMA, 50 DMA, 200 DMA.
 - Advance/Decline ratio: $(\text{Advancing} - \text{Declining}) / \text{Total}$.
 - Net New Highs / New Lows (% 52w Highs - % 52w Lows).
 - Normalized `breadth_score` in $[-1.0, +1.0]$.
+- Each required 20/50/200-DMA and advance/decline coverage is measured independently; the minimum must cover at least 80% of the PIT universe.
 
 ### Dispersion & Liquidity
 - Cross-sectional 20-day return standard deviation ($\sigma_{\text{CS}}$).
-- Market turnover ratio: $\text{Volume}_{5\text{d}} / \text{Volume}_{60\text{d}}$.
+- Market turnover ratio: causal PIT-universe traded value over a trailing 60-session baseline.
+- Liquidity percentile: causal 252-session cross-sectional aggregate; unavailable until the full history exists.
 - Normalized `dispersion_score` and `liquidity_score` in $[-1.0, +1.0]$.
 
 ### Stress Family

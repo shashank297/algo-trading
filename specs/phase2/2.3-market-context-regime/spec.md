@@ -111,6 +111,7 @@ Normalized continuous metrics on $[-1.0, +1.0]$:
 - All feature computations must strictly use bars and universe records with `known_at <= decision_time`.
 - In `INTRADAY` context (e.g. 10:00 IST), the session's future close, final daily volume, afternoon intraday bars, and end-of-day breadth must NEVER be visible.
 - Daily-style rolling indicators in `INTRADAY` context use the latest completed session ($D-1$).
+- Completed intraday bars remain evidence-only for Phase 2.3 and must not be appended to, or otherwise alter, daily-style feature series.
 - Mutating a future bar or future closing price produces zero changes in features, component scores, confidence, or evidence hash.
 
 ### US2 — Point-in-Time Universe Breadth & Dispersion (P1)
@@ -129,13 +130,18 @@ Normalized continuous metrics on $[-1.0, +1.0]$:
 **Requirements**:
 - Features map to continuous component scores via versioned deterministic transforms.
 - Decision tree / threshold rules map component scores into the 7 `RawMarketRegime` states:
-  - `BULL_LOW_VOL`: $\text{trend\_score} \ge +0.3$, $\text{breadth\_score} \ge +0.2$, $\text{volatility\_score} \le +0.2$, $\text{stress\_score} \le 0.35$.
-  - `BULL_HIGH_VOL`: $\text{trend\_score} \ge +0.2$, $\text{breadth\_score} \ge +0.1$, $\text{volatility\_score} > +0.2$.
-  - `SIDEWAYS_LOW_VOL`: $|\text{trend\_score}| < 0.3$, $\text{volatility\_score} \le +0.1$, $\text{stress\_score} \le 0.35$.
-  - `SIDEWAYS_HIGH_VOL`: $|\text{trend\_score}| < 0.3$, $\text{volatility\_score} > +0.1$.
-  - `BEAR_HIGH_VOL`: $\text{trend\_score} \le -0.2$, $\text{breadth\_score} \le -0.1$, $\text{volatility\_score} > 0.0$ or $\text{stress\_score} \ge 0.5$.
-  - `RECOVERY`: $\text{drawdown} \le -0.10$, $\text{trend\_score} > 0.0$ (or slope $> 0$), $\text{breadth\_score} \ge 0.0$, $\text{stress\_score} < 0.40$.
-  - `INSUFFICIENT_CONTEXT`: Critical benchmark history $< 120$ days or missing PIT universe.
+  - `BULL_LOW_VOL`: $\text{trend\_score} \ge +0.25$, $\text{breadth\_score} \ge +0.15$, $\text{volatility\_score} \le +0.15$, $\text{stress\_score} \le 0.40$.
+  - `BULL_HIGH_VOL`: $\text{trend\_score} \ge +0.25$, $\text{breadth\_score} \ge +0.05$, $\text{volatility\_score} > +0.15$.
+  - `SIDEWAYS_LOW_VOL`: $\text{volatility\_score} \le +0.15$, $\text{stress\_score} < 0.45$, and not meeting Bull/Bear/Recovery.
+  - `SIDEWAYS_HIGH_VOL`: $\text{volatility\_score} > +0.15$ or $\text{stress\_score} \ge 0.45$, and not meeting Bull/Bear/Recovery.
+  - `BEAR_HIGH_VOL`: $\text{trend\_score} \le -0.20$, $(\text{breadth\_score} \le -0.10 \text{ or } \text{stress\_score} \ge 0.45)$.
+  - `RECOVERY`: $\text{drawdown} \le -0.10$, $\text{trend\_score} > 0.0$ (or slope $> 0$), $\text{breadth\_score} \ge 0.0$, $\text{downside\_freq} \le 0.10$, $\text{vol\_shock} \le 0.25$.
+- `INSUFFICIENT_CONTEXT`: Critical benchmark history $< 220$ days, breadth coverage $< 80\%$, or missing critical trend/breadth evidence.
+
+**Versioned evidence policy**:
+- Trend hard requirements are `ret20`, `ret60`, `close_vs_50`, and `close_vs_200`; their weights total 0.75. Optional `ret120`, `dma50_slope`, and `dma200_slope` total 0.25.
+- Volatility hard requirements are realized 20/60-session volatility and normalized 14-session ATR; optional 252-session percentile and VIX are omitted when unavailable.
+- Trend and volatility require at least 0.75 weighted coverage. Required breadth 20/50/200-DMA and advance/decline coverage use their minimum and require 0.80.
 
 ### US5 — Storage Migration & Audit Lineage (P1)
 **Requirements**:

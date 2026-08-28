@@ -48,7 +48,7 @@ class MarketRegimePolicy:
 
     def __init__(
         self,
-        policy_version: str = "2.3.1",
+        policy_version: str = "2.3.2",
         min_benchmark_history: int = 220,
         min_component_coverage: float = 0.75,
         min_breadth_coverage: float = 0.80,
@@ -424,36 +424,16 @@ class MarketRegimeEngine:
                     filtered_daily_bench["date"] < as_of_date
                 ].copy()
 
-        # Build combined benchmark price series
-        bench_prices = pd.Series(dtype=float)
-        bench_volumes = pd.Series(dtype=float)
+        # Build completed daily benchmark price series (D for EOD, D-1 for INTRADAY)
+        daily_bench_prices = pd.Series(dtype=float)
 
         if not filtered_daily_bench.empty:
-            bench_prices = filtered_daily_bench["close"].astype(float).reset_index(drop=True)
-            if "volume" in filtered_daily_bench.columns:
-                bench_volumes = filtered_daily_bench["volume"].astype(float).reset_index(drop=True)
+            daily_bench_prices = filtered_daily_bench["close"].astype(float).reset_index(drop=True)
 
-        # In INTRADAY context, append intraday bar known at or before decision_time
-        if context_type == MarketContextType.INTRADAY and benchmark_intraday_bars is not None and not benchmark_intraday_bars.empty:
-            idf = benchmark_intraday_bars.copy()
-            if "timestamp" in idf.columns:
-                idf["dt"] = pd.to_datetime(idf["timestamp"])
-                if idf["dt"].dt.tz is None:
-                    idf["dt"] = idf["dt"].dt.tz_localize(IST)
-                # Keep only bars completed at or before decision_dt
-                valid_intraday = idf[idf["dt"].map(
-                    lambda value: is_bar_available(value.to_pydatetime(), str(idf["timeframe"].iloc[0]) if "timeframe" in idf else "1m", decision_dt, self.calendar)
-                )].sort_values("dt")
-                if not valid_intraday.empty:
-                    latest_bar = valid_intraday.iloc[-1]
-                    bench_prices = pd.concat([bench_prices, pd.Series([float(latest_bar["close"])])], ignore_index=True)
-                    if "volume" in valid_intraday.columns:
-                        bench_volumes = pd.concat([bench_volumes, pd.Series([float(valid_intraday["volume"].sum())])], ignore_index=True)
-
-        # 2. Check critical benchmark sufficiency
-        if len(bench_prices) < self.policy.min_benchmark_history:
+        # 2. Check critical benchmark sufficiency on completed daily sessions
+        if len(daily_bench_prices) < self.policy.min_benchmark_history:
             missing_evidence.append(
-                f"Insufficient benchmark history: {len(bench_prices)} bars available, {self.policy.min_benchmark_history} required"
+                f"Insufficient benchmark history: {len(daily_bench_prices)} bars available, {self.policy.min_benchmark_history} required"
             )
             return self._build_insufficient_snapshot(
                 market=market,
@@ -463,29 +443,32 @@ class MarketRegimeEngine:
                 decision_time=decision_time_str,
                 missing_evidence=missing_evidence,
                 metadata=metadata,
-                bench_count=len(bench_prices),
+                bench_count=len(daily_bench_prices),
             )
 
         # 3. Calculate Trend Features
-        p_now = float(bench_prices.iloc[-1])
-        p_20 = float(bench_prices.iloc[-21]) if len(bench_prices) >= 21 else None
-        p_60 = float(bench_prices.iloc[-61]) if len(bench_prices) >= 61 else None
-        p_120 = float(bench_prices.iloc[-121]) if len(bench_prices) >= 121 else None
+        # Every daily-style feature, including its current price, is D-1 in INTRADAY.
+        p_now = float(daily_bench_prices.iloc[-1])
+        p_20 = float(daily_bench_prices.iloc[-21]) if len(daily_bench_prices) >= 21 else None
+        p_60 = float(daily_bench_prices.iloc[-61]) if len(daily_bench_prices) >= 61 else None
+        p_120 = float(daily_bench_prices.iloc[-121]) if len(daily_bench_prices) >= 121 else None
 
-        ret_20 = (p_now - p_20) / p_20 if p_20 is not None and p_20 > 0 else None
-        ret_60 = (p_now - p_60) / p_60 if p_60 is not None and p_60 > 0 else None
-        ret_120 = (p_now - p_120) / p_120 if p_120 is not None and p_120 > 0 else None
+        # Rolling returns over completed daily sessions
+        ret_20 = (float(daily_bench_prices.iloc[-1]) - p_20) / p_20 if p_20 is not None and p_20 > 0 else None
+        ret_60 = (float(daily_bench_prices.iloc[-1]) - p_60) / p_60 if p_60 is not None and p_60 > 0 else None
+        ret_120 = (float(daily_bench_prices.iloc[-1]) - p_120) / p_120 if p_120 is not None and p_120 > 0 else None
 
-        sma_50_series = bench_prices.rolling(window=50).mean()
-        sma_200_series = bench_prices.rolling(window=200).mean()
+        # Rolling moving averages over completed daily sessions
+        sma_50_series = daily_bench_prices.rolling(window=50).mean()
+        sma_200_series = daily_bench_prices.rolling(window=200).mean()
 
-        sma_50_now = float(sma_50_series.iloc[-1]) if len(bench_prices) >= 50 else None
-        sma_200_now = float(sma_200_series.iloc[-1]) if len(bench_prices) >= 200 else None
+        sma_50_now = float(sma_50_series.iloc[-1]) if len(daily_bench_prices) >= 50 else None
+        sma_200_now = float(sma_200_series.iloc[-1]) if len(daily_bench_prices) >= 200 else None
 
         close_vs_50 = (p_now / sma_50_now - 1.0) if sma_50_now is not None and sma_50_now > 0 else None
         close_vs_200 = (p_now / sma_200_now - 1.0) if sma_200_now is not None and sma_200_now > 0 else None
 
-        # Slopes
+        # Slopes on completed daily sessions
         slope_50: float | None = None
         if len(sma_50_series) >= 60 and not np.isnan(sma_50_series.iloc[-11]):
             s_base = float(sma_50_series.iloc[-11])
@@ -498,8 +481,8 @@ class MarketRegimeEngine:
             if s_base200 > 0:
                 slope_200 = (sma_200_now - s_base200) / (20.0 * s_base200) if sma_200_now is not None else None
 
-        # 4. Calculate Volatility Features
-        returns = bench_prices.pct_change().dropna()
+        # 4. Calculate Volatility Features on completed daily sessions
+        returns = daily_bench_prices.pct_change().dropna()
         realized_vol_20 = float(returns.iloc[-20:].std() * np.sqrt(252)) if len(returns) >= 20 else None
         realized_vol_60 = float(returns.iloc[-60:].std() * np.sqrt(252)) if len(returns) >= 60 else None
 
@@ -629,7 +612,7 @@ class MarketRegimeEngine:
                     return self._build_insufficient_snapshot(
                         market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
                         decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
-                        bench_count=len(bench_prices),
+                        bench_count=len(daily_bench_prices),
                     )
                 has_universe = True
                 pct_above_20dma = float(np.mean(member_above_20))
@@ -653,7 +636,7 @@ class MarketRegimeEngine:
             return self._build_insufficient_snapshot(
                 market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
                 decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
-                bench_count=len(bench_prices),
+                bench_count=len(daily_bench_prices),
             )
 
         if not has_universe:
@@ -661,7 +644,7 @@ class MarketRegimeEngine:
             return self._build_insufficient_snapshot(
                 market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
                 decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
-                bench_count=len(bench_prices),
+                bench_count=len(daily_bench_prices),
             )
 
         if any(value is None for value in (close_vs_50, close_vs_200, pct_above_50dma, pct_above_200dma, ad_ratio)):
@@ -669,7 +652,7 @@ class MarketRegimeEngine:
             return self._build_insufficient_snapshot(
                 market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
                 decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
-                bench_count=len(bench_prices),
+                bench_count=len(daily_bench_prices),
             )
 
         assert close_vs_50 is not None and close_vs_200 is not None
@@ -692,7 +675,7 @@ class MarketRegimeEngine:
             )
 
         # Drawdown from 252d peak
-        peak_252 = float(bench_prices.iloc[-252:].max()) if len(bench_prices) >= 252 else float(bench_prices.max())
+        peak_252 = float(daily_bench_prices.iloc[-252:].max()) if len(daily_bench_prices) >= 252 else float(daily_bench_prices.max())
         drawdown_252 = (p_now - peak_252) / peak_252 if peak_252 > 0 else 0.0
 
         # Downside frequency
@@ -790,7 +773,7 @@ class MarketRegimeEngine:
             return self._build_insufficient_snapshot(
                 market=market, benchmark=benchmark, context_type=context_type, as_of=as_of_str,
                 decision_time=decision_time_str, missing_evidence=missing_evidence, metadata=metadata,
-                bench_count=len(bench_prices),
+                bench_count=len(daily_bench_prices),
             )
 
         # Breadth scoring
@@ -863,7 +846,7 @@ class MarketRegimeEngine:
             confidence -= self.policy.missing_breadth_confidence_penalty
         if vix_val is None:
             confidence -= self.policy.missing_vix_confidence_penalty
-        if len(bench_prices) < 200:
+        if len(daily_bench_prices) < 200:
             confidence -= 0.15
 
         # Ambiguity reduction if right on the boundary
@@ -899,7 +882,7 @@ class MarketRegimeEngine:
         evidence = MarketRegimeEvidence(
             benchmark_dataset_id=metadata.get("benchmark_dataset_id"),
             benchmark_content_hash=metadata.get("benchmark_content_hash"),
-            benchmark_bars_count=len(bench_prices),
+            benchmark_bars_count=len(daily_bench_prices),
             universe_snapshot_id=metadata.get("universe_snapshot_id"),
             universe_member_count=len(pit_universe_members) if pit_universe_members else 0,
             universe_content_hash=metadata.get("universe_content_hash"),

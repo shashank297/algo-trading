@@ -2815,8 +2815,8 @@ class DuckDBManager:
 
         for tf in timeframes_to_try:
             try:
-                # Find the most recent certified dataset for this symbol/timeframe/exchange
-                ds_row = self.conn.execute(
+                # Find certified candidate datasets for this symbol/timeframe/exchange ordered by availability
+                ds_rows = self.conn.execute(
                     """
                     SELECT md.dataset_id,
                            COALESCE(md.transformation_hash, md.raw_hash) AS content_hash,
@@ -2830,19 +2830,32 @@ class DuckDBManager:
                       AND md.lifecycle_status = 'CANONICAL_PROMOTED'
                       AND mda.available_at <= ?
                     ORDER BY mda.available_at DESC
-                    LIMIT 1
                     """,
                     [symbol, symbol, exchange, tf, cutoff_applied],
-                ).fetchone()
+                ).fetchall()
 
-                if not ds_row:
+                if not ds_rows:
                     continue  # try next timeframe
 
-                ds_id, content_hash, dataset_available_at = ds_row
-                valid_dq, certification_id = self._has_authoritative_dq_certification(
-                    str(ds_id), str(content_hash or ""), cutoff_applied
-                )
-                if not valid_dq:
+                ds_id: Any = None
+                content_hash: Any = None
+                dataset_available_at: Any = None
+                certification_id: str | None = None
+                found_certified = False
+
+                for row_id, row_hash, row_avail in ds_rows:
+                    valid_dq, cert_id = self._has_authoritative_dq_certification(
+                        str(row_id), str(row_hash or ""), cutoff_applied
+                    )
+                    if valid_dq:
+                        ds_id = row_id
+                        content_hash = row_hash
+                        dataset_available_at = row_avail
+                        certification_id = cert_id
+                        found_certified = True
+                        break
+
+                if not found_certified or ds_id is None:
                     continue
 
                 bars = self.conn.execute(

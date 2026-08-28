@@ -838,3 +838,137 @@ def test_regime_bars_reject_future_dq_certification(tmp_path: Path) -> None:
     assert result["bars"].empty
     assert result["dataset_id"] is None
     db.close()
+
+
+def test_intraday_context_does_not_mutate_daily_rolling_series() -> None:
+    """INTRADAY context must compute rolling daily indicators strictly on completed session D-1."""
+    engine = MarketRegimeEngine()
+    bars = _generate_synthetic_daily_bars(num_days=250)
+    as_of = bars["date"].iloc[-1]
+    decision_time = f"{as_of.isoformat()}T10:00:00+05:30"
+
+    pit_members = ["SYM1", "SYM2", "SYM3", "SYM4", "SYM5"]
+    univ_bars = _generate_synthetic_universe_bars(pit_members, num_days=250)
+
+    # Daily close on D-1
+    daily_close_d_minus_1 = float(bars["close"].iloc[-2])
+    # 20-session return over completed daily sessions up to D-1
+    p_20_daily = float(bars["close"].iloc[-22])
+    expected_ret_20 = (daily_close_d_minus_1 - p_20_daily) / p_20_daily
+
+    # Extreme intraday price (e.g. 50% above D-1 close)
+    intraday_price = daily_close_d_minus_1 * 1.50
+    intraday_bars = pd.DataFrame([{
+        "timestamp": f"{as_of.isoformat()}T09:45:00+05:30",
+        "open": intraday_price,
+        "high": intraday_price * 1.01,
+        "low": intraday_price * 0.99,
+        "close": intraday_price,
+        "volume": 50_000,
+    }])
+
+    snap = engine.evaluate_market_regime(
+        market="NSE",
+        benchmark="NIFTY",
+        context_type=MarketContextType.INTRADAY,
+        as_of=as_of,
+        decision_time=decision_time,
+        benchmark_daily_bars=bars,
+        benchmark_intraday_bars=intraday_bars,
+        universe_daily_bars=univ_bars,
+        pit_universe_members=pit_members,
+    )
+
+    # 1. Rolling daily return must match completed daily sessions (NOT mutated by intraday price)
+    assert snap.features.benchmark_ret_20 is not None
+    assert np.isclose(snap.features.benchmark_ret_20, expected_ret_20, rtol=1e-5)
+
+    # 2. Moving average DMA50 and its comparison price are completed daily evidence.
+    expected_sma_50 = float(bars["close"].iloc[:-1].tail(50).mean())
+    expected_close_vs_50 = (daily_close_d_minus_1 / expected_sma_50) - 1.0
+    assert snap.features.close_vs_50dma is not None
+    assert np.isclose(snap.features.close_vs_50dma, expected_close_vs_50, rtol=1e-5)
+
+    mutated_intraday = intraday_bars.copy()
+    mutated_intraday.loc[0, "close"] = intraday_price * 0.10
+    mutated_intraday.loc[0, "volume"] = 9_999_999_999
+    mutated = engine.evaluate_market_regime(
+        market="NSE",
+        benchmark="NIFTY",
+        context_type=MarketContextType.INTRADAY,
+        as_of=as_of,
+        decision_time=decision_time,
+        benchmark_daily_bars=bars,
+        benchmark_intraday_bars=mutated_intraday,
+        universe_daily_bars=univ_bars,
+        pit_universe_members=pit_members,
+    )
+    assert mutated.features.to_dict() == snap.features.to_dict()
+    assert mutated.component_scores.to_dict() == snap.component_scores.to_dict()
+    assert mutated.raw_regime == snap.raw_regime
+    assert mutated.input_evidence.benchmark_bars_count == len(bars) - 1
+
+
+def test_same_timeframe_dq_fallback(tmp_path: Path) -> None:
+    """When the newest same-timeframe dataset fails DQ, load_regime_bars falls back to older certified dataset."""
+    db = DuckDBManager(str(tmp_path / "dq_fallback.duckdb"))
+
+    # 1. Older dataset with valid authoritative DQ certification
+    db.conn.execute(
+        """INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name,
+            raw_hash, transformation_hash, status, lifecycle_status
+        ) VALUES ('ds-older-valid', 'NIFTY200', 'NIFTY200', 'NSE', '1d', 'TEST',
+                  'raw-old', 'hash-old', 'VERIFIED', 'CANONICAL_PROMOTED')"""
+    )
+    db.conn.execute("INSERT INTO market_dataset_availability VALUES ('ds-older-valid', '2025-01-01 15:30:00+05:30')")
+    db.conn.execute(
+        """INSERT INTO historical_candles
+           (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+           VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-01 15:30:00+05:30', 100, 105, 98, 102, 1000000, 'ds-older-valid')"""
+    )
+    db.conn.execute(
+        """INSERT INTO historical_candle_availability
+           VALUES ('ds-older-valid', 'NIFTY200', 'NSE', '1d', '2025-01-01 15:30:00+05:30', '2025-01-01 15:30:00+05:30')"""
+    )
+    db.conn.execute(
+        """INSERT INTO data_quality_certifications
+           (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at)
+           VALUES ('cert-old', 'ds-older-valid', 'test', 6, 0, '{"dataset_content_hash":"hash-old"}',
+                   'CERTIFIED', '2025-01-01 16:00:00+05:30', '2025-01-01 16:00:00+05:30')"""
+    )
+    for check in ("schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"):
+        db.conn.execute(
+            """INSERT INTO quality_report (symbol, timeframe, dataset_id, certification_id, check_type, issue_count, details, checked_at)
+               VALUES ('NIFTY200', '1d', 'ds-older-valid', 'cert-old', ?, 0, '{}', '2025-01-01 16:00:00+05:30')""",
+            [check],
+        )
+
+    # 2. Newer dataset that has NO valid DQ certification (or uncertified)
+    db.conn.execute(
+        """INSERT INTO market_datasets (
+            dataset_id, symbol, canonical_symbol, exchange, timeframe, provider_name,
+            raw_hash, transformation_hash, status, lifecycle_status
+        ) VALUES ('ds-newer-invalid', 'NIFTY200', 'NIFTY200', 'NSE', '1d', 'TEST',
+                  'raw-new', 'hash-new', 'VERIFIED', 'CANONICAL_PROMOTED')"""
+    )
+    db.conn.execute("INSERT INTO market_dataset_availability VALUES ('ds-newer-invalid', '2025-01-02 15:30:00+05:30')")
+    db.conn.execute(
+        """INSERT INTO historical_candles
+           (symbol, token, exchange, timeframe, timestamp, open, high, low, close, volume, dataset_id)
+           VALUES ('NIFTY200', 'T1', 'NSE', '1d', '2025-01-02 15:30:00+05:30', 103, 107, 101, 105, 1200000, 'ds-newer-invalid')"""
+    )
+    db.conn.execute(
+        """INSERT INTO historical_candle_availability
+           VALUES ('ds-newer-invalid', 'NIFTY200', 'NSE', '1d', '2025-01-02 15:30:00+05:30', '2025-01-02 15:30:00+05:30')"""
+    )
+    # Notice: No DQ certification inserted for 'ds-newer-invalid'
+
+    # load_regime_bars should evaluate ds-newer-invalid (fails DQ), then fall back to ds-older-valid (passes DQ)
+    result = db.load_regime_bars("NIFTY200", "1d", "2025-01-03T15:30:00+05:30", exchange="NSE")
+
+    assert not result["bars"].empty, "load_regime_bars must fall back to the older valid certified dataset"
+    assert result["dataset_id"] == "ds-older-valid"
+    assert result["content_hash"] == "hash-old"
+    assert result["certification_id"] == "cert-old"
+    db.close()
