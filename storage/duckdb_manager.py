@@ -2979,8 +2979,11 @@ class DuckDBManager:
             value = data.get(field)
             if field in json_fields:
                 value = self._canonical_json(value)
-            elif field in {"as_of", "decision_time"}:
-                value = pd.Timestamp(value).isoformat()
+            elif field == "as_of":
+                value = pd.Timestamp(value).date().isoformat()
+            elif field == "decision_time":
+                timestamp = pd.Timestamp(value)
+                value = timestamp.tz_convert("UTC").isoformat() if timestamp.tzinfo else timestamp.isoformat()
             elif isinstance(value, float) and pd.isna(value):
                 value = None
             payload[field] = value

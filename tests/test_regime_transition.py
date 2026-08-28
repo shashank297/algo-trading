@@ -241,6 +241,7 @@ def test_raw_snapshot_persistence_is_immutable_and_replay_idempotent(tmp_path: P
     db = DuckDBManager(str(tmp_path / "immutable.duckdb"))
     snapshot = _snapshot(RawMarketRegime.BULL_LOW_VOL, 0)
     db.persist_market_regime_snapshot(snapshot)
+    db.conn.execute("SET TimeZone='UTC'")
     db.persist_market_regime_snapshot(snapshot)
     conflicting = _snapshot(RawMarketRegime.BEAR_HIGH_VOL, 0)
     conflicting.regime_id = snapshot.regime_id
