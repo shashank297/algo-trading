@@ -1,13 +1,12 @@
-# Phase 2.6 Tasks
+# Phase 2.6 Remediation Tasks
 
-- [x] T001 Define Phase 2.6 specification, plan, data models, contracts, and quickstart documentation.
-- [x] T002 Implement pure statistical functions (PSR, DSR, bootstrap, Monte Carlo) in `experiments/statistical_tests.py`.
-- [x] T003 Implement nested walk-forward, purge/embargo, parameter robustness selection, and stress testing in `experiments/robustness.py`.
-- [x] T004 Add migration `022_phase2_6_robustness.sql` and immutable DuckDB persistence in `storage/duckdb_manager.py`.
-- [x] T005 Integrate `RobustnessEvaluator` with `research.py` CLI, export public models in `experiments/__init__.py`, and add config defaults to `config/config.example.yaml`.
-- [x] T006 Add unit and adversarial mathematical tests in `tests/test_statistical_tests.py`.
-- [x] T007 Add integration, leakage-prevention, stress, trial-registry linkage, and persistence tests in `tests/test_robustness.py`.
-- [x] T008 Update CI configuration in `.github/workflows/ci.yml` to include `experiments/robustness.py` and `experiments/statistical_tests.py` in critical coverage.
-- [x] T009 Run the complete local verification matrix (pytest, Ruff, Mypy, Pyright, coverage, pip-audit).
-- [x] T010 Commit Phase 2.6 implementation and push directly to `origin/main`, then verify exact-main CI.
+- [x] R001 Update Phase 2.6 specifications, plan, data models, contracts, and quality checklists for forensic correctness.
+- [x] R002 Remediate `experiments/statistical_tests.py` (DSR fail-closed without authoritative family, real trial multiplicity $N$, capital ruin direct simulation, bootstrap expectancy).
+- [x] R003 Remediate `experiments/robustness.py` (`NestedWalkForwardSplitter` single authoritative splitter with dual-boundary purge and post-test embargo, real `selected_trial_id` mapping, parameter robustness with plateau fraction and rank stability, cost stress with slippage/liquidity, execution stress with reduced liquidity, OOS-only stress evidence, and comprehensive evidence hash binding).
+- [x] R004 Update mathematical and adversarial unit tests in `tests/test_statistical_tests.py`.
+- [x] R005 Update integration, dual purge/embargo, plateau robustness, real trial ID linkage, and stress tests in `tests/test_robustness.py`.
+- [x] R006 Execute full local verification matrix (pytest, Ruff, Mypy, Pyright, coverage $\ge 95\%$ on Phase 2.6, pip-audit).
+- [ ] R007 Push branch `phase2.6-remediation`, open PR to `main`, wait for all 6 required CI status checks to pass, and merge through protected branch rules.
+- [ ] R008 Fetch merged `main`, verify exact-main CI, re-read remote implementation, and generate final certification report.
+
 

@@ -4,7 +4,7 @@
 
 ### 1. `EvidenceStatus` (Enum)
 - `VALID`: Valid calculation with sufficient evidence and satisfying all domain constraints.
-- `INSUFFICIENT_EVIDENCE`: Sample size below minimum threshold or observations insufficient.
+- `INSUFFICIENT_EVIDENCE`: Sample size below minimum threshold, missing required trial registry evidence, or observations insufficient.
 - `INVALID_INPUT`: Inputs contain NaN, Inf, non-positive variance, or violate parameter constraints.
 
 ### 2. `PSRResult` (Pydantic Model)
@@ -23,19 +23,26 @@
 ### 3. `DSRResult` (Pydantic Model)
 - `dsr_value`: `float | None` — Deflated Sharpe Ratio in $[0, 1]$.
 - `expected_max_sharpe`: `float | None` — $SR_0$ expected maximum Sharpe under null hypothesis.
+- `annualized_expected_max_sharpe`: `float | None` — Annualized $SR_0$.
 - `sample_sharpe`: `float | None` — Sample non-annualized Sharpe ratio.
 - `annualized_sharpe`: `float | None` — Annualized Sharpe ratio.
 - `variance_trials`: `float | None` — Estimated variance of Sharpe ratios across trials $V(\{SR_k\})$.
-- `effective_trials`: `int` — Effective independent trial count $N$ from authoritative registry.
-- `total_trials`: `int` — Total trial count in experiment family query scope.
+- `effective_trials`: `int` — Effective independent selection multiplicity count $N$ from authoritative registry ($succeeded + failed$).
+- `sharpe_count`: `int` — Count of valid Sharpe observations used for variance estimation.
+- `succeeded_count`: `int` — Count of succeeded trials.
+- `failed_count`: `int` — Count of failed genuine selection trials (included in multiplicity $N$).
 - `invalidated_trials`: `int` — Count of invalidated trials.
+- `deduplicated_count`: `int` — Count of deduplicated idempotent replay trials.
+- `total_trials`: `int` — Total raw trial records in experiment family query scope.
 - `experiment_family_id`: `str | None` — Authoritative trial registry experiment family ID.
 - `trial_ids`: `list[str]` — List of trial IDs evaluated.
+- `trial_policy_version`: `str` — Version string of trial selection policy.
+- `trial_policy_hash`: `str` — SHA-256 hash of trial selection policy.
 - `status`: `EvidenceStatus` — Evaluation status.
-- `reason`: `str | None` — Status explanation.
+- `reason`: `str | None` — Status explanation (e.g. `MISSING_AUTHORITATIVE_TRIAL_FAMILY`).
 
 ### 4. `BootstrapConfidenceIntervals` (Pydantic Model)
-- `metric_name`: `str` — Metric identifier (e.g. `total_return`, `sharpe`, `expectancy`, `max_drawdown`).
+- `metric_name`: `str` — Metric identifier (`total_return`, `sharpe`, `expectancy`, `max_drawdown`).
 - `lower_bound`: `float` — Lower percentile bound (e.g. 2.5th for 95% CI).
 - `upper_bound`: `float` — Upper percentile bound (e.g. 97.5th for 95% CI).
 - `median`: `float` — Resampled median value.
@@ -46,18 +53,22 @@
 - `block_size`: `int | None` — Block size if block bootstrap.
 - `seed`: `int` — Seed used for deterministic reproducibility.
 - `status`: `EvidenceStatus` — Status.
+- `reason`: `str | None` — Status explanation.
 
 ### 5. `MonteCarloRobustnessResult` (Pydantic Model)
 - `simulations`: `int` — Number of simulation paths (e.g. 1000).
 - `seed`: `int` — Simulation seed.
-- `prob_negative_return`: `float` — $P(\text{Return} < 0)$.
-- `prob_drawdown_exceeds_threshold`: `float` — $P(\text{MaxDD} > \text{threshold})$.
+- `prob_negative_return`: `float | None` — $P(\text{Return} < 0)$.
+- `prob_drawdown_exceeds_threshold`: `float | None` — $P(\text{MaxDD} > \text{threshold})$.
 - `drawdown_threshold`: `float` — Drawdown threshold (e.g. 0.20 for 20%).
 - `max_drawdown_percentiles`: `dict[str, float]` — `{"p5": ..., "p50": ..., "p95": ..., "p99": ...}`.
 - `sharpe_percentiles`: `dict[str, float]` — `{"p5": ..., "p50": ..., "p95": ...}`.
-- `capital_ruin_probability`: `float` — Estimated ruin probability.
-- `ruin_threshold`: `float` — Ruin equity/drawdown threshold.
+- `capital_ruin_probability`: `float | None` — Estimated capital ruin probability calculated directly from cumulative simulated equity paths.
+- `ruin_threshold`: `float` — Ruin equity fraction threshold (e.g. 0.50 for 50% capital loss).
+- `ruin_level`: `float | None` — Capital ruin equity floor ($starting\_capital \times (1 - ruin\_threshold)$).
+- `ruin_definition`: `str` — Description of capital ruin rule (`cumulative_equity_breach_below_ruin_level`).
 - `status`: `EvidenceStatus` — Status.
+- `reason`: `str | None` — Status explanation.
 
 ### 6. `ParameterRobustnessCandidate` (Pydantic Model)
 - `parameters`: `dict[str, Any]` — Parameter values.
@@ -68,10 +79,18 @@
 - `neighbor_scores`: `list[float]` — Scores of neighboring candidates.
 - `neighbor_mean`: `float` — Mean score across neighbors.
 - `neighbor_std`: `float` — Score standard deviation across neighbors.
-- `plateau_score`: `float` — Ratio of neighbor mean to center / fraction meeting threshold.
-- `sensitivity_score`: `float` — Drop-off / sensitivity metric.
-- `rank_stability`: `float` — Cross-fold rank stability score.
-- `aggregate_robustness_score`: `float` — Composite robustness score used for selection.
+- `neighbor_min`: `float` — Minimum score across neighbors.
+- `plateau_neighbor_count`: `int` — Count of neighbors meeting threshold (`neighbor_score >= plateau_min_ratio * center_score`).
+- `neighbor_count`: `int` — Total count of neighbors.
+- `plateau_fraction`: `float` — Fraction of neighbors on plateau (`plateau_neighbor_count / max(1, neighbor_count)`).
+- `plateau_width`: `float` — Plateau neighborhood span.
+- `plateau_score`: `float` — Plateau score (`plateau_fraction`).
+- `sensitivity_score`: `float` — Normalized drop-off / sensitivity metric.
+- `train_rank`: `int` — 1-based candidate rank on TRAIN.
+- `val_rank`: `int | None` — 1-based candidate rank on VALIDATION.
+- `rank_delta`: `int | None` — Absolute rank difference $|train\_rank - val\_rank|$.
+- `rank_stability`: `float` — Cross-fold rank stability score computed from ranking consistency.
+- `aggregate_robustness_score`: `float` — Composite robustness score combining raw score, plateau, low sensitivity, neighbor min, and rank stability.
 - `selected`: `bool` — Whether candidate is selected by policy.
 - `selection_reason`: `str | None` — Rationale for selection.
 
@@ -85,12 +104,16 @@
 - `test_end`: `datetime` — Final OOS test window end.
 - `purge_window`: `int` — Purge bar window.
 - `embargo_window`: `int` — Embargo bar window.
+- `purged_train_range`: `list[str]` — Actual purged timestamp range at TRAIN -> VAL boundary.
+- `purged_val_range`: `list[str]` — Actual purged timestamp range at VAL -> FINAL_OOS boundary.
+- `embargoed_ranges`: `list[str]` — Actual embargoed timestamp ranges for future training sets.
 - `train_data_hash`: `str` — SHA-256 data hash of TRAIN slice.
 - `val_data_hash`: `str` — SHA-256 data hash of VALIDATION slice.
 - `test_data_hash`: `str` — SHA-256 data hash of FINAL OOS slice.
 - `frame_certification_id`: `str | None` — Frame certification ID.
 - `selected_parameters`: `dict[str, Any]` — Parameters selected on TRAIN/VAL.
-- `selected_trial_id`: `str | None` — Trial registry ID.
+- `selected_parameter_hash`: `str` — SHA-256 parameter hash of selected candidate.
+- `selected_trial_id`: `str | None` — Actual trial registry ID from Phase 2.1 registry.
 - `train_metrics`: `dict[str, float]` — Metrics on TRAIN.
 - `val_metrics`: `dict[str, float]` — Metrics on VALIDATION.
 - `final_oos_metrics`: `dict[str, float]` — Metrics on FINAL OOS TEST.
@@ -98,15 +121,15 @@
 
 ### 8. `CostStressResult` (Pydantic Model)
 - `multiplier`: `float` — Cost multiplier ($1.0, 1.5, 2.0, 3.0$).
-- `slippage_bps_override`: `float | None` — Stressed slippage in bps.
-- `liquidity_stress_factor`: `float | None` — Liquidity penalty factor.
-- `metrics`: `dict[str, float]` — Recomputed net performance metrics (Sharpe, CAGR, MaxDD, Total Return, Net PnL).
+- `slippage_bps_override`: `float | None` — Stressed slippage in bps applied to trade volume.
+- `liquidity_stress_factor`: `float | None` — Liquidity penalty factor applied to impact/capacity.
+- `metrics`: `dict[str, float]` — Recomputed net performance metrics (Sharpe, CAGR, MaxDD, Total Return).
 - `cost_schedule_summary`: `dict[str, Any]` — Summary of cost assumptions applied.
 
 ### 9. `ExecutionStressResult` (Pydantic Model)
-- `scenario_name`: `str` — Name of execution scenario (e.g. `overnight_gap_stress`, `stop_slippage_stress`, `execution_delay_1bar`, `missed_fills_5pct`).
+- `scenario_name`: `str` — Name of execution scenario (`overnight_gap_stress`, `stop_slippage_stress`, `execution_delay_1bar`, `missed_fills`, `reduced_liquidity`).
 - `perturbation_params`: `dict[str, Any]` — Configured perturbation parameters.
-- `metrics`: `dict[str, float]` — Stressed net metrics.
+- `metrics`: `dict[str, float]` — Stressed net metrics evaluated on OOS evidence.
 - `seed`: `int | None` — Resampling/perturbation seed.
 
 ### 10. `RobustnessBundle` (Pydantic Model)
@@ -115,12 +138,12 @@
 - `experiment_family_id`: `str | None` — Experiment family ID if registered.
 - `strategy_name`: `str` — Strategy name.
 - `strategy_version`: `str` — Strategy version.
-- `selected_trial_id`: `str | None` — Selected trial ID.
-- `evidence_status`: `EvidenceStatus` — Aggregate status.
+- `selected_trial_id`: `str | None` — Real selected trial ID.
+- `evidence_status`: `EvidenceStatus` — Aggregate status (fails closed if any required component is insufficient).
 - `nested_folds`: `list[NestedFoldEvidence]` — Evidence across all nested folds.
 - `parameter_robustness`: `list[ParameterRobustnessCandidate]` — Parameter space robustness evaluation.
 - `psr`: `PSRResult` — Probabilistic Sharpe Ratio result.
-- `dsr`: `DSRResult` — Deflated Sharpe Ratio result.
+- `dsr`: `DSRResult` — Deflated Sharpe Ratio result with trial multiplicity.
 - `bootstrap_intervals`: `dict[str, BootstrapConfidenceIntervals]` — Bootstrap CIs for key metrics.
 - `monte_carlo`: `MonteCarloRobustnessResult` — Monte Carlo simulation results.
 - `cost_stress`: `list[CostStressResult]` — Cost stress evaluation across multipliers.
@@ -128,7 +151,7 @@
 - `policy_version`: `str` — Policy version string.
 - `policy_hash`: `str` — SHA-256 hash of configured robustness policy.
 - `data_hash`: `str` — Underlying dataset hash.
-- `evidence_hash`: `str` — Deterministic SHA-256 evidence bundle hash.
+- `evidence_hash`: `str` — Deterministic SHA-256 evidence bundle hash binding all semantic evidence.
 - `created_at`: `datetime` — Creation timestamp.
 
 ---

@@ -45,7 +45,7 @@ class PSRResult(BaseModel):
 
 
 class DSRResult(BaseModel):
-    """Result of Deflated Sharpe Ratio calculation."""
+    """Result of Deflated Sharpe Ratio calculation with trial multiplicity."""
     dsr_value: float | None = None
     expected_max_sharpe: float | None = None
     annualized_expected_max_sharpe: float | None = None
@@ -53,10 +53,16 @@ class DSRResult(BaseModel):
     annualized_sharpe: float | None = None
     variance_trials: float | None = None
     effective_trials: int = 0
-    total_trials: int = 0
+    sharpe_count: int = 0
+    succeeded_count: int = 0
+    failed_count: int = 0
     invalidated_trials: int = 0
+    deduplicated_count: int = 0
+    total_trials: int = 0
     experiment_family_id: str | None = None
     trial_ids: list[str] = Field(default_factory=list)
+    trial_policy_version: str = "2.6.0"
+    trial_policy_hash: str = ""
     status: EvidenceStatus = EvidenceStatus.VALID
     reason: str | None = None
 
@@ -88,6 +94,8 @@ class MonteCarloRobustnessResult(BaseModel):
     sharpe_percentiles: dict[str, float] = Field(default_factory=dict)
     capital_ruin_probability: float | None = None
     ruin_threshold: float = 0.50
+    ruin_level: float | None = None
+    ruin_definition: str = "cumulative_equity_breach_below_ruin_level"
     status: EvidenceStatus = EvidenceStatus.VALID
     reason: str | None = None
 
@@ -287,39 +295,103 @@ def compute_dsr(
     minimum_observations: int = 30,
     experiment_family_id: str | None = None,
     trial_ids: list[str] | None = None,
+    sharpe_count: int | None = None,
+    succeeded_count: int = 0,
+    failed_count: int = 0,
     invalidated_count: int = 0,
+    deduplicated_count: int = 0,
+    trial_policy_version: str = "2.6.0",
+    trial_policy_hash: str = "",
 ) -> DSRResult:
     """Calculate Deflated Sharpe Ratio (DSR) correcting for multiple testing.
 
     DSR evaluates the candidate's return series using PSR against the benchmark SR_0
-    (the expected maximum Sharpe under H0 across N trials).
+    (the expected maximum Sharpe under H0 across N trials derived from Phase 2.1 registry).
 
     Args:
         returns: Return series of the selected candidate strategy.
-        trial_sharpes: Annualized Sharpe ratios of all evaluated candidates in the experiment family.
-        effective_trials: Explicit authoritative count of independent selection trials.
+        trial_sharpes: Annualized Sharpe ratios of valid trials evaluated in the experiment family.
+        effective_trials: Explicit authoritative count of independent selection trials (succeeded + failed).
         annualization_factor: Annualization frequency factor (default 252).
         minimum_observations: Minimum return observations required.
         experiment_family_id: Trial registry experiment family identifier.
         trial_ids: List of trial IDs considered.
+        sharpe_count: Count of valid Sharpe observations.
+        succeeded_count: Count of succeeded trials.
+        failed_count: Count of failed genuine selection trials.
         invalidated_count: Count of invalidated trials audited.
+        deduplicated_count: Count of deduplicated idempotent replay trials.
+        trial_policy_version: Policy version string.
+        trial_policy_hash: Policy hash.
 
     Returns:
         DSRResult with deflated Sharpe ratio and full audit metadata.
     """
     clean_sharpes = [float(x) for x in trial_sharpes if x is not None and not math.isnan(float(x))]
-    n_effective = effective_trials if (effective_trials is not None and effective_trials > 0) else len(clean_sharpes)
-    total_count = len(clean_sharpes) + invalidated_count
+    n_sharpes = sharpe_count if sharpe_count is not None else len(clean_sharpes)
+    n_effective = (
+        effective_trials
+        if (effective_trials is not None and effective_trials > 0)
+        else (succeeded_count + failed_count if (succeeded_count + failed_count > 0) else len(clean_sharpes))
+    )
+    total_count = (
+        len(trial_ids)
+        if trial_ids
+        else (succeeded_count + failed_count + invalidated_count + deduplicated_count or len(clean_sharpes))
+    )
 
-    if n_effective <= 0:
+    # Fail closed if authoritative experiment family is missing
+    if not experiment_family_id or not str(experiment_family_id).strip():
         return DSRResult(
             effective_trials=0,
-            total_trials=total_count,
+            sharpe_count=0,
+            succeeded_count=0,
+            failed_count=0,
             invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=None,
+            trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="MISSING_AUTHORITATIVE_TRIAL_FAMILY",
+        )
+
+    # Fail closed if no authoritative trials are present
+    if n_effective <= 0 or (trial_ids is not None and len(trial_ids) == 0):
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
             experiment_family_id=experiment_family_id,
             trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
             status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
-            reason="No eligible trials provided for DSR evaluation",
+            reason="NO_AUTHORITATIVE_TRIALS",
+        )
+
+    # Fail closed if insufficient Sharpe observations exist to estimate variance
+    if len(clean_sharpes) < 2:
+        return DSRResult(
+            effective_trials=n_effective,
+            sharpe_count=n_sharpes,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="INSUFFICIENT_SHARPE_OBSERVATIONS_FOR_VARIANCE",
         )
 
     sr_0_non_ann, sr_0_ann, var_non_ann = compute_expected_max_sharpe(
@@ -327,6 +399,26 @@ def compute_dsr(
         effective_trials=n_effective,
         annualization_factor=annualization_factor,
     )
+
+    if var_non_ann <= 0.0:
+        return DSRResult(
+            expected_max_sharpe=0.0,
+            annualized_expected_max_sharpe=0.0,
+            variance_trials=0.0,
+            effective_trials=n_effective,
+            sharpe_count=n_sharpes,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="ZERO_TRIAL_SHARPE_VARIANCE",
+        )
 
     psr = compute_psr(
         returns,
@@ -344,10 +436,16 @@ def compute_dsr(
             annualized_sharpe=psr.annualized_sharpe,
             variance_trials=var_non_ann,
             effective_trials=n_effective,
-            total_trials=total_count,
+            sharpe_count=n_sharpes,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
             invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
             experiment_family_id=experiment_family_id,
             trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
             status=psr.status,
             reason=psr.reason,
         )
@@ -360,10 +458,16 @@ def compute_dsr(
         annualized_sharpe=psr.annualized_sharpe,
         variance_trials=var_non_ann,
         effective_trials=n_effective,
-        total_trials=total_count,
+        sharpe_count=n_sharpes,
+        succeeded_count=succeeded_count,
+        failed_count=failed_count,
         invalidated_trials=invalidated_count,
+        deduplicated_count=deduplicated_count,
+        total_trials=total_count,
         experiment_family_id=experiment_family_id,
         trial_ids=trial_ids or [],
+        trial_policy_version=trial_policy_version,
+        trial_policy_hash=trial_policy_hash,
         status=EvidenceStatus.VALID,
     )
 
@@ -385,7 +489,7 @@ def compute_bootstrap_confidence_intervals(
     Supported metrics:
         - total_return: cumulative return
         - sharpe: annualized Sharpe ratio
-        - expectancy: average net return per period/trade
+        - expectancy: average net return per period (or net trade expectancy if fills supplied)
         - max_drawdown: maximum peak-to-trough decline
 
     Args:
@@ -447,6 +551,15 @@ def compute_bootstrap_confidence_intervals(
     rng = np.random.default_rng(seed)
     ann_sqrt = math.sqrt(annualization_factor)
 
+    # If fills are provided with net pnl, compute trade expectancy point estimate
+    trade_expectancy: float | None = None
+    if fills is not None and isinstance(fills, pd.DataFrame) and not fills.empty:
+        pnl_col = next((col for col in ["net_pnl", "pnl", "realized_pnl"] if col in fills.columns), None)
+        if pnl_col:
+            clean_pnls = fills[pnl_col].dropna()
+            if not clean_pnls.empty:
+                trade_expectancy = float(clean_pnls.mean())
+
     def _calc_metrics(sample_returns: np.ndarray) -> dict[str, float]:
         cum = np.cumprod(1.0 + sample_returns)
         tot_ret = float(cum[-1] - 1.0) if len(cum) > 0 else 0.0
@@ -465,6 +578,8 @@ def compute_bootstrap_confidence_intervals(
         }
 
     point_estimates = _calc_metrics(arr)
+    if trade_expectancy is not None:
+        point_estimates["expectancy"] = trade_expectancy
 
     # Generate bootstrap samples
     boot_distributions: dict[str, list[float]] = {name: [] for name in metric_names}
@@ -472,14 +587,12 @@ def compute_bootstrap_confidence_intervals(
 
     for _ in range(n_resamples):
         if method.upper() == "MOVING_BLOCK" and eff_block > 1:
-            # Moving block bootstrap
             n_blocks = int(math.ceil(n / eff_block))
             max_start = n - eff_block + 1
             start_indices = rng.integers(0, max_start, size=n_blocks)
             sampled_indices = np.concatenate([np.arange(idx, idx + eff_block) for idx in start_indices])[:n]
             resampled = arr[sampled_indices]
         else:
-            # i.i.d. bootstrap
             indices = rng.integers(0, n, size=n)
             resampled = arr[indices]
 
@@ -520,8 +633,12 @@ def compute_monte_carlo_robustness(
     seed: int = 42,
     minimum_observations: int = 20,
     annualization_factor: float = 252.0,
+    starting_capital: float = 100_000.0,
 ) -> MonteCarloRobustnessResult:
     """Perform deterministic Monte Carlo path simulations for risk distributions.
+
+    Capital ruin probability is calculated directly from each simulated cumulative equity path
+    where cumulative equity drops below starting_capital * (1.0 - ruin_threshold).
 
     Args:
         returns: Return series (daily or bar returns).
@@ -532,9 +649,10 @@ def compute_monte_carlo_robustness(
         seed: Random generator seed.
         minimum_observations: Minimum required observations.
         annualization_factor: Frequency multiplier for Sharpe.
+        starting_capital: Starting capital for path simulation.
 
     Returns:
-        MonteCarloRobustnessResult with risk probabilities and percentile distributions.
+        MonteCarloRobustnessResult with risk probabilities, ruin level, and percentile distributions.
     """
     if n_simulations <= 0:
         return MonteCarloRobustnessResult(
@@ -556,7 +674,6 @@ def compute_monte_carlo_robustness(
         )
     try:
         arr = _clean_returns(returns)
-
     except Exception as exc:
         return MonteCarloRobustnessResult(
             simulations=n_simulations,
@@ -588,27 +705,29 @@ def compute_monte_carlo_robustness(
     max_drawdowns: list[float] = []
     sharpes: list[float] = []
 
-    # Standardize threshold signs: positive float representation
     norm_dd_thresh = abs(drawdown_threshold)
     norm_ruin_thresh = abs(ruin_threshold)
+    ruin_level = float(starting_capital * (1.0 - norm_ruin_thresh))
 
     for _ in range(n_simulations):
         sampled = rng.choice(arr, size=n, replace=True)
-        cum = np.cumprod(1.0 + sampled)
-        tot_ret = cum[-1] - 1.0
+        equity_path = starting_capital * np.cumprod(1.0 + sampled)
+        tot_ret = (equity_path[-1] / starting_capital) - 1.0
 
         if tot_ret < 0.0:
             negative_period_count += 1
 
-        peaks = np.maximum.accumulate(cum)
-        dds = (cum - peaks) / peaks
+        peaks = np.maximum.accumulate(equity_path)
+        dds = (equity_path - peaks) / peaks
         worst_dd = abs(float(np.min(dds))) if len(dds) > 0 else 0.0
         max_drawdowns.append(worst_dd)
 
         if worst_dd >= norm_dd_thresh:
             drawdown_breach_count += 1
 
-        if worst_dd >= norm_ruin_thresh:
+        # Capital ruin evaluated directly from cumulative equity path
+        min_equity = float(np.min(equity_path))
+        if min_equity <= ruin_level:
             ruin_count += 1
 
         mean_s = float(np.mean(sampled))
@@ -638,5 +757,7 @@ def compute_monte_carlo_robustness(
         },
         capital_ruin_probability=float(ruin_count / n_simulations),
         ruin_threshold=ruin_threshold,
+        ruin_level=ruin_level,
+        ruin_definition="cumulative_equity_breach_below_ruin_level",
         status=EvidenceStatus.VALID,
     )
