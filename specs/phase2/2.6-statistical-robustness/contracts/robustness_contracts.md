@@ -21,12 +21,35 @@ def compute_psr(
     ...
 ```
 
-### Deflated Sharpe Ratio (DSR)
+### Deflated Sharpe Ratio (DSR) & Statistical Primitive
 ```python
+class TrialCountSource(str, Enum):
+    """Authoritative provenance source of trial multiplicity count for DSR."""
+    PHASE2_1_REGISTRY = "PHASE2_1_REGISTRY"
+    MANUAL_STATISTICAL_INPUT = "MANUAL_STATISTICAL_INPUT"
+
+
+def compute_dsr_statistic(
+    returns: pd.Series | np.ndarray | list[float],
+    trial_sharpes: list[float] | np.ndarray,
+    *,
+    effective_trials: int | None = None,
+    annualization_factor: float = 252.0,
+    minimum_observations: int = 30,
+) -> DSRResult:
+    """Pure mathematical Deflated Sharpe Ratio calculation primitive.
+    
+    Returns mathematical DSR and SR_0 with trial_count_source=MANUAL_STATISTICAL_INPUT
+    and status=INSUFFICIENT_EVIDENCE (cannot produce authoritative VALID Phase 2.6 evidence).
+    """
+    ...
+
+
 def compute_dsr(
     returns: pd.Series | np.ndarray | list[float],
     trial_sharpes: list[float] | np.ndarray,
     *,
+    trial_count_source: TrialCountSource = TrialCountSource.MANUAL_STATISTICAL_INPUT,
     effective_trials: int | None = None,
     annualization_factor: float = 252.0,
     minimum_observations: int = 30,
@@ -42,15 +65,21 @@ def compute_dsr(
 ) -> DSRResult:
     """Calculate Deflated Sharpe Ratio correcting for multiple testing.
     
-    SR_0 = sqrt(V) * [ (1 - gamma) * Phi^{-1}(1 - 1/N) + gamma * Phi^{-1}(1 - 1/(N*e)) ]
-    where gamma is Euler-Mascheroni constant (~0.5772156649), N is authoritative effective trial count,
-    V is trial Sharpe variance, and DSR = PSR(SR_0). Fails closed without authoritative family.
+    Only authoritative registry-backed execution (trial_count_source=PHASE2_1_REGISTRY)
+    with non-empty experiment_family_id and verified trial_ids produces EvidenceStatus.VALID.
+    Fails closed with UNVERIFIED_TRIAL_REGISTRY_PROVENANCE on manual or unverified input.
     """
     ...
 ```
 
 ### Deterministic Bootstrap
 ```python
+class ExpectancyBasis(str, Enum):
+    """Basis for bootstrap expectancy confidence intervals."""
+    NET_TRADE_PNL = "NET_TRADE_PNL"
+    PERIOD_RETURN = "PERIOD_RETURN"
+
+
 def compute_bootstrap_confidence_intervals(
     returns: pd.Series | np.ndarray | list[float],
     *,
@@ -63,7 +92,13 @@ def compute_bootstrap_confidence_intervals(
     minimum_observations: int = 20,
     annualization_factor: float = 252.0,
 ) -> dict[str, BootstrapConfidenceIntervals]:
-    """Compute deterministic bootstrap confidence intervals for key metrics."""
+    """Compute deterministic bootstrap confidence intervals for key metrics.
+    
+    When authoritative trade observations exist in fills:
+    Resamples actual trade-PnL observations directly; expectancy_basis = NET_TRADE_PNL.
+    When no fills exist:
+    Resamples period returns; expectancy_basis = PERIOD_RETURN.
+    """
     ...
 ```
 
@@ -94,7 +129,7 @@ def compute_monte_carlo_robustness(
 class NestedWalkForwardSplitter:
     """Authoritative generator of 3-stage nested walk-forward folds with dual purge and embargo."""
     
-    def split(
+    def split_plans(
         self,
         total_bars: int,
         *,
@@ -103,7 +138,9 @@ class NestedWalkForwardSplitter:
         test_size: int,
         purge_window: int = 0,
         embargo_window: int = 0,
-    ) -> list[tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    ) -> list[FoldSplitPlan]:
+        """Generate structured fold plans. Fails closed with ValueError(PURGE_WINDOW_EXHAUSTS_TRAIN)
+        or ValueError(PURGE_WINDOW_EXHAUSTS_VALIDATION) if purge_window exhausts a stage."""
         ...
 ```
 

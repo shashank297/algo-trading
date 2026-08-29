@@ -29,6 +29,18 @@ class EvidenceStatus(str, Enum):
     INVALID_INPUT = "INVALID_INPUT"
 
 
+class TrialCountSource(str, Enum):
+    """Authoritative provenance source of trial multiplicity count for DSR."""
+    PHASE2_1_REGISTRY = "PHASE2_1_REGISTRY"
+    MANUAL_STATISTICAL_INPUT = "MANUAL_STATISTICAL_INPUT"
+
+
+class ExpectancyBasis(str, Enum):
+    """Basis for bootstrap expectancy confidence intervals."""
+    NET_TRADE_PNL = "NET_TRADE_PNL"
+    PERIOD_RETURN = "PERIOD_RETURN"
+
+
 class PSRResult(BaseModel):
     """Result of Probabilistic Sharpe Ratio calculation."""
     psr_value: float | None = None
@@ -60,6 +72,7 @@ class DSRResult(BaseModel):
     deduplicated_count: int = 0
     total_trials: int = 0
     experiment_family_id: str | None = None
+    trial_count_source: TrialCountSource = TrialCountSource.MANUAL_STATISTICAL_INPUT
     trial_ids: list[str] = Field(default_factory=list)
     trial_policy_version: str = "2.6.0"
     trial_policy_hash: str = ""
@@ -74,6 +87,7 @@ class BootstrapConfidenceIntervals(BaseModel):
     median: float
     lower_bound: float
     upper_bound: float
+    expectancy_basis: ExpectancyBasis = ExpectancyBasis.PERIOD_RETURN
     confidence_level: float = 0.95
     resamples: int = 1000
     method: str = "MOVING_BLOCK"
@@ -286,10 +300,76 @@ def compute_expected_max_sharpe(
     return sr_0_non_ann, sr_0_ann, var_non_ann
 
 
+def compute_dsr_statistic(
+    returns: pd.Series | np.ndarray | list[float],
+    trial_sharpes: list[float] | np.ndarray,
+    *,
+    effective_trials: int | None = None,
+    annualization_factor: float = 252.0,
+    minimum_observations: int = 30,
+) -> DSRResult:
+    """Pure mathematical Deflated Sharpe Ratio calculation primitive.
+
+    Computes mathematical expected max Sharpe and PSR against expected max Sharpe
+    without claiming authoritative Phase 2.1 registry evidence.
+    """
+    clean_sharpes = [float(x) for x in trial_sharpes if x is not None and not math.isnan(float(x))]
+    n_effective = effective_trials if (effective_trials is not None and effective_trials > 0) else len(clean_sharpes)
+
+    if n_effective <= 0 or len(clean_sharpes) < 2:
+        return DSRResult(
+            effective_trials=n_effective,
+            sharpe_count=len(clean_sharpes),
+            trial_count_source=TrialCountSource.MANUAL_STATISTICAL_INPUT,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="INSUFFICIENT_SHARPE_OBSERVATIONS_FOR_VARIANCE" if len(clean_sharpes) < 2 else "NO_AUTHORITATIVE_TRIALS",
+        )
+
+    sr_0_non_ann, sr_0_ann, var_non_ann = compute_expected_max_sharpe(
+        clean_sharpes,
+        effective_trials=n_effective,
+        annualization_factor=annualization_factor,
+    )
+
+    if var_non_ann <= 0.0:
+        return DSRResult(
+            expected_max_sharpe=0.0,
+            annualized_expected_max_sharpe=0.0,
+            variance_trials=0.0,
+            effective_trials=n_effective,
+            sharpe_count=len(clean_sharpes),
+            trial_count_source=TrialCountSource.MANUAL_STATISTICAL_INPUT,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="ZERO_TRIAL_SHARPE_VARIANCE",
+        )
+
+    psr = compute_psr(
+        returns,
+        benchmark_sharpe=sr_0_ann,
+        annualization_factor=annualization_factor,
+        minimum_observations=minimum_observations,
+    )
+
+    return DSRResult(
+        dsr_value=psr.psr_value,
+        expected_max_sharpe=sr_0_non_ann,
+        annualized_expected_max_sharpe=sr_0_ann,
+        sample_sharpe=psr.sample_sharpe,
+        annualized_sharpe=psr.annualized_sharpe,
+        variance_trials=var_non_ann,
+        effective_trials=n_effective,
+        sharpe_count=len(clean_sharpes),
+        trial_count_source=TrialCountSource.MANUAL_STATISTICAL_INPUT,
+        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+        reason="MANUAL_STATISTICAL_INPUT_NOT_AUTHORITATIVE",
+    )
+
+
 def compute_dsr(
     returns: pd.Series | np.ndarray | list[float],
     trial_sharpes: list[float] | np.ndarray,
     *,
+    trial_count_source: TrialCountSource = TrialCountSource.MANUAL_STATISTICAL_INPUT,
     effective_trials: int | None = None,
     annualization_factor: float = 252.0,
     minimum_observations: int = 30,
@@ -305,12 +385,13 @@ def compute_dsr(
 ) -> DSRResult:
     """Calculate Deflated Sharpe Ratio (DSR) correcting for multiple testing.
 
-    DSR evaluates the candidate's return series using PSR against the benchmark SR_0
-    (the expected maximum Sharpe under H0 across N trials derived from Phase 2.1 registry).
+    Only authoritative registry-backed execution (trial_count_source=PHASE2_1_REGISTRY)
+    with non-empty experiment_family_id and verified trial_ids can produce EvidenceStatus.VALID.
 
     Args:
         returns: Return series of the selected candidate strategy.
         trial_sharpes: Annualized Sharpe ratios of valid trials evaluated in the experiment family.
+        trial_count_source: Provenance of trial multiplicity (must be PHASE2_1_REGISTRY for VALID status).
         effective_trials: Explicit authoritative count of independent selection trials (succeeded + failed).
         annualization_factor: Annualization frequency factor (default 252).
         minimum_observations: Minimum return observations required.
@@ -340,7 +421,39 @@ def compute_dsr(
         else (succeeded_count + failed_count + invalidated_count + deduplicated_count or len(clean_sharpes))
     )
 
-    # Fail closed if authoritative experiment family is missing
+    # 1. Enforce provenance: manual or unverified input fails closed
+    if trial_count_source != TrialCountSource.PHASE2_1_REGISTRY:
+        math_res = compute_dsr_statistic(
+            returns,
+            clean_sharpes,
+            effective_trials=n_effective,
+            annualization_factor=annualization_factor,
+            minimum_observations=minimum_observations,
+        )
+        return DSRResult(
+            dsr_value=math_res.dsr_value,
+            expected_max_sharpe=math_res.expected_max_sharpe,
+            annualized_expected_max_sharpe=math_res.annualized_expected_max_sharpe,
+            sample_sharpe=math_res.sample_sharpe,
+            annualized_sharpe=math_res.annualized_sharpe,
+            variance_trials=math_res.variance_trials,
+            effective_trials=n_effective,
+            sharpe_count=n_sharpes,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
+            trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="UNVERIFIED_TRIAL_REGISTRY_PROVENANCE",
+        )
+
+    # 2. Fail closed if authoritative experiment family is missing
     if not experiment_family_id or not str(experiment_family_id).strip():
         return DSRResult(
             effective_trials=0,
@@ -351,6 +464,7 @@ def compute_dsr(
             deduplicated_count=deduplicated_count,
             total_trials=total_count,
             experiment_family_id=None,
+            trial_count_source=trial_count_source,
             trial_ids=trial_ids or [],
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
@@ -358,8 +472,8 @@ def compute_dsr(
             reason="MISSING_AUTHORITATIVE_TRIAL_FAMILY",
         )
 
-    # Fail closed if no authoritative trials are present
-    if n_effective <= 0 or (trial_ids is not None and len(trial_ids) == 0):
+    # 3. Fail closed if no authoritative trials are present
+    if not trial_ids or len(trial_ids) == 0 or n_effective <= 0:
         return DSRResult(
             effective_trials=0,
             sharpe_count=0,
@@ -369,6 +483,7 @@ def compute_dsr(
             deduplicated_count=deduplicated_count,
             total_trials=total_count,
             experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
             trial_ids=trial_ids or [],
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
@@ -376,7 +491,7 @@ def compute_dsr(
             reason="NO_AUTHORITATIVE_TRIALS",
         )
 
-    # Fail closed if insufficient Sharpe observations exist to estimate variance
+    # 4. Fail closed if insufficient Sharpe observations exist to estimate variance
     if len(clean_sharpes) < 2:
         return DSRResult(
             effective_trials=n_effective,
@@ -387,6 +502,7 @@ def compute_dsr(
             deduplicated_count=deduplicated_count,
             total_trials=total_count,
             experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
             trial_ids=trial_ids or [],
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
@@ -413,6 +529,7 @@ def compute_dsr(
             deduplicated_count=deduplicated_count,
             total_trials=total_count,
             experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
             trial_ids=trial_ids or [],
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
@@ -443,6 +560,7 @@ def compute_dsr(
             deduplicated_count=deduplicated_count,
             total_trials=total_count,
             experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
             trial_ids=trial_ids or [],
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
@@ -465,11 +583,48 @@ def compute_dsr(
         deduplicated_count=deduplicated_count,
         total_trials=total_count,
         experiment_family_id=experiment_family_id,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         trial_ids=trial_ids or [],
         trial_policy_version=trial_policy_version,
         trial_policy_hash=trial_policy_hash,
         status=EvidenceStatus.VALID,
     )
+
+
+def extract_trade_pnls(fills: pd.DataFrame | None) -> list[float]:
+    """Extract net trade PnL observations from fills DataFrame if present."""
+    if fills is None or not isinstance(fills, pd.DataFrame) or fills.empty:
+        return []
+    pnl_col = next((col for col in ["net_pnl", "pnl", "realized_pnl"] if col in fills.columns), None)
+    if pnl_col:
+        clean_pnls = fills[pnl_col].dropna()
+        if not clean_pnls.empty:
+            return [float(x) for x in clean_pnls.tolist() if not math.isnan(float(x))]
+    if {"symbol", "side", "quantity", "price"}.issubset(fills.columns):
+        positions: dict[str, tuple[float, float]] = {}
+        pnls: list[float] = []
+        ordered = fills.sort_values("timestamp") if "timestamp" in fills.columns else fills
+        for _, fill in ordered.iterrows():
+            symbol = str(fill["symbol"])
+            quantity = float(fill["quantity"])
+            price = float(fill["price"])
+            fees = float(fill.get("fees", 0.0) or 0.0)
+            held, average = positions.get(symbol, (0.0, 0.0))
+            if str(fill["side"]).upper() == "BUY":
+                new_quantity = held + quantity
+                new_average = (held * average + quantity * price + fees) / max(new_quantity, 1e-12)
+                positions[symbol] = (new_quantity, new_average)
+                continue
+            closed = min(quantity, held)
+            if closed > 0:
+                pnls.append(float((price - average) * closed - fees))
+                remaining = held - closed
+                if remaining > 0:
+                    positions[symbol] = (remaining, average)
+                else:
+                    positions.pop(symbol, None)
+        return pnls
+    return []
 
 
 def compute_bootstrap_confidence_intervals(
@@ -519,6 +674,7 @@ def compute_bootstrap_confidence_intervals(
                 median=0.0,
                 lower_bound=0.0,
                 upper_bound=0.0,
+                expectancy_basis=ExpectancyBasis.PERIOD_RETURN,
                 confidence_level=confidence_level,
                 resamples=n_resamples,
                 method=method,
@@ -538,6 +694,7 @@ def compute_bootstrap_confidence_intervals(
                 median=0.0,
                 lower_bound=0.0,
                 upper_bound=0.0,
+                expectancy_basis=ExpectancyBasis.PERIOD_RETURN,
                 confidence_level=confidence_level,
                 resamples=n_resamples,
                 method=method,
@@ -551,16 +708,11 @@ def compute_bootstrap_confidence_intervals(
     rng = np.random.default_rng(seed)
     ann_sqrt = math.sqrt(annualization_factor)
 
-    # If fills are provided with net pnl, compute trade expectancy point estimate
-    trade_expectancy: float | None = None
-    if fills is not None and isinstance(fills, pd.DataFrame) and not fills.empty:
-        pnl_col = next((col for col in ["net_pnl", "pnl", "realized_pnl"] if col in fills.columns), None)
-        if pnl_col:
-            clean_pnls = fills[pnl_col].dropna()
-            if not clean_pnls.empty:
-                trade_expectancy = float(clean_pnls.mean())
+    trade_pnls = extract_trade_pnls(fills)
+    use_trade_expectancy = bool(trade_pnls)
+    insufficient_trades = use_trade_expectancy and len(trade_pnls) < 5
 
-    def _calc_metrics(sample_returns: np.ndarray) -> dict[str, float]:
+    def _calc_return_metrics(sample_returns: np.ndarray) -> dict[str, float]:
         cum = np.cumprod(1.0 + sample_returns)
         tot_ret = float(cum[-1] - 1.0) if len(cum) > 0 else 0.0
         mean_s = float(np.mean(sample_returns))
@@ -569,21 +721,21 @@ def compute_bootstrap_confidence_intervals(
         peaks = np.maximum.accumulate(cum)
         dd = (cum - peaks) / peaks
         max_dd = float(np.min(dd)) if len(dd) > 0 else 0.0
-        exp = mean_s
         return {
             "total_return": tot_ret,
             "sharpe": sh,
-            "expectancy": exp,
+            "expectancy": mean_s,
             "max_drawdown": max_dd,
         }
 
-    point_estimates = _calc_metrics(arr)
-    if trade_expectancy is not None:
-        point_estimates["expectancy"] = trade_expectancy
+    point_estimates = _calc_return_metrics(arr)
+    if use_trade_expectancy:
+        point_estimates["expectancy"] = float(np.mean(trade_pnls))
 
     # Generate bootstrap samples
     boot_distributions: dict[str, list[float]] = {name: [] for name in metric_names}
     eff_block = max(1, min(block_size, n))
+    trade_pnl_arr = np.array(trade_pnls, dtype=float) if use_trade_expectancy else np.array([])
 
     for _ in range(n_resamples):
         if method.upper() == "MOVING_BLOCK" and eff_block > 1:
@@ -596,15 +748,41 @@ def compute_bootstrap_confidence_intervals(
             indices = rng.integers(0, n, size=n)
             resampled = arr[indices]
 
-        sample_mets = _calc_metrics(resampled)
-        for name in metric_names:
+        sample_mets = _calc_return_metrics(resampled)
+        for name in ["total_return", "sharpe", "max_drawdown"]:
             boot_distributions[name].append(sample_mets[name])
+
+        if use_trade_expectancy and not insufficient_trades:
+            # Resample actual trade-PnL observations directly for expectancy distribution
+            sampled_trades = rng.choice(trade_pnl_arr, size=len(trade_pnl_arr), replace=True)
+            boot_distributions["expectancy"].append(float(np.mean(sampled_trades)))
+        else:
+            boot_distributions["expectancy"].append(sample_mets["expectancy"])
 
     alpha = 1.0 - confidence_level
     lower_p = (alpha / 2.0) * 100.0
     upper_p = (1.0 - alpha / 2.0) * 100.0
 
     for name in metric_names:
+        exp_basis = ExpectancyBasis.NET_TRADE_PNL if (name == "expectancy" and use_trade_expectancy) else ExpectancyBasis.PERIOD_RETURN
+        if name == "expectancy" and insufficient_trades:
+            results[name] = BootstrapConfidenceIntervals(
+                metric_name=name,
+                point_estimate=point_estimates[name],
+                median=point_estimates[name],
+                lower_bound=point_estimates[name],
+                upper_bound=point_estimates[name],
+                expectancy_basis=ExpectancyBasis.NET_TRADE_PNL,
+                confidence_level=confidence_level,
+                resamples=n_resamples,
+                method=method,
+                block_size=eff_block if method.upper() == "MOVING_BLOCK" else None,
+                seed=seed,
+                status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                reason="INSUFFICIENT_TRADE_OBSERVATIONS_FOR_EXPECTANCY",
+            )
+            continue
+
         dist = np.array(boot_distributions[name])
         results[name] = BootstrapConfidenceIntervals(
             metric_name=name,
@@ -612,6 +790,7 @@ def compute_bootstrap_confidence_intervals(
             median=float(np.percentile(dist, 50.0)),
             lower_bound=float(np.percentile(dist, lower_p)),
             upper_bound=float(np.percentile(dist, upper_p)),
+            expectancy_basis=exp_basis,
             confidence_level=confidence_level,
             resamples=n_resamples,
             method=method,
