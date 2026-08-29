@@ -7,7 +7,15 @@
 - `INSUFFICIENT_EVIDENCE`: Sample size below minimum threshold, missing required trial registry evidence, or observations insufficient.
 - `INVALID_INPUT`: Inputs contain NaN, Inf, non-positive variance, or violate parameter constraints.
 
-### 2. `PSRResult` (Pydantic Model)
+### 2. `TrialCountSource` (Enum)
+- `PHASE2_1_REGISTRY`: Authoritative trial multiplicity count derived from Phase 2.1 trial registry.
+- `MANUAL_STATISTICAL_INPUT`: Statistical calculation input without authoritative registry verification (cannot produce `VALID` evidence).
+
+### 3. `ExpectancyBasis` (Enum)
+- `NET_TRADE_PNL`: Resamples net trade PnL observations from actual fills; units in monetary currency (e.g. ₹ per trade).
+- `PERIOD_RETURN`: Resamples period returns; units in decimal percentage return per period.
+
+### 4. `PSRResult` (Pydantic Model)
 - `psr_value`: `float | None` — Probabilistic Sharpe Ratio in $[0, 1]$.
 - `sample_sharpe`: `float | None` — Sample non-annualized Sharpe ratio $\widehat{SR}$.
 - `annualized_sharpe`: `float | None` — Annualized sample Sharpe ratio $\widehat{SR} \cdot \sqrt{A}$.
@@ -20,7 +28,7 @@
 - `status`: `EvidenceStatus` — Evaluation status.
 - `reason`: `str | None` — Descriptive status explanation.
 
-### 3. `DSRResult` (Pydantic Model)
+### 5. `DSRResult` (Pydantic Model)
 - `dsr_value`: `float | None` — Deflated Sharpe Ratio in $[0, 1]$.
 - `expected_max_sharpe`: `float | None` — $SR_0$ expected maximum Sharpe under null hypothesis.
 - `annualized_expected_max_sharpe`: `float | None` — Annualized $SR_0$.
@@ -35,18 +43,20 @@
 - `deduplicated_count`: `int` — Count of deduplicated idempotent replay trials.
 - `total_trials`: `int` — Total raw trial records in experiment family query scope.
 - `experiment_family_id`: `str | None` — Authoritative trial registry experiment family ID.
+- `trial_count_source`: `TrialCountSource` — Provenance source (`PHASE2_1_REGISTRY` or `MANUAL_STATISTICAL_INPUT`).
 - `trial_ids`: `list[str]` — List of trial IDs evaluated.
 - `trial_policy_version`: `str` — Version string of trial selection policy.
 - `trial_policy_hash`: `str` — SHA-256 hash of trial selection policy.
 - `status`: `EvidenceStatus` — Evaluation status.
 - `reason`: `str | None` — Status explanation (e.g. `MISSING_AUTHORITATIVE_TRIAL_FAMILY`).
 
-### 4. `BootstrapConfidenceIntervals` (Pydantic Model)
+### 6. `BootstrapConfidenceIntervals` (Pydantic Model)
 - `metric_name`: `str` — Metric identifier (`total_return`, `sharpe`, `expectancy`, `max_drawdown`).
 - `lower_bound`: `float` — Lower percentile bound (e.g. 2.5th for 95% CI).
 - `upper_bound`: `float` — Upper percentile bound (e.g. 97.5th for 95% CI).
 - `median`: `float` — Resampled median value.
 - `point_estimate`: `float` — Original point estimate.
+- `expectancy_basis`: `ExpectancyBasis` — `NET_TRADE_PNL` when fills exist, `PERIOD_RETURN` otherwise.
 - `confidence_level`: `float` — Configured confidence level (e.g. 0.95).
 - `resamples`: `int` — Number of bootstrap resamples.
 - `method`: `str` — `IID` or `MOVING_BLOCK`.
@@ -55,7 +65,7 @@
 - `status`: `EvidenceStatus` — Status.
 - `reason`: `str | None` — Status explanation.
 
-### 5. `MonteCarloRobustnessResult` (Pydantic Model)
+### 7. `MonteCarloRobustnessResult` (Pydantic Model)
 - `simulations`: `int` — Number of simulation paths (e.g. 1000).
 - `seed`: `int` — Simulation seed.
 - `prob_negative_return`: `float | None` — $P(\text{Return} < 0)$.
@@ -70,7 +80,7 @@
 - `status`: `EvidenceStatus` — Status.
 - `reason`: `str | None` — Status explanation.
 
-### 6. `ParameterRobustnessCandidate` (Pydantic Model)
+### 8. `ParameterRobustnessCandidate` (Pydantic Model)
 - `parameters`: `dict[str, Any]` — Parameter values.
 - `parameter_hash`: `str` — SHA-256 parameter hash.
 - `train_score`: `float` — Raw performance score on TRAIN.
@@ -94,7 +104,7 @@
 - `selected`: `bool` — Whether candidate is selected by policy.
 - `selection_reason`: `str | None` — Rationale for selection.
 
-### 7. `NestedFoldEvidence` (Pydantic Model)
+### 9. `NestedFoldEvidence` (Pydantic Model)
 - `fold_id`: `str` — Fold identifier (e.g. `nfold-001`).
 - `train_start`: `datetime` — Train window start.
 - `train_end`: `datetime` — Train window end.
@@ -107,6 +117,9 @@
 - `purged_train_range`: `list[str]` — Actual purged timestamp range at TRAIN -> VAL boundary.
 - `purged_val_range`: `list[str]` — Actual purged timestamp range at VAL -> FINAL_OOS boundary.
 - `embargoed_ranges`: `list[str]` — Actual embargoed timestamp ranges for future training sets.
+- `dataset_snapshot_ids`: `dict[str, str | None]` — Dataset snapshot IDs per symbol.
+- `contributing_dataset_ids`: `list[str]` — Contributing dataset identifiers.
+- `dataset_content_hashes`: `dict[str, str]` — Exact content hashes per symbol dataset.
 - `train_data_hash`: `str` — SHA-256 data hash of TRAIN slice.
 - `val_data_hash`: `str` — SHA-256 data hash of VALIDATION slice.
 - `test_data_hash`: `str` — SHA-256 data hash of FINAL OOS slice.
@@ -119,20 +132,24 @@
 - `final_oos_metrics`: `dict[str, float]` — Metrics on FINAL OOS TEST.
 - `evidence_hash`: `str` — Deterministic fold evidence hash.
 
-### 8. `CostStressResult` (Pydantic Model)
+### 10. `CostStressResult` (Pydantic Model)
 - `multiplier`: `float` — Cost multiplier ($1.0, 1.5, 2.0, 3.0$).
 - `slippage_bps_override`: `float | None` — Stressed slippage in bps applied to trade volume.
 - `liquidity_stress_factor`: `float | None` — Liquidity penalty factor applied to impact/capacity.
 - `metrics`: `dict[str, float]` — Recomputed net performance metrics (Sharpe, CAGR, MaxDD, Total Return).
 - `cost_schedule_summary`: `dict[str, Any]` — Summary of cost assumptions applied.
+- `status`: `EvidenceStatus` — Scenario status (`VALID` or `INSUFFICIENT_EVIDENCE`).
+- `reason`: `str | None` — Reason when evidence is missing.
 
-### 9. `ExecutionStressResult` (Pydantic Model)
+### 11. `ExecutionStressResult` (Pydantic Model)
 - `scenario_name`: `str` — Name of execution scenario (`overnight_gap_stress`, `stop_slippage_stress`, `execution_delay_1bar`, `missed_fills`, `reduced_liquidity`).
 - `perturbation_params`: `dict[str, Any]` — Configured perturbation parameters.
 - `metrics`: `dict[str, float]` — Stressed net metrics evaluated on OOS evidence.
 - `seed`: `int | None` — Resampling/perturbation seed.
+- `status`: `EvidenceStatus` — Scenario status (`VALID` or `INSUFFICIENT_EVIDENCE`).
+- `reason`: `str | None` — Reason when evidence is missing.
 
-### 10. `RobustnessBundle` (Pydantic Model)
+### 12. `RobustnessBundle` (Pydantic Model)
 - `robustness_id`: `str` — Deterministic SHA-256 identity.
 - `run_id`: `str` — Associated strategy run ID.
 - `experiment_family_id`: `str | None` — Experiment family ID if registered.

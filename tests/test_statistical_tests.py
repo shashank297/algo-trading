@@ -13,8 +13,11 @@ import scipy.stats
 
 from experiments.statistical_tests import (
     EvidenceStatus,
+    ExpectancyBasis,
+    TrialCountSource,
     compute_bootstrap_confidence_intervals,
     compute_dsr,
+    compute_dsr_statistic,
     compute_expected_max_sharpe,
     compute_monte_carlo_robustness,
     compute_psr,
@@ -149,9 +152,41 @@ def test_dsr_deflates_as_trials_increase() -> None:
     # Candidate with trial Sharpes across varying registry sizes
     trial_sharpes = list(rng.normal(loc=0.5, scale=0.4, size=100))
 
-    dsr_5 = compute_dsr(returns, trial_sharpes[:5], effective_trials=5, experiment_family_id="fam-01")
-    dsr_20 = compute_dsr(returns, trial_sharpes[:20], effective_trials=20, experiment_family_id="fam-01")
-    dsr_100 = compute_dsr(returns, trial_sharpes[:100], effective_trials=100, experiment_family_id="fam-01")
+    # Mathematical primitive deflates as N grows
+    math_5 = compute_dsr_statistic(returns, trial_sharpes[:5], effective_trials=5)
+    math_20 = compute_dsr_statistic(returns, trial_sharpes[:20], effective_trials=20)
+    math_100 = compute_dsr_statistic(returns, trial_sharpes[:100], effective_trials=100)
+
+    assert math_5.dsr_value is not None and math_20.dsr_value is not None and math_100.dsr_value is not None
+    assert math_5.dsr_value > math_20.dsr_value > math_100.dsr_value
+    assert math_5.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert math_5.trial_count_source == TrialCountSource.MANUAL_STATISTICAL_INPUT
+
+    # Authoritative registry path deflates as N grows and is VALID
+    dsr_5 = compute_dsr(
+        returns,
+        trial_sharpes[:5],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=5,
+        experiment_family_id="fam-01",
+        trial_ids=[f"t-{i}" for i in range(5)],
+    )
+    dsr_20 = compute_dsr(
+        returns,
+        trial_sharpes[:20],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=20,
+        experiment_family_id="fam-01",
+        trial_ids=[f"t-{i}" for i in range(20)],
+    )
+    dsr_100 = compute_dsr(
+        returns,
+        trial_sharpes[:100],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=100,
+        experiment_family_id="fam-01",
+        trial_ids=[f"t-{i}" for i in range(100)],
+    )
 
     assert dsr_5.status == EvidenceStatus.VALID
     assert dsr_20.status == EvidenceStatus.VALID
@@ -167,17 +202,71 @@ def test_dsr_deflates_as_trials_increase() -> None:
     assert dsr_100.effective_trials == 100
 
 
+def test_dsr_spoofing_prevention_adversarial() -> None:
+    """Adversarial test: user-supplied trial counts and family IDs without registry authority cannot claim VALID."""
+    returns = [0.001, -0.0005, 0.002, 0.0015] * 50
+    trial_sharpes = [0.8, 1.2, 1.5, 0.9]
+
+    # 1. Manual statistical input without registry provenance must fail closed
+    dsr_spoofed = compute_dsr(
+        returns,
+        trial_sharpes,
+        effective_trials=100,
+        experiment_family_id="made-up-family",
+        trial_ids=["fake-trial-1", "fake-trial-2"],
+    )
+    assert dsr_spoofed.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_spoofed.reason == "UNVERIFIED_TRIAL_REGISTRY_PROVENANCE"
+    assert dsr_spoofed.trial_count_source == TrialCountSource.MANUAL_STATISTICAL_INPUT
+
+    # 2. Registry provenance claiming PHASE2_1_REGISTRY but with empty trial IDs fails closed
+    dsr_empty_ids = compute_dsr(
+        returns,
+        trial_sharpes,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=10,
+        experiment_family_id="fam-01",
+        trial_ids=[],
+    )
+    assert dsr_empty_ids.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_empty_ids.reason == "NO_AUTHORITATIVE_TRIALS"
+
+    # 3. Genuine authoritative trial family passes
+    dsr_auth = compute_dsr(
+        returns,
+        trial_sharpes,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=4,
+        experiment_family_id="fam-01",
+        trial_ids=["t-1", "t-2", "t-3", "t-4"],
+    )
+    assert dsr_auth.status == EvidenceStatus.VALID
+    assert dsr_auth.trial_count_source == TrialCountSource.PHASE2_1_REGISTRY
+
+
 def test_dsr_fail_closed_missing_experiment_family() -> None:
     """DSR must fail closed with INSUFFICIENT_EVIDENCE if experiment_family_id is missing."""
     returns = [0.001] * 100
     trial_sharpes = [1.0, 1.2, 0.8]
 
-    dsr_missing_fam = compute_dsr(returns, trial_sharpes, experiment_family_id=None)
+    dsr_missing_fam = compute_dsr(
+        returns,
+        trial_sharpes,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        trial_ids=["t-1"],
+        experiment_family_id=None,
+    )
     assert dsr_missing_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_missing_fam.reason == "MISSING_AUTHORITATIVE_TRIAL_FAMILY"
     assert dsr_missing_fam.dsr_value is None
 
-    dsr_empty_fam = compute_dsr(returns, trial_sharpes, experiment_family_id="   ")
+    dsr_empty_fam = compute_dsr(
+        returns,
+        trial_sharpes,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        trial_ids=["t-1"],
+        experiment_family_id="   ",
+    )
     assert dsr_empty_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_empty_fam.reason == "MISSING_AUTHORITATIVE_TRIAL_FAMILY"
 
@@ -187,7 +276,14 @@ def test_dsr_fail_closed_insufficient_sharpe_observations() -> None:
     returns = [0.001] * 100
 
     # Single trial Sharpe observation cannot compute variance
-    dsr_single = compute_dsr(returns, [1.5], effective_trials=10, experiment_family_id="fam-01")
+    dsr_single = compute_dsr(
+        returns,
+        [1.5],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=10,
+        experiment_family_id="fam-01",
+        trial_ids=["t-1"],
+    )
     assert dsr_single.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_single.reason == "INSUFFICIENT_SHARPE_OBSERVATIONS_FOR_VARIANCE"
 
@@ -203,10 +299,12 @@ def test_dsr_trial_multiplicity_accounting() -> None:
     dsr_with_failed = compute_dsr(
         returns,
         succeeded_sharpes,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         succeeded_count=4,
         failed_count=failed_count,
         effective_trials=20,
         experiment_family_id="fam-multiplicity",
+        trial_ids=[f"t-{i}" for i in range(20)],
     )
     assert dsr_with_failed.status == EvidenceStatus.VALID
     assert dsr_with_failed.effective_trials == 20
@@ -232,11 +330,56 @@ def test_deterministic_bootstrap_reproducibility_and_intervals() -> None:
         assert ci_1[metric].upper_bound == ci_2[metric].upper_bound
         # Lower bound must be <= upper bound
         assert ci_1[metric].lower_bound <= ci_1[metric].upper_bound
+        assert ci_1[metric].expectancy_basis == ExpectancyBasis.PERIOD_RETURN
 
     # 2. Run with different seed -> may produce slightly different samples but valid
     ci_diff = compute_bootstrap_confidence_intervals(returns, confidence_level=0.95, n_resamples=500, seed=999)
     assert ci_diff["sharpe"].status == EvidenceStatus.VALID
     assert ci_diff["sharpe"].lower_bound <= ci_diff["sharpe"].upper_bound
+
+
+def test_bootstrap_trade_expectancy_units_and_independence() -> None:
+    """Verify that trade expectancy resamples trade PnLs directly in monetary units without mixing period returns."""
+    returns = np.array([0.001, 0.002, -0.001, 0.0015] * 25)
+    
+    # 10 trade PnLs with mean = 500.0 (in ₹)
+    trade_pnls = [200.0, 800.0, -100.0, 400.0, 1200.0, -300.0, 600.0, 500.0, 700.0, 1000.0]
+    fills_df = pd.DataFrame({
+        "net_pnl": trade_pnls,
+        "quantity": [10.0] * 10,
+        "price": [100.0] * 10,
+    })
+
+    ci = compute_bootstrap_confidence_intervals(returns, fills=fills_df, confidence_level=0.95, n_resamples=500, seed=42)
+    exp_ci = ci["expectancy"]
+
+    assert exp_ci.status == EvidenceStatus.VALID
+    assert exp_ci.expectancy_basis == ExpectancyBasis.NET_TRADE_PNL
+    assert math.isclose(exp_ci.point_estimate, 500.0, rel_tol=1e-6)
+    # Median and CI bounds must all be in trade PnL units (hundreds of ₹), NOT small percentage decimals (0.001)
+    assert exp_ci.median > 100.0
+    assert exp_ci.lower_bound > -500.0
+    assert exp_ci.upper_bound > 500.0
+    assert exp_ci.lower_bound <= exp_ci.median <= exp_ci.upper_bound
+
+    # Independence test: Mutating returns while keeping fills constant does NOT change trade expectancy CI
+    perturbed_returns = returns * 10.0
+    ci_perturbed_returns = compute_bootstrap_confidence_intervals(perturbed_returns, fills=fills_df, confidence_level=0.95, n_resamples=500, seed=42)
+    assert math.isclose(ci_perturbed_returns["expectancy"].point_estimate, exp_ci.point_estimate)
+    assert math.isclose(ci_perturbed_returns["expectancy"].lower_bound, exp_ci.lower_bound)
+    assert math.isclose(ci_perturbed_returns["expectancy"].upper_bound, exp_ci.upper_bound)
+
+    # Mutating fills changes trade expectancy CI
+    fills_doubled = pd.DataFrame({"net_pnl": [p * 2.0 for p in trade_pnls]})
+    ci_doubled = compute_bootstrap_confidence_intervals(returns, fills=fills_doubled, confidence_level=0.95, n_resamples=500, seed=42)
+    assert math.isclose(ci_doubled["expectancy"].point_estimate, 1000.0, rel_tol=1e-6)
+    assert ci_doubled["expectancy"].lower_bound > exp_ci.lower_bound
+
+    # Fills with fewer than 5 trades fail closed for expectancy with INSUFFICIENT_EVIDENCE
+    fills_few = pd.DataFrame({"net_pnl": [100.0, 200.0]})
+    ci_few = compute_bootstrap_confidence_intervals(returns, fills=fills_few, minimum_observations=20)
+    assert ci_few["expectancy"].status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert ci_few["expectancy"].reason == "INSUFFICIENT_TRADE_OBSERVATIONS_FOR_EXPECTANCY"
 
 
 def test_deterministic_bootstrap_moving_block_vs_iid() -> None:
@@ -260,7 +403,6 @@ def test_bootstrap_insufficient_data() -> None:
 def test_monte_carlo_simulation_distributions_and_ruin() -> None:
     """Monte Carlo generates valid risk distributions, threshold breaches, and ruin probabilities."""
     rng = np.random.default_rng(888)
-    # Profitable return series with low volatility
     pos_returns = rng.normal(loc=0.002, scale=0.008, size=200)
 
     mc_pos = compute_monte_carlo_robustness(
@@ -273,10 +415,10 @@ def test_monte_carlo_simulation_distributions_and_ruin() -> None:
     )
     assert mc_pos.status == EvidenceStatus.VALID
     assert mc_pos.prob_negative_return is not None
-    assert 0.0 <= mc_pos.prob_negative_return <= 0.10  # Highly profitable, rarely negative
+    assert 0.0 <= mc_pos.prob_negative_return <= 0.10
     assert mc_pos.prob_drawdown_exceeds_threshold is not None
     assert mc_pos.capital_ruin_probability is not None
-    assert mc_pos.ruin_level == 70_000.0  # 100_000 * (1 - 0.30)
+    assert mc_pos.ruin_level == 70_000.0
     assert "p50" in mc_pos.max_drawdown_percentiles
     assert "p95" in mc_pos.max_drawdown_percentiles
     assert mc_pos.max_drawdown_percentiles["p5"] <= mc_pos.max_drawdown_percentiles["p95"]
@@ -323,15 +465,34 @@ def test_statistical_tests_edge_cases_and_error_branches() -> None:
 
     # 3. compute_dsr with invalid input exceptions
     from typing import Any, cast
-    dsr_invalid = compute_dsr(cast(Any, "invalid_type"), [1.0, 1.2], experiment_family_id="fam-01")
+    dsr_invalid = compute_dsr(
+        cast(Any, "invalid_type"),
+        [1.0, 1.2],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-01",
+        trial_ids=["t-1", "t-2"],
+    )
     assert dsr_invalid.status == EvidenceStatus.INVALID_INPUT
 
     # 4. compute_dsr with invalid annualization factor
-    dsr_neg_ann = compute_dsr([0.01, 0.02, 0.03] * 20, [1.0, 1.2], annualization_factor=-1.0, experiment_family_id="fam-01")
+    dsr_neg_ann = compute_dsr(
+        [0.01, 0.02, 0.03] * 20,
+        [1.0, 1.2],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        annualization_factor=-1.0,
+        experiment_family_id="fam-01",
+        trial_ids=["t-1", "t-2"],
+    )
     assert dsr_neg_ann.status == EvidenceStatus.INVALID_INPUT
 
     # 5. compute_dsr with identical sharpe observations (variance = 0) fails closed
-    dsr_zero_var = compute_dsr([0.01, 0.02, 0.03] * 20, [1.0, 1.0], experiment_family_id="fam-01")
+    dsr_zero_var = compute_dsr(
+        [0.01, 0.02, 0.03] * 20,
+        [1.0, 1.0],
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-01",
+        trial_ids=["t-1", "t-2"],
+    )
     assert dsr_zero_var.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_zero_var.reason == "ZERO_TRIAL_SHARPE_VARIANCE"
 

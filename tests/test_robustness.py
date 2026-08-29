@@ -19,10 +19,12 @@ from experiments.robustness import (
     RobustnessEvaluator,
     RobustnessPolicy,
     StressScenarioEngine,
+    canonical_hash,
 )
 
 from experiments.statistical_tests import (
     EvidenceStatus,
+    TrialCountSource,
     compute_bootstrap_confidence_intervals,
     compute_dsr,
     compute_monte_carlo_robustness,
@@ -64,17 +66,23 @@ def _make_dummy_candles(n_days: int = 400, start_date: date = date(2022, 1, 1), 
     return pd.DataFrame(rows)
 
 
-def _make_dummy_dataset(n_days: int = 400, start_date: date = date(2022, 1, 1), seed: int = 42) -> ResearchDataset:
+def _make_dummy_dataset(
+    n_days: int = 400,
+    start_date: date = date(2022, 1, 1),
+    seed: int = 42,
+    dataset_content_hashes: dict[str, str] | None = None,
+    dataset_snapshot_ids: dict[str, str | None] | None = None,
+) -> ResearchDataset:
     """Generate deterministic synthetic ResearchDataset with features."""
     candles = _make_dummy_candles(n_days=n_days, start_date=start_date, seed=seed)
     panel = FeatureFactory().build(candles, timezone_name="Asia/Kolkata")
     panel["symbol"] = "TEST_SYM"
     return ResearchDataset(
         universe_snapshot_id="U_TEST",
-        dataset_snapshot_ids={"TEST_SYM": "DS_TEST"},
+        dataset_snapshot_ids=dataset_snapshot_ids or {"TEST_SYM": "DS_TEST"},
         panel=panel,
         frame_certification_id="cert-01",
-        dataset_content_hashes={"TEST_SYM": "ds-hash-01"},
+        dataset_content_hashes=dataset_content_hashes or {"TEST_SYM": "ds-hash-01"},
     )
 
 
@@ -1256,5 +1264,230 @@ def test_source_calendar_validation_and_malformed_json_evidence(tmp_path: Any, m
         evaluator._source(spec, StrategyScope.SINGLE_ASSET, lookback=10)
 
     db.close()
+
+
+def test_purge_window_exhaustion_fail_closed() -> None:
+    """Splitter must fail closed with explicit ValueError when purge window exhausts TRAIN or VALIDATION."""
+    splitter = NestedWalkForwardSplitter()
+
+    # 1. Purge window >= train_size (e.g. train_size=50, purge_window=50)
+    with pytest.raises(ValueError, match="PURGE_WINDOW_EXHAUSTS_TRAIN"):
+        splitter.split_plans(
+            total_bars=300,
+            train_size=50,
+            val_size=50,
+            test_size=50,
+            purge_window=50,
+        )
+
+    # 2. Purge window > train_size (e.g. train_size=50, purge_window=60)
+    with pytest.raises(ValueError, match="PURGE_WINDOW_EXHAUSTS_TRAIN"):
+        splitter.split_plans(
+            total_bars=300,
+            train_size=50,
+            val_size=50,
+            test_size=50,
+            purge_window=60,
+        )
+
+    # 3. Purge window >= val_size (e.g. train_size=100, val_size=30, purge_window=30)
+    with pytest.raises(ValueError, match="PURGE_WINDOW_EXHAUSTS_VALIDATION"):
+        splitter.split_plans(
+            total_bars=300,
+            train_size=100,
+            val_size=30,
+            test_size=30,
+            purge_window=30,
+        )
+
+
+def test_fold_complete_dataset_lineage_and_evidence_hash_binding(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that every fold persists complete dataset lineage and binds it immutably into evidence_hash."""
+    db_path = str(tmp_path / "test_lineage.duckdb")
+    MigrationRunner(db_path).run_migrations()
+    db = DuckDBManager(db_path)
+
+    ds_1 = _make_dummy_dataset(n_days=400, seed=42)
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    spec = ExperimentSpec(strategy_name="trend_following", universe=["TEST_SYM"], timeframe="1d")
+
+    monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds_1)
+
+    bundle_1 = evaluator.evaluate(
+        parent_run_id="run-lineage-1",
+        spec=spec,
+        train_size=150,
+        val_size=50,
+        test_size=50,
+    )
+
+    # Check that each fold has complete explicit lineage
+    for fold in bundle_1.nested_folds:
+        assert fold.dataset_snapshot_ids == {"TEST_SYM": "DS_TEST"}
+        assert fold.dataset_content_hashes == {"TEST_SYM": "ds-hash-01"}
+        assert fold.frame_certification_id == "cert-01"
+        assert len(fold.evidence_hash) > 10
+
+    # Perturbing dataset content hashes alone produces a different evidence hash
+    ds_2 = _make_dummy_dataset(n_days=400, seed=42, dataset_content_hashes={"TEST_SYM": "ds-hash-altered"})
+    monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds_2)
+
+    bundle_2 = evaluator.evaluate(
+        parent_run_id="run-lineage-2",
+        spec=spec,
+        train_size=150,
+        val_size=50,
+        test_size=50,
+    )
+
+    assert bundle_1.evidence_hash != bundle_2.evidence_hash
+    assert bundle_1.nested_folds[0].evidence_hash != bundle_2.nested_folds[0].evidence_hash
+
+    db.close()
+
+
+def test_evidence_based_stress_status_and_reasons() -> None:
+    """Stress scenario engine must fail closed with INSUFFICIENT_EVIDENCE when fill records are missing."""
+    engine = StressScenarioEngine(RobustnessPolicy())
+
+    # 1. Strategy run with no fills
+    class EmptyFillsRun:
+        equity_curve = pd.DataFrame({
+            "timestamp": pd.date_range("2024-01-01", periods=100, freq="D", tz="UTC"),
+            "net_return": [0.001] * 100,
+            "position": [1.0] * 100,
+            "equity": [100000.0] * 100,
+            "drawdown": [0.0] * 100,
+        })
+        fills = pd.DataFrame()
+
+    cost_results = engine.evaluate_cost_stress(EmptyFillsRun(), base_cost_model={"fee_bps": 5.0}, timeframe="1d", starting_capital=100_000.0)
+    # 1.0x baseline is VALID, multipliers > 1.0 fail closed with INSUFFICIENT_EVIDENCE
+    assert cost_results[0].status == EvidenceStatus.VALID
+    assert cost_results[1].status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert cost_results[1].reason == "NO_FILL_RECORDS_FOR_COST_STRESS"
+
+    exec_results = engine.evaluate_execution_stress(EmptyFillsRun(), timeframe="1d", starting_capital=100_000.0)
+    exec_status_map = {r.scenario_name: r.status for r in exec_results}
+    assert exec_status_map["stop_slippage_stress"] == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert exec_status_map["missed_fills"] == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert exec_status_map["reduced_liquidity"] == EvidenceStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_parameter_robustness_negative_train_scores() -> None:
+    """ParameterRobustnessSelector handles non-positive scores gracefully."""
+    selector = ParameterRobustnessSelector(RobustnessPolicy())
+    grid = {"p": (1, 2, 3)}
+    scores = {
+        canonical_hash({"p": 1}): -1.5,
+        canonical_hash({"p": 2}): -0.8,
+        canonical_hash({"p": 3}): -2.0,
+    }
+    candidates = [{"p": 1}, {"p": 2}, {"p": 3}]
+    evaluated = selector.evaluate_candidates(scores, candidates, grid)
+    assert len(evaluated) == 3
+    # Candidate p=1 has neighbor p=2 (-0.8) which gives higher neighbor min & mean than p=2 (neighbors -1.5, -2.0)
+    assert evaluated[0].selected is True
+
+
+def test_stress_scenario_without_timestamps_or_positions() -> None:
+    """Stress scenario engine covers fallback paths when timestamps or positions are missing."""
+    engine = StressScenarioEngine(RobustnessPolicy())
+
+    # Fills without timestamp
+    fills_no_ts = pd.DataFrame({
+        "quantity": [10.0, -10.0],
+        "price": [100.0, 105.0],
+        "fees": [1.0, 1.0],
+        "slippage_bps": [0.0, 0.0],
+        "side": ["BUY", "SELL"],
+    })
+    curve_no_ts = pd.DataFrame({
+        "net_return": [0.001, -0.0005, 0.002, 0.001],
+        "position": [0.0, 1.0, 1.0, 0.0],
+        "equity": [100000.0, 99950.0, 100150.0, 100250.0],
+        "drawdown": [0.0, -0.0005, 0.0, 0.0],
+    })
+
+    class RunNoTs:
+        equity_curve = curve_no_ts
+        fills = fills_no_ts
+
+    cost_res = engine.evaluate_cost_stress(RunNoTs(), base_cost_model={"fee_bps": 5.0}, timeframe="1d", starting_capital=100_000.0)
+    assert cost_res[1].status == EvidenceStatus.VALID
+
+    exec_res = engine.evaluate_execution_stress(RunNoTs(), timeframe="1d", starting_capital=100_000.0)
+    # Overnight gap fails gracefully without timestamp evidence
+    overnight = next(r for r in exec_res if r.scenario_name == "overnight_gap_stress")
+    assert overnight.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert overnight.reason == "MISSING_TIMESTAMP_OR_POSITION_EVIDENCE"
+
+    # Execution delay on very short curve (< 2 bars)
+    class ShortRun:
+        equity_curve = pd.DataFrame({"net_return": [0.001], "position": [1.0], "equity": [100000.0], "drawdown": [0.0]})
+        fills = fills_no_ts
+
+    exec_short = engine.evaluate_execution_stress(ShortRun(), timeframe="1d", starting_capital=100_000.0)
+    delay_short = next(r for r in exec_short if r.scenario_name == "execution_delay")
+    assert delay_short.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert delay_short.reason == "INSUFFICIENT_BARS_FOR_EXECUTION_DELAY"
+
+
+def test_registry_family_with_deduplicated_and_failed_trials(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """RobustnessEvaluator properly handles duplicate trial definitions and failed/invalidated statuses."""
+    db_path = str(tmp_path / "test_dedup_family.duckdb")
+    MigrationRunner(db_path).run_migrations()
+    db = DuckDBManager(db_path)
+
+    family_id = "fam-dedup-01"
+    db.conn.execute(
+        f"INSERT INTO experiment_families (experiment_family_id, definition_hash, definition_json, maximum_trials, created_at, started_at) VALUES ('{family_id}', 'hash1', '{{}}', 50, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+
+    # Insert 1 succeeded, 1 duplicate succeeded, 1 failed, 1 invalidated
+    trial_def = '{"strategy_name": "trend_following", "timeframe": "1d", "parameters": {"fast_threshold": 0.01}, "fold_id": "fold-0", "train_start": "2022-01-01", "train_end": "2022-06-01", "data_hash": "h1"}'
+    db.conn.execute(
+        f"""
+        INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at)
+        VALUES
+        ('t-1', '{family_id}', 'SUCCEEDED', '{trial_def}', '{{"sharpe": 1.2}}', CURRENT_TIMESTAMP),
+        ('t-2', '{family_id}', 'SUCCEEDED', '{trial_def}', '{{"sharpe": 1.2}}', CURRENT_TIMESTAMP),
+        ('t-3', '{family_id}', 'FAILED', '{{"strategy_name": "other"}}', '{{}}', CURRENT_TIMESTAMP),
+        ('t-4', '{family_id}', 'INVALIDATED', '{{"strategy_name": "invalid"}}', '{{}}', CURRENT_TIMESTAMP)
+        """
+    )
+
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TEST_SYM"],
+        timeframe="1d",
+        experiment_family_id=family_id,
+        parameters={"fast_threshold": 0.01, "min_volatility": 0.0},
+    )
+
+    candles = _make_dummy_candles(n_days=400, seed=42)
+    class DummyPipeline:
+        _last_frame_certification_id = "cert-01"
+        def load_candles(self, sym, tf):
+            return candles.copy()
+
+    monkeypatch.setattr("experiments.robustness.StrategyPipeline", lambda *args, **kwargs: DummyPipeline())
+
+    bundle = evaluator.evaluate(
+        parent_run_id="run-dedup-gov",
+        spec=spec,
+        train_size=150,
+        val_size=50,
+        test_size=50,
+    )
+    assert bundle.dsr is not None
+    assert bundle.dsr.deduplicated_count >= 1
+    assert bundle.dsr.failed_count >= 1
+    assert bundle.dsr.invalidated_trials >= 1
+    assert bundle.dsr.trial_count_source == TrialCountSource.PHASE2_1_REGISTRY
+
+    db.close()
+
 
 

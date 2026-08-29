@@ -6,7 +6,6 @@ multi-tiered cost stress, swing execution stress, trial-registry linkage, and pe
 
 from __future__ import annotations
 
-import copy
 import itertools
 import json
 import math
@@ -28,6 +27,7 @@ from experiments.statistical_tests import (
     EvidenceStatus,
     MonteCarloRobustnessResult,
     PSRResult,
+    TrialCountSource,
     compute_bootstrap_confidence_intervals,
     compute_dsr,
     compute_monte_carlo_robustness,
@@ -115,7 +115,7 @@ class ParameterRobustnessCandidate(BaseModel):
 
 
 class NestedFoldEvidence(BaseModel):
-    """Detailed evidence for a 3-stage nested walk-forward fold."""
+    """Detailed evidence for a 3-stage nested walk-forward fold with complete dataset lineage."""
     fold_id: str
     train_start: datetime
     train_end: datetime
@@ -128,6 +128,9 @@ class NestedFoldEvidence(BaseModel):
     purged_train_range: list[str] = Field(default_factory=list)
     purged_val_range: list[str] = Field(default_factory=list)
     embargoed_ranges: list[str] = Field(default_factory=list)
+    dataset_snapshot_ids: dict[str, str | None] = Field(default_factory=dict)
+    contributing_dataset_ids: list[str] = Field(default_factory=list)
+    dataset_content_hashes: dict[str, str] = Field(default_factory=dict)
     train_data_hash: str
     val_data_hash: str
     test_data_hash: str
@@ -146,16 +149,20 @@ class CostStressResult(BaseModel):
     multiplier: float
     slippage_bps_override: float | None = None
     liquidity_stress_factor: float | None = None
-    metrics: dict[str, float]
-    cost_schedule_summary: dict[str, Any]
+    metrics: dict[str, float] = Field(default_factory=dict)
+    cost_schedule_summary: dict[str, Any] = Field(default_factory=dict)
+    status: EvidenceStatus = EvidenceStatus.VALID
+    reason: str | None = None
 
 
 class ExecutionStressResult(BaseModel):
     """Evaluated performance under an independent swing execution stress scenario."""
     scenario_name: str
-    perturbation_params: dict[str, Any]
-    metrics: dict[str, float]
+    perturbation_params: dict[str, Any] = Field(default_factory=dict)
+    metrics: dict[str, float] = Field(default_factory=dict)
     seed: int | None = None
+    status: EvidenceStatus = EvidenceStatus.VALID
+    reason: str | None = None
 
 
 class RobustnessBundle(BaseModel):
@@ -226,8 +233,9 @@ class NestedWalkForwardSplitter:
 
             # 1. Train interval: [0 : cursor - val_size]
             raw_train_end = cursor - val_size
-            # Purge TRAIN -> VAL boundary: remove trailing purge_window bars from train
-            if purge_window > 0 and raw_train_end > purge_window:
+            if purge_window > 0:
+                if purge_window >= raw_train_end:
+                    raise ValueError("PURGE_WINDOW_EXHAUSTS_TRAIN")
                 train_idx = list(range(0, raw_train_end - purge_window))
                 purged_train = list(range(raw_train_end - purge_window, raw_train_end))
             else:
@@ -237,8 +245,10 @@ class NestedWalkForwardSplitter:
             # 2. Validation interval: [cursor - val_size : cursor]
             raw_val_start = cursor - val_size
             raw_val_end = cursor
-            # Purge VAL -> FINAL_OOS boundary: remove trailing purge_window bars from validation
-            if purge_window > 0 and (raw_val_end - raw_val_start) > purge_window:
+            val_len = raw_val_end - raw_val_start
+            if purge_window > 0:
+                if purge_window >= val_len:
+                    raise ValueError("PURGE_WINDOW_EXHAUSTS_VALIDATION")
                 val_idx = list(range(raw_val_start, raw_val_end - purge_window))
                 purged_val = list(range(raw_val_end - purge_window, raw_val_end))
             else:
@@ -260,6 +270,8 @@ class NestedWalkForwardSplitter:
             if previous_test_end is not None and embargo_window > 0:
                 past_embargo_set = set(range(previous_test_end, min(total_bars, previous_test_end + embargo_window)))
                 train_idx = [i for i in train_idx if i not in past_embargo_set]
+                if len(train_idx) == 0:
+                    raise ValueError("PURGE_WINDOW_EXHAUSTS_TRAIN")
 
             plans.append(
                 FoldSplitPlan(
@@ -496,55 +508,98 @@ class StressScenarioEngine:
         timeframe: str,
         starting_capital: float,
     ) -> list[CostStressResult]:
-        """Recompute net performance across cost multipliers without modifying baseline."""
+        """Recompute net performance across cost multipliers on actual fill evidence."""
         results: list[CostStressResult] = []
         fills = getattr(strategy_run, "fills", pd.DataFrame())
         raw_curve = getattr(strategy_run, "equity_curve", pd.DataFrame())
         if raw_curve.empty:
             return results
 
+        base_ret = raw_curve["net_return"].fillna(0.0)
+        base_metrics_obj = _compute_metrics(
+            equity_curve=raw_curve,
+            net_returns=base_ret,
+            fills=fills,
+            execution_model=ExecutionModel(),
+            timeframe=timeframe,
+            starting_capital=starting_capital,
+        )
+        base_metrics_dict = {
+            "sharpe": float(base_metrics_obj.sharpe) if base_metrics_obj.sharpe is not None else 0.0,
+            "cagr": float(base_metrics_obj.cagr) if base_metrics_obj.cagr is not None else 0.0,
+            "max_drawdown": float(base_metrics_obj.max_drawdown) if base_metrics_obj.max_drawdown is not None else 0.0,
+            "total_return": float(base_metrics_obj.total_return) if base_metrics_obj.total_return is not None else 0.0,
+            "profit_factor": float(base_metrics_obj.profit_factor) if base_metrics_obj.profit_factor is not None else 0.0,
+            "win_rate": float(base_metrics_obj.win_rate) if base_metrics_obj.win_rate is not None else 0.0,
+        }
+
         for mult in self.policy.cost_multipliers:
-            stressed_cost_model = copy.deepcopy(base_cost_model)
-            for key in ["fee_bps", "brokerage_rate_bps", "stt_buy_bps", "stt_sell_bps", "spread_bps"]:
-                if key in stressed_cost_model:
-                    stressed_cost_model[key] = float(stressed_cost_model[key]) * mult
-            if "indian_delivery_costs" in stressed_cost_model and isinstance(stressed_cost_model["indian_delivery_costs"], dict):
-                for key in ["brokerage_rate_bps", "stt_buy_bps", "stt_sell_bps", "spread_bps", "exchange_transaction_bps"]:
-                    if key in stressed_cost_model["indian_delivery_costs"]:
-                        stressed_cost_model["indian_delivery_costs"][key] = (
-                            float(stressed_cost_model["indian_delivery_costs"][key]) * mult
-                        )
+            if math.isclose(mult, 1.0, rel_tol=1e-6):
+                results.append(
+                    CostStressResult(
+                        multiplier=1.0,
+                        slippage_bps_override=None,
+                        liquidity_stress_factor=None,
+                        metrics=base_metrics_dict,
+                        cost_schedule_summary={"multiplier": 1.0, "base_keys": list(base_cost_model.keys())},
+                        status=EvidenceStatus.VALID,
+                    )
+                )
+                continue
+
+            if fills.empty:
+                results.append(
+                    CostStressResult(
+                        multiplier=mult,
+                        slippage_bps_override=self.policy.slippage_stress_bps,
+                        liquidity_stress_factor=self.policy.liquidity_stress_factor,
+                        metrics=base_metrics_dict,
+                        cost_schedule_summary={"multiplier": mult},
+                        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                        reason="NO_FILL_RECORDS_FOR_COST_STRESS",
+                    )
+                )
+                continue
 
             stressed_curve = raw_curve.copy()
-            net_ret = stressed_curve["net_return"].fillna(0.0).copy()
+            stressed_net_ret = stressed_curve["net_return"].fillna(0.0).copy()
+            curve_ts = pd.to_datetime(stressed_curve["timestamp"], utc=True) if "timestamp" in stressed_curve.columns else None
 
-            # Baseline 1.0x remains pure and unperturbed
-            if math.isclose(mult, 1.0, rel_tol=1e-6):
-                effective_slippage = None
-                effective_liquidity = None
+            base_fees = fills["fees"] if "fees" in fills.columns else (fills["cost"] if "cost" in fills.columns else pd.Series(0.0, index=fills.index))
+            extra_fees = base_fees * (mult - 1.0)
+            fill_notional = (fills["quantity"] * fills["price"]).abs() if {"quantity", "price"}.issubset(fills.columns) else pd.Series(0.0, index=fills.index)
+            extra_slippage = fill_notional * (self.policy.slippage_stress_bps / 10000.0)
+            extra_liquidity = fill_notional * ((self.policy.liquidity_stress_factor - 1.0) * 0.0002)
+            total_fill_drag = extra_fees + extra_slippage + extra_liquidity
+
+            if curve_ts is not None and "timestamp" in fills.columns and len(curve_ts) > 0:
+                fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
+                bar_drags = np.zeros(len(stressed_curve))
+                for f_t, d in zip(fill_ts, total_fill_drag):
+                    matching_indices = np.where(curve_ts == f_t)[0]
+                    if len(matching_indices) > 0:
+                        bar_drags[matching_indices[0]] += d
+                    else:
+                        prior_indices = np.where(curve_ts <= f_t)[0]
+                        if len(prior_indices) > 0:
+                            bar_drags[prior_indices[-1]] += d
+                        else:
+                            bar_drags[0] += d
+                equity_vals = starting_capital * (1.0 + stressed_net_ret).cumprod()
+                ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
+                stressed_net_ret = stressed_net_ret - ret_drags
             else:
-                # Apply configured slippage stress and liquidity stress
-                effective_slippage = self.policy.slippage_stress_bps
-                effective_liquidity = self.policy.liquidity_stress_factor
+                total_drag_sum = float(total_fill_drag.sum())
+                per_bar_drag = total_drag_sum / (len(stressed_curve) * starting_capital)
+                stressed_net_ret = stressed_net_ret - per_bar_drag
 
-                slippage_drag = (self.policy.slippage_stress_bps / 10000.0) * (len(fills) / max(1, len(stressed_curve)))
-                liquidity_drag = (self.policy.liquidity_stress_factor - 1.0) * (0.0005 / max(1, len(stressed_curve)))
-                net_ret = net_ret - (slippage_drag + liquidity_drag)
-
-            if not fills.empty and "cost" in fills.columns and not math.isclose(mult, 1.0, rel_tol=1e-6):
-                extra_cost_factor = mult - 1.0
-                total_extra_cost = float((fills["cost"] * extra_cost_factor).sum())
-                if total_extra_cost > 0:
-                    per_bar_drag = total_extra_cost / (len(stressed_curve) * starting_capital)
-                    net_ret = net_ret - per_bar_drag
-
-            stressed_curve["net_return"] = net_ret
-            stressed_curve["equity"] = starting_capital * (1.0 + net_ret).cumprod()
+            stressed_curve["net_return"] = stressed_net_ret
+            stressed_curve["equity"] = starting_capital * (1.0 + stressed_net_ret).cumprod()
             stressed_curve["drawdown"] = stressed_curve["equity"] / stressed_curve["equity"].cummax() - 1.0
 
             metrics = _compute_metrics(
                 equity_curve=stressed_curve,
-                net_returns=net_ret,
+                net_returns=stressed_net_ret,
                 fills=fills,
                 execution_model=ExecutionModel(),
                 timeframe=timeframe,
@@ -563,15 +618,16 @@ class StressScenarioEngine:
             results.append(
                 CostStressResult(
                     multiplier=mult,
-                    slippage_bps_override=effective_slippage,
-                    liquidity_stress_factor=effective_liquidity,
+                    slippage_bps_override=self.policy.slippage_stress_bps,
+                    liquidity_stress_factor=self.policy.liquidity_stress_factor,
                     metrics=metrics_dict,
                     cost_schedule_summary={
                         "multiplier": mult,
-                        "slippage_bps": effective_slippage,
-                        "liquidity_factor": effective_liquidity,
-                        "base_keys": list(stressed_cost_model.keys()),
+                        "slippage_bps": self.policy.slippage_stress_bps,
+                        "liquidity_factor": self.policy.liquidity_stress_factor,
+                        "base_keys": list(base_cost_model.keys()),
                     },
+                    status=EvidenceStatus.VALID,
                 )
             )
 
@@ -592,145 +648,252 @@ class StressScenarioEngine:
             return results
 
         # 1. Overnight Gap Stress
-        gap_curve = raw_curve.copy()
-        gap_drag_bps = self.policy.overnight_gap_bps / 10000.0
-        gap_net_ret = gap_curve["net_return"].fillna(0.0) - (gap_drag_bps / max(1, len(gap_curve)))
-        gap_curve["equity"] = starting_capital * (1.0 + gap_net_ret).cumprod()
-        gap_curve["drawdown"] = gap_curve["equity"] / gap_curve["equity"].cummax() - 1.0
-        gap_mets = _compute_metrics(
-            equity_curve=gap_curve,
-            net_returns=gap_net_ret,
-            fills=fills,
-            execution_model=ExecutionModel(),
-            timeframe=timeframe,
-            starting_capital=starting_capital,
-        )
-        results.append(
-            ExecutionStressResult(
-                scenario_name="overnight_gap_stress",
-                perturbation_params={"gap_bps": self.policy.overnight_gap_bps},
-                metrics={
-                    "sharpe": float(gap_mets.sharpe) if gap_mets.sharpe is not None else 0.0,
-                    "cagr": float(gap_mets.cagr) if gap_mets.cagr is not None else 0.0,
-                    "max_drawdown": float(gap_mets.max_drawdown) if gap_mets.max_drawdown is not None else 0.0,
-                    "total_return": float(gap_mets.total_return) if gap_mets.total_return is not None else 0.0,
-                },
-                seed=None,
-            )
-        )
+        if "timestamp" in raw_curve.columns and "position" in raw_curve.columns:
+            ts_series = pd.to_datetime(raw_curve["timestamp"], utc=True)
+            dates = ts_series.dt.date
+            date_diff = dates.ne(dates.shift())
+            overnight_mask = date_diff & (raw_curve["position"].shift(1).fillna(0.0).abs() > 1e-6)
+            overnight_count = int(overnight_mask.sum())
 
-        # 2. Stop Slippage Stress
-        slip_curve = raw_curve.copy()
-        slip_drag = (self.policy.stop_slippage_bps / 10000.0) * (len(fills) / max(1, len(slip_curve)))
-        slip_net_ret = slip_curve["net_return"].fillna(0.0) - (slip_drag / max(1, len(slip_curve)))
-        slip_curve["equity"] = starting_capital * (1.0 + slip_net_ret).cumprod()
-        slip_curve["drawdown"] = slip_curve["equity"] / slip_curve["equity"].cummax() - 1.0
-        slip_mets = _compute_metrics(
-            equity_curve=slip_curve,
-            net_returns=slip_net_ret,
-            fills=fills,
-            execution_model=ExecutionModel(),
-            timeframe=timeframe,
-            starting_capital=starting_capital,
-        )
-        results.append(
-            ExecutionStressResult(
-                scenario_name="stop_slippage_stress",
-                perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps},
-                metrics={
-                    "sharpe": float(slip_mets.sharpe) if slip_mets.sharpe is not None else 0.0,
-                    "cagr": float(slip_mets.cagr) if slip_mets.cagr is not None else 0.0,
-                    "max_drawdown": float(slip_mets.max_drawdown) if slip_mets.max_drawdown is not None else 0.0,
-                    "total_return": float(slip_mets.total_return) if slip_mets.total_return is not None else 0.0,
-                },
-                seed=None,
-            )
-        )
+            gap_curve = raw_curve.copy()
+            gap_net_ret = gap_curve["net_return"].fillna(0.0).copy()
 
-        # 3. Execution Delay (1-bar lag simulation)
-        delay_curve = raw_curve.copy()
-        lagged_ret = delay_curve["net_return"].fillna(0.0).shift(self.policy.execution_delay_bars).fillna(0.0)
-        delay_curve["equity"] = starting_capital * (1.0 + lagged_ret).cumprod()
-        delay_curve["drawdown"] = delay_curve["equity"] / delay_curve["equity"].cummax() - 1.0
-        delay_mets = _compute_metrics(
-            equity_curve=delay_curve,
-            net_returns=lagged_ret,
-            fills=fills,
-            execution_model=ExecutionModel(),
-            timeframe=timeframe,
-            starting_capital=starting_capital,
-        )
-        results.append(
-            ExecutionStressResult(
-                scenario_name="execution_delay",
-                perturbation_params={"delay_bars": self.policy.execution_delay_bars},
-                metrics={
-                    "sharpe": float(delay_mets.sharpe) if delay_mets.sharpe is not None else 0.0,
-                    "cagr": float(delay_mets.cagr) if delay_mets.cagr is not None else 0.0,
-                    "max_drawdown": float(delay_mets.max_drawdown) if delay_mets.max_drawdown is not None else 0.0,
-                    "total_return": float(delay_mets.total_return) if delay_mets.total_return is not None else 0.0,
-                },
-                seed=None,
-            )
-        )
+            if overnight_count > 0:
+                gap_loss_fraction = (self.policy.overnight_gap_bps / 10000.0)
+                held_positions = gap_curve["position"].shift(1).fillna(0.0).abs()
+                gap_drag = overnight_mask.astype(float) * held_positions * gap_loss_fraction
+                gap_net_ret = gap_net_ret - gap_drag
 
-        # 4. Missed Fills (Deterministic seeded omission)
-        rng = np.random.default_rng(self.policy.monte_carlo_seed)
-        missed_curve = raw_curve.copy()
-        mask = rng.random(len(missed_curve)) < self.policy.missed_fill_rate
-        missed_ret = missed_curve["net_return"].fillna(0.0).copy()
-        missed_ret.loc[mask] = 0.0
-        missed_curve["equity"] = starting_capital * (1.0 + missed_ret).cumprod()
-        missed_curve["drawdown"] = missed_curve["equity"] / missed_curve["equity"].cummax() - 1.0
-        missed_mets = _compute_metrics(
-            equity_curve=missed_curve,
-            net_returns=missed_ret,
-            fills=fills,
-            execution_model=ExecutionModel(),
-            timeframe=timeframe,
-            starting_capital=starting_capital,
-        )
-        results.append(
-            ExecutionStressResult(
-                scenario_name="missed_fills",
-                perturbation_params={"missed_fill_rate": self.policy.missed_fill_rate},
-                metrics={
-                    "sharpe": float(missed_mets.sharpe) if missed_mets.sharpe is not None else 0.0,
-                    "cagr": float(missed_mets.cagr) if missed_mets.cagr is not None else 0.0,
-                    "max_drawdown": float(missed_mets.max_drawdown) if missed_mets.max_drawdown is not None else 0.0,
-                    "total_return": float(missed_mets.total_return) if missed_mets.total_return is not None else 0.0,
-                },
-                seed=self.policy.monte_carlo_seed,
+            gap_curve["net_return"] = gap_net_ret
+            gap_curve["equity"] = starting_capital * (1.0 + gap_net_ret).cumprod()
+            gap_curve["drawdown"] = gap_curve["equity"] / gap_curve["equity"].cummax() - 1.0
+            gap_mets = _compute_metrics(
+                equity_curve=gap_curve,
+                net_returns=gap_net_ret,
+                fills=fills,
+                execution_model=ExecutionModel(),
+                timeframe=timeframe,
+                starting_capital=starting_capital,
             )
-        )
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="overnight_gap_stress",
+                    perturbation_params={"gap_bps": self.policy.overnight_gap_bps, "overnight_exposure_bars": overnight_count},
+                    metrics={
+                        "sharpe": float(gap_mets.sharpe) if gap_mets.sharpe is not None else 0.0,
+                        "cagr": float(gap_mets.cagr) if gap_mets.cagr is not None else 0.0,
+                        "max_drawdown": float(gap_mets.max_drawdown) if gap_mets.max_drawdown is not None else 0.0,
+                        "total_return": float(gap_mets.total_return) if gap_mets.total_return is not None else 0.0,
+                    },
+                    seed=None,
+                    status=EvidenceStatus.VALID,
+                )
+            )
+        else:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="overnight_gap_stress",
+                    perturbation_params={"gap_bps": self.policy.overnight_gap_bps},
+                    metrics={},
+                    seed=None,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="MISSING_TIMESTAMP_OR_POSITION_EVIDENCE",
+                )
+            )
 
-        # 5. Reduced Liquidity Stress
-        liq_curve = raw_curve.copy()
-        liq_drag = (self.policy.liquidity_stress_factor - 1.0) * (0.0010 / max(1, len(liq_curve)))
-        liq_net_ret = liq_curve["net_return"].fillna(0.0) - liq_drag
-        liq_curve["equity"] = starting_capital * (1.0 + liq_net_ret).cumprod()
-        liq_curve["drawdown"] = liq_curve["equity"] / liq_curve["equity"].cummax() - 1.0
-        liq_mets = _compute_metrics(
-            equity_curve=liq_curve,
-            net_returns=liq_net_ret,
-            fills=fills,
-            execution_model=ExecutionModel(),
-            timeframe=timeframe,
-            starting_capital=starting_capital,
-        )
-        results.append(
-            ExecutionStressResult(
-                scenario_name="reduced_liquidity",
-                perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor},
-                metrics={
-                    "sharpe": float(liq_mets.sharpe) if liq_mets.sharpe is not None else 0.0,
-                    "cagr": float(liq_mets.cagr) if liq_mets.cagr is not None else 0.0,
-                    "max_drawdown": float(liq_mets.max_drawdown) if liq_mets.max_drawdown is not None else 0.0,
-                    "total_return": float(liq_mets.total_return) if liq_mets.total_return is not None else 0.0,
-                },
-                seed=None,
+        # 2. Stop Slippage Stress on identifiable exit/closing fills
+        if not fills.empty and {"quantity", "price"}.issubset(fills.columns):
+            exit_fills = fills[fills["side"].astype(str).str.upper().isin(["SELL", "SHORT"])] if "side" in fills.columns else fills
+            if exit_fills.empty:
+                exit_fills = fills
+
+            slip_notional = (exit_fills["quantity"] * exit_fills["price"]).abs()
+            total_stop_slip_loss = float(slip_notional.sum() * (self.policy.stop_slippage_bps / 10000.0))
+
+            slip_curve = raw_curve.copy()
+            slip_net_ret = slip_curve["net_return"].fillna(0.0).copy()
+            per_bar_slip = total_stop_slip_loss / (len(slip_curve) * starting_capital)
+            slip_net_ret = slip_net_ret - per_bar_slip
+
+            slip_curve["net_return"] = slip_net_ret
+            slip_curve["equity"] = starting_capital * (1.0 + slip_net_ret).cumprod()
+            slip_curve["drawdown"] = slip_curve["equity"] / slip_curve["equity"].cummax() - 1.0
+            slip_mets = _compute_metrics(
+                equity_curve=slip_curve,
+                net_returns=slip_net_ret,
+                fills=fills,
+                execution_model=ExecutionModel(),
+                timeframe=timeframe,
+                starting_capital=starting_capital,
             )
-        )
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="stop_slippage_stress",
+                    perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps, "exit_fills_count": len(exit_fills)},
+                    metrics={
+                        "sharpe": float(slip_mets.sharpe) if slip_mets.sharpe is not None else 0.0,
+                        "cagr": float(slip_mets.cagr) if slip_mets.cagr is not None else 0.0,
+                        "max_drawdown": float(slip_mets.max_drawdown) if slip_mets.max_drawdown is not None else 0.0,
+                        "total_return": float(slip_mets.total_return) if slip_mets.total_return is not None else 0.0,
+                    },
+                    seed=None,
+                    status=EvidenceStatus.VALID,
+                )
+            )
+        else:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="stop_slippage_stress",
+                    perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps},
+                    metrics={},
+                    seed=None,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="NO_FILL_RECORDS_FOR_STOP_SLIPPAGE",
+                )
+            )
+
+        # 3. Execution Delay (1-bar lag causal simulation)
+        if len(raw_curve) > self.policy.execution_delay_bars:
+            delay_curve = raw_curve.copy()
+            lagged_ret = delay_curve["net_return"].fillna(0.0).shift(self.policy.execution_delay_bars).fillna(0.0)
+            delay_curve["equity"] = starting_capital * (1.0 + lagged_ret).cumprod()
+            delay_curve["drawdown"] = delay_curve["equity"] / delay_curve["equity"].cummax() - 1.0
+            delay_mets = _compute_metrics(
+                equity_curve=delay_curve,
+                net_returns=lagged_ret,
+                fills=fills,
+                execution_model=ExecutionModel(),
+                timeframe=timeframe,
+                starting_capital=starting_capital,
+            )
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="execution_delay",
+                    perturbation_params={"delay_bars": self.policy.execution_delay_bars},
+                    metrics={
+                        "sharpe": float(delay_mets.sharpe) if delay_mets.sharpe is not None else 0.0,
+                        "cagr": float(delay_mets.cagr) if delay_mets.cagr is not None else 0.0,
+                        "max_drawdown": float(delay_mets.max_drawdown) if delay_mets.max_drawdown is not None else 0.0,
+                        "total_return": float(delay_mets.total_return) if delay_mets.total_return is not None else 0.0,
+                    },
+                    seed=None,
+                    status=EvidenceStatus.VALID,
+                )
+            )
+        else:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="execution_delay",
+                    perturbation_params={"delay_bars": self.policy.execution_delay_bars},
+                    metrics={},
+                    seed=None,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="INSUFFICIENT_BARS_FOR_EXECUTION_DELAY",
+                )
+            )
+
+        # 4. Missed Fills (Deterministic seeded fill omissions)
+        if not fills.empty:
+            rng = np.random.default_rng(self.policy.monte_carlo_seed)
+            n_fills = len(fills)
+            omission_mask = rng.random(n_fills) < self.policy.missed_fill_rate
+            surviving_fills = fills[~omission_mask].copy()
+
+            missed_curve = raw_curve.copy()
+            missed_ret = missed_curve["net_return"].fillna(0.0).copy()
+
+            if "timestamp" in fills.columns and "timestamp" in missed_curve.columns:
+                omitted_ts = set(pd.to_datetime(fills.loc[omission_mask, "timestamp"], utc=True))
+                curve_ts = pd.to_datetime(missed_curve["timestamp"], utc=True)
+                bar_mask = curve_ts.isin(omitted_ts)
+                missed_ret.loc[bar_mask] = 0.0
+            else:
+                frac_omitted = float(omission_mask.sum() / max(1, n_fills))
+                missed_ret = missed_ret * (1.0 - frac_omitted)
+
+            missed_curve["net_return"] = missed_ret
+            missed_curve["equity"] = starting_capital * (1.0 + missed_ret).cumprod()
+            missed_curve["drawdown"] = missed_curve["equity"] / missed_curve["equity"].cummax() - 1.0
+            missed_mets = _compute_metrics(
+                equity_curve=missed_curve,
+                net_returns=missed_ret,
+                fills=surviving_fills,
+                execution_model=ExecutionModel(),
+                timeframe=timeframe,
+                starting_capital=starting_capital,
+            )
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="missed_fills",
+                    perturbation_params={"missed_fill_rate": self.policy.missed_fill_rate, "omitted_fills_count": int(omission_mask.sum())},
+                    metrics={
+                        "sharpe": float(missed_mets.sharpe) if missed_mets.sharpe is not None else 0.0,
+                        "cagr": float(missed_mets.cagr) if missed_mets.cagr is not None else 0.0,
+                        "max_drawdown": float(missed_mets.max_drawdown) if missed_mets.max_drawdown is not None else 0.0,
+                        "total_return": float(missed_mets.total_return) if missed_mets.total_return is not None else 0.0,
+                    },
+                    seed=self.policy.monte_carlo_seed,
+                    status=EvidenceStatus.VALID,
+                )
+            )
+        else:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="missed_fills",
+                    perturbation_params={"missed_fill_rate": self.policy.missed_fill_rate},
+                    metrics={},
+                    seed=self.policy.monte_carlo_seed,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="NO_FILL_RECORDS_FOR_MISSED_FILLS",
+                )
+            )
+
+        # 5. Reduced Liquidity Stress (Restricting capacity & scaling impact on actual fill volume)
+        if not fills.empty and {"quantity", "price"}.issubset(fills.columns):
+            liq_curve = raw_curve.copy()
+            traded_notional = (fills["quantity"] * fills["price"]).abs().sum()
+            impact_bps = (self.policy.liquidity_stress_factor - 1.0) * 5.0
+            liq_impact_cost = float(traded_notional * (impact_bps / 10000.0))
+
+            per_bar_liq = liq_impact_cost / (len(liq_curve) * starting_capital)
+            liq_net_ret = liq_curve["net_return"].fillna(0.0) - per_bar_liq
+
+            liq_curve["net_return"] = liq_net_ret
+            liq_curve["equity"] = starting_capital * (1.0 + liq_net_ret).cumprod()
+            liq_curve["drawdown"] = liq_curve["equity"] / liq_curve["equity"].cummax() - 1.0
+            liq_mets = _compute_metrics(
+                equity_curve=liq_curve,
+                net_returns=liq_net_ret,
+                fills=fills,
+                execution_model=ExecutionModel(),
+                timeframe=timeframe,
+                starting_capital=starting_capital,
+            )
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="reduced_liquidity",
+                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor, "traded_notional": float(traded_notional)},
+                    metrics={
+                        "sharpe": float(liq_mets.sharpe) if liq_mets.sharpe is not None else 0.0,
+                        "cagr": float(liq_mets.cagr) if liq_mets.cagr is not None else 0.0,
+                        "max_drawdown": float(liq_mets.max_drawdown) if liq_mets.max_drawdown is not None else 0.0,
+                        "total_return": float(liq_mets.total_return) if liq_mets.total_return is not None else 0.0,
+                    },
+                    seed=None,
+                    status=EvidenceStatus.VALID,
+                )
+            )
+        else:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="reduced_liquidity",
+                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor},
+                    metrics={},
+                    seed=None,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="NO_FILL_RECORDS_FOR_REDUCED_LIQUIDITY",
+                )
+            )
 
         return results
 
@@ -872,6 +1035,10 @@ class RobustnessEvaluator:
                 "purged_train_range": [purged_train_dates[0].isoformat(), purged_train_dates[-1].isoformat()] if len(purged_train_dates) else [],
                 "purged_val_range": [purged_val_dates[0].isoformat(), purged_val_dates[-1].isoformat()] if len(purged_val_dates) else [],
                 "embargoed_ranges": [embargoed_dates[0].isoformat(), embargoed_dates[-1].isoformat()] if len(embargoed_dates) else [],
+                "dataset_snapshot_ids": dict(source.dataset_snapshot_ids),
+                "contributing_dataset_ids": sorted(list(source.contributing_dataset_ids)),
+                "dataset_content_hashes": dict(source.dataset_content_hashes),
+                "frame_certification_id": source.frame_certification_id,
                 "train_hash": train_source.data_hash,
                 "val_hash": val_source.data_hash,
                 "test_hash": test_source.data_hash,
@@ -894,6 +1061,9 @@ class RobustnessEvaluator:
                     purged_train_range=[purged_train_dates[0].isoformat(), purged_train_dates[-1].isoformat()] if len(purged_train_dates) else [],
                     purged_val_range=[purged_val_dates[0].isoformat(), purged_val_dates[-1].isoformat()] if len(purged_val_dates) else [],
                     embargoed_ranges=[embargoed_dates[0].isoformat(), embargoed_dates[-1].isoformat()] if len(embargoed_dates) else [],
+                    dataset_snapshot_ids=dict(source.dataset_snapshot_ids),
+                    contributing_dataset_ids=sorted(list(source.contributing_dataset_ids)),
+                    dataset_content_hashes=dict(source.dataset_content_hashes),
                     train_data_hash=train_source.data_hash,
                     val_data_hash=val_source.data_hash,
                     test_data_hash=test_source.data_hash,
@@ -947,7 +1117,6 @@ class RobustnessEvaluator:
                     if t_id:
                         registry_trial_ids.append(str(t_id))
 
-                    # Deduplicate replay/idempotent trials by definition identity
                     def_key = canonical_hash({
                         "strategy": tr.get("strategy_name"),
                         "timeframe": tr.get("timeframe"),
@@ -975,7 +1144,6 @@ class RobustnessEvaluator:
                         if sh_val is not None and not math.isnan(float(sh_val)):
                             registry_sharpes.append(float(sh_val))
                     elif st == TrialStatus.FAILED.value:
-                        # Genuine failed attempt increases multiplicity N!
                         failed_count += 1
                     elif st == TrialStatus.INVALIDATED.value:
                         invalidated_count += 1
@@ -983,10 +1151,16 @@ class RobustnessEvaluator:
                 logger.warning(f"Could not retrieve registry trials for family {spec.experiment_family_id}: {exc}")
 
         effective_multiplicity = succeeded_count + failed_count
+        trial_source_provenance = (
+            TrialCountSource.PHASE2_1_REGISTRY
+            if (spec.experiment_family_id and len(registry_trial_ids) > 0)
+            else TrialCountSource.MANUAL_STATISTICAL_INPUT
+        )
 
         dsr_result = compute_dsr(
             combined_final_returns,
             registry_sharpes,
+            trial_count_source=trial_source_provenance,
             effective_trials=effective_multiplicity,
             annualization_factor=self.policy.annualization_factor,
             minimum_observations=self.policy.minimum_observations,
@@ -1014,7 +1188,7 @@ class RobustnessEvaluator:
             annualization_factor=self.policy.annualization_factor,
         )
 
-        # 4. Monte Carlo Robustness (Capital ruin evaluated directly from simulated equity paths)
+        # 4. Monte Carlo Robustness
         monte_carlo_res = compute_monte_carlo_robustness(
             combined_final_returns,
             fills=combined_final_fills,
@@ -1044,12 +1218,16 @@ class RobustnessEvaluator:
 
         # Overall evidence status fails closed if any critical component is non-valid
         boot_valid = all(b.status == EvidenceStatus.VALID for b in bootstrap_cis.values())
+        cost_valid = all(c.status == EvidenceStatus.VALID for c in cost_stress_res)
+        exec_valid = all(e.status == EvidenceStatus.VALID for e in exec_stress_res)
         overall_status = EvidenceStatus.VALID
         if (
             psr_result.status != EvidenceStatus.VALID
             or dsr_result.status != EvidenceStatus.VALID
             or not boot_valid
             or monte_carlo_res.status != EvidenceStatus.VALID
+            or not cost_valid
+            or not exec_valid
             or not nested_folds
         ):
             overall_status = EvidenceStatus.INSUFFICIENT_EVIDENCE
@@ -1074,6 +1252,16 @@ class RobustnessEvaluator:
         evidence_hash_payload = {
             "robustness_id": robustness_id,
             "folds": [f.evidence_hash for f in nested_folds],
+            "fold_dataset_lineage": [
+                {
+                    "fold_id": f.fold_id,
+                    "dataset_snapshot_ids": f.dataset_snapshot_ids,
+                    "contributing_dataset_ids": f.contributing_dataset_ids,
+                    "dataset_content_hashes": f.dataset_content_hashes,
+                    "frame_certification_id": f.frame_certification_id,
+                }
+                for f in nested_folds
+            ],
             "parameter_robustness": [c.model_dump(mode="json") for c in all_evaluated_candidates],
             "psr": psr_result.model_dump(mode="json"),
             "dsr": dsr_result.model_dump(mode="json"),
