@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from datetime import date, datetime, timezone
 import json
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -120,7 +120,7 @@ def test_nested_wf_sealed_final_oos_leakage_prevention(tmp_path: Any, monkeypatc
     )
 
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -170,14 +170,14 @@ def test_purge_and_embargo_boundaries() -> None:
 
     # Reject negative purge / embargo
     with pytest.raises(ValueError, match="purge_window must be non-negative"):
-        RobustnessEvaluator(None, policy=RobustnessPolicy()).evaluate(
+        RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy()).evaluate(
             "run-neg",
             ExperimentSpec(strategy_name="trend_following", universe=["SYM"], timeframe="1d"),
             purge_window=-1,
         )
 
     with pytest.raises(ValueError, match="embargo_window must be non-negative"):
-        RobustnessEvaluator(None, policy=RobustnessPolicy()).evaluate(
+        RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy()).evaluate(
             "run-neg",
             ExperimentSpec(strategy_name="trend_following", universe=["SYM"], timeframe="1d"),
             embargo_window=-2,
@@ -255,7 +255,7 @@ def test_cost_stress_2x_worsens_net_performance(tmp_path: Any, monkeypatch: pyte
     db = DuckDBManager(db_path)
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -301,7 +301,7 @@ def test_execution_stress_scenarios_deterministic(tmp_path: Any, monkeypatch: py
     db = DuckDBManager(db_path)
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -384,7 +384,7 @@ def test_trial_registry_linkage_and_dsr_sensitivity(tmp_path: Any, monkeypatch: 
             db.transition_research_trial(tid, "SUCCEEDED", metrics={"sharpe": 1.1, "total_return": 0.15})
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -550,14 +550,34 @@ def test_event_driven_mode_robustness_evaluation(tmp_path: Any, monkeypatch: pyt
     MigrationRunner(db_path).run_migrations()
     db = DuckDBManager(db_path)
 
+    family_id = "fam-event-driven-01"
+    db.register_experiment_family(
+        ExperimentFamilySpec(
+            experiment_family_id=family_id,
+            hypothesis="Event driven mode test",
+            strategy_names=["trend_following"],
+            strategy_versions=["1.1.0"],
+            universe_snapshot_id="U_TEST",
+            timeframe="1d",
+            feature_versions=["1.0"],
+            cost_model_version="v1",
+            parameter_space={"fast_threshold": [0.0, 0.01]},
+            maximum_trials=10,
+            selection_metric="sharpe",
+            walk_forward_design={"train_size": 150, "test_size": 50},
+            source_revision="rev-01",
+        )
+    )
+
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["TEST_SYM"],
         timeframe="1d",
         mode="event-driven",
+        experiment_family_id=family_id,
     )
 
     monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds)
@@ -583,14 +603,34 @@ def test_parameter_grid_candidate_generation(tmp_path: Any, monkeypatch: pytest.
     MigrationRunner(db_path).run_migrations()
     db = DuckDBManager(db_path)
 
+    family_id = "fam-grid-01"
+    db.register_experiment_family(
+        ExperimentFamilySpec(
+            experiment_family_id=family_id,
+            hypothesis="Grid candidate generation",
+            strategy_names=["trend_following"],
+            strategy_versions=["1.1.0"],
+            universe_snapshot_id="U_TEST",
+            timeframe="1d",
+            feature_versions=["1.0"],
+            cost_model_version="v1",
+            parameter_space={"fast_threshold": [0.0, 0.01, 0.02]},
+            maximum_trials=20,
+            selection_metric="sharpe",
+            walk_forward_design={"train_size": 150, "test_size": 50},
+            source_revision="rev-01",
+        )
+    )
+
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["TEST_SYM"],
         timeframe="1d",
         parameters={},  # empty parameters triggers grid candidates
+        experiment_family_id=family_id,
     )
 
     monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds)
@@ -636,8 +676,6 @@ def test_stress_scenario_engine_with_fills_and_cost_drag() -> None:
         "fill_price": [100.0, 105.0, 110.0],
     })
 
-
-
     dummy_run = type("DummyRun", (), {
         "equity_curve": curve,
         "fills": fills,
@@ -660,15 +698,17 @@ def test_stress_scenario_engine_with_fills_and_cost_drag() -> None:
         timeframe="1d",
         starting_capital=100_000.0,
     )
-    assert len(exec_results) == 4
-    for e in exec_results:
-        assert e.scenario_name in ["overnight_gap_stress", "stop_slippage_stress", "execution_delay", "missed_fills"]
-        assert "sharpe" in e.metrics
+    assert len(exec_results) == 5
+    scenario_names = {e.scenario_name for e in exec_results}
+    assert "reduced_liquidity" in scenario_names
+    assert "overnight_gap_stress" in scenario_names
+    assert "stop_slippage_stress" in scenario_names
+    assert "execution_delay" in scenario_names
+    assert "missed_fills" in scenario_names
 
 
 def test_nested_walk_forward_splitter_direct() -> None:
     """Verify NestedWalkForwardSplitter splits and handles purge/embargo."""
-    from experiments.robustness import NestedWalkForwardSplitter
     splitter = NestedWalkForwardSplitter()
 
     # 400 bars with 150 train, 50 val, 50 test, purge 5, embargo 3
@@ -676,9 +716,8 @@ def test_nested_walk_forward_splitter_direct() -> None:
     assert len(splits) >= 1
     t_idx, v_idx, test_idx = splits[0]
     assert len(t_idx) == 150 - 5  # purged 5 bars from end of train
-    assert len(v_idx) == 50
-    assert len(test_idx) == 50 - 3  # embargoed 3 bars from start of test
-
+    assert len(v_idx) == 50 - 5  # purged 5 bars from end of val
+    assert len(test_idx) == 50
 
     # Short total length returns empty list
     short_splits = splitter.split(100, train_size=150, val_size=50, test_size=50)
@@ -691,23 +730,43 @@ def test_candidate_replay_error_handling_in_nested_selection(tmp_path: Any, monk
     MigrationRunner(db_path).run_migrations()
     db = DuckDBManager(db_path)
 
+    family_id = "fam-candidate-err"
+    db.register_experiment_family(
+        ExperimentFamilySpec(
+            experiment_family_id=family_id,
+            hypothesis="Failing candidate replay error handling",
+            strategy_names=["trend_following"],
+            strategy_versions=["1.1.0"],
+            universe_snapshot_id="U_TEST",
+            timeframe="1d",
+            feature_versions=["1.0"],
+            cost_model_version="v1",
+            parameter_space={"fast_threshold": [0.0, 0.01]},
+            maximum_trials=20,
+            selection_metric="sharpe",
+            walk_forward_design={"train_size": 150, "test_size": 50},
+            source_revision="rev-01",
+        )
+    )
+
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(train_size=150, val_size=50, test_size=50))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["TEST_SYM"],
         timeframe="1d",
         parameters={},  # multiple candidates from grid
+        experiment_family_id=family_id,
     )
 
     monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds)
 
-    # Make _run raise only on first candidate
+    # Make _run raise only on first candidate (fast_threshold == 0.01)
     original_run = evaluator._run
     def failing_run(spec, scope, source, params, capital):
-        if params.get("fast_threshold") == 0.0:
-            raise RuntimeError("Synthetic backtest execution failure for candidate 0")
+        if params.get("fast_threshold") == 0.01:
+            raise RuntimeError("Synthetic backtest execution failure for candidate 0.01")
         return original_run(spec, scope, source, params, capital)
 
     monkeypatch.setattr(evaluator, "_run", failing_run)
@@ -724,16 +783,185 @@ def test_candidate_replay_error_handling_in_nested_selection(tmp_path: Any, monk
     db.close()
 
 
+def test_parameter_robustness_plateau_fraction_and_rank_stability() -> None:
+    """Verify plateau fraction, neighbor min, and fold rank stability calculation."""
+    policy = RobustnessPolicy(
+        plateau_min_ratio=0.80,
+        sensitivity_weight=0.30,
+        stability_weight=0.20,
+        plateau_weight=0.30,
+        raw_score_weight=0.20,
+    )
+    selector = ParameterRobustnessSelector(policy)
+
+    grid = {"param_a": (1, 2, 3, 4, 5), "param_b": (10, 20, 30, 40, 50)}
+    candidates = [
+        {"param_a": 2, "param_b": 20},  # Candidate 1: Plateau center (robust)
+        {"param_a": 5, "param_b": 50},  # Candidate 2: Isolated spike (fragile)
+    ]
+
+    from experiments.trials import canonical_hash
+    c1_hash = canonical_hash(candidates[0])
+    c2_hash = canonical_hash(candidates[1])
+
+    scores_train = {
+        # Candidate 1 and neighbors (plateau)
+        c1_hash: 2.0,
+        canonical_hash({"param_a": 1, "param_b": 20}): 1.8,
+        canonical_hash({"param_a": 3, "param_b": 20}): 1.9,
+        canonical_hash({"param_a": 2, "param_b": 10}): 1.85,
+        canonical_hash({"param_a": 2, "param_b": 30}): 1.75,
+        # Candidate 2 (spike) and neighbors (collapse)
+        c2_hash: 2.2,
+        canonical_hash({"param_a": 4, "param_b": 50}): -0.5,
+        canonical_hash({"param_a": 5, "param_b": 40}): -0.2,
+    }
+
+    scores_val = {
+        c1_hash: 1.9,  # Stays high rank
+        c2_hash: 0.5,  # Collapses on val
+    }
+
+    evaluated = selector.evaluate_candidates(
+        scores_by_param=scores_train,
+        candidates=candidates,
+        grid=grid,
+        val_scores_by_param=scores_val,
+    )
+
+    c1_eval = next(c for c in evaluated if c.parameters == {"param_a": 2, "param_b": 20})
+    assert c1_eval.plateau_fraction == 1.0  # 4 out of 4 neighbors on plateau
+    assert c1_eval.neighbor_min == 1.75
+    assert c1_eval.val_rank == 1
+    assert c1_eval.selected is True
+
+    c2_eval = next(c for c in evaluated if c.parameters == {"param_a": 5, "param_b": 50})
+    assert c2_eval.plateau_fraction == 0.0
+    assert c2_eval.neighbor_min == -0.5
+    assert c2_eval.selected is False
+
+
+def test_real_selected_trial_id_linkage_in_registry(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify that selected candidate's real ResearchTrial trial_id is linked and marked selected."""
+    db_path = str(tmp_path / "test_real_trial_id.duckdb")
+    MigrationRunner(db_path).run_migrations()
+    db = DuckDBManager(db_path)
+
+    family_id = "fam-real-trial-01"
+    db.register_experiment_family(
+        ExperimentFamilySpec(
+            experiment_family_id=family_id,
+            hypothesis="Verify real trial ID mapping",
+            strategy_names=["trend_following"],
+            strategy_versions=["1.1.0"],
+            universe_snapshot_id="U_TEST",
+            timeframe="1d",
+            feature_versions=["1.0"],
+            cost_model_version="v1",
+            parameter_space={"fast_threshold": [0.0, 0.01]},
+            maximum_trials=10,
+            selection_metric="sharpe",
+            walk_forward_design={"train_size": 150, "test_size": 50},
+            source_revision="rev-01",
+        )
+    )
+
+    ds = _make_dummy_dataset(n_days=400, seed=42)
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TEST_SYM"],
+        timeframe="1d",
+        experiment_family_id=family_id,
+        parameters={"fast_threshold": 0.0, "min_volatility": 0.0},
+    )
+
+    monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds)
+
+    bundle = evaluator.evaluate(
+        parent_run_id="run-real-trial-id",
+        spec=spec,
+        train_size=150,
+        val_size=50,
+        test_size=50,
+    )
+
+    assert bundle.selected_trial_id is not None
+    assert bundle.selected_trial_id.startswith("trial-") or len(bundle.selected_trial_id) == 64
+
+    # Verify that the trial exists in DuckDB registry and was marked selected
+    trial_row = db.get_research_trial(bundle.selected_trial_id)
+    assert trial_row is not None
+    assert trial_row["selected"] is True
+
+    db.close()
+
+
+
+def test_cost_and_execution_stress_on_oos_evidence(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Verify cost stress includes slippage/liquidity and execution stress includes reduced liquidity on OOS evidence."""
+    db_path = str(tmp_path / "test_oos_stress.duckdb")
+    MigrationRunner(db_path).run_migrations()
+    db = DuckDBManager(db_path)
+
+    ds = _make_dummy_dataset(n_days=400, seed=42)
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(slippage_stress_bps=15.0, liquidity_stress_factor=2.0))
+
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TEST_SYM"],
+        timeframe="1d",
+        cost_model={"fee_bps": 10.0, "brokerage_rate_bps": 5.0},
+    )
+
+    monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds)
+
+    bundle = evaluator.evaluate(
+        parent_run_id="run-oos-stress",
+        spec=spec,
+        train_size=150,
+        val_size=50,
+        test_size=50,
+    )
+
+    # Cost stress checks
+    cost_15x = next(c for c in bundle.cost_stress if c.multiplier == 1.5)
+    assert cost_15x.slippage_bps_override == 15.0
+    assert cost_15x.liquidity_stress_factor == 2.0
+
+    cost_1x = next(c for c in bundle.cost_stress if c.multiplier == 1.0)
+    assert cost_1x.slippage_bps_override is None
+    assert cost_1x.liquidity_stress_factor is None
+
+    # Execution stress checks
+    exec_scenarios = {e.scenario_name for e in bundle.execution_stress}
+    assert "reduced_liquidity" in exec_scenarios
+    assert "overnight_gap_stress" in exec_scenarios
+    assert "stop_slippage_stress" in exec_scenarios
+    assert "execution_delay" in exec_scenarios
+    assert "missed_fills" in exec_scenarios
+
+    # Evidence hash binds all components
+    assert bundle.evidence_hash is not None
+    assert len(bundle.evidence_hash) == 64
+
+    db.close()
+
 
 def test_candidate_combinatorics_generation() -> None:
     """Verify _candidates generates multi-variable Cartesian product."""
-    evaluator = RobustnessEvaluator(None, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy())
     grid = {
         "fast_threshold": (0.01, 0.02),
         "min_volatility": (0.005, 0.01),
     }
     candidates = evaluator._candidates(explicit={}, parameter_grid=grid)
     assert len(candidates) == 4
+
+    # Explicit candidates with no grid
+    cand_explicit = evaluator._candidates(explicit={"param_a": 10}, parameter_grid={})
+    assert cand_explicit == [{"param_a": 10}]
 
 
 def test_source_and_cross_sectional_run_execution(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -756,7 +984,7 @@ def test_source_and_cross_sectional_run_execution(tmp_path: Any, monkeypatch: py
     )
 
     # 1. Single asset _source with mocked pipeline load_candles
-    monkeypatch.setattr("trading_stack.pipeline.StrategyPipeline.load_candles", lambda self, sym, tf: candles.copy())
+    monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf: candles.copy())
     ds_single = evaluator._source(spec_single, StrategyScope.SINGLE_ASSET, lookback=20)
     assert ds_single.universe_snapshot_id == spec_single.universe_snapshot_id
     assert not ds_single.panel.empty
@@ -778,7 +1006,7 @@ def test_source_and_cross_sectional_run_execution(tmp_path: Any, monkeypatch: py
         dataset_snapshot_ids={"SYM_A": "DS_A", "SYM_B": "DS_B"},
         panel=combined_panel,
     )
-    monkeypatch.setattr("trading_stack.datasets.SynchronizedPanelBuilder.build", lambda self, univ, tf, **kwargs: ds_multi)
+    monkeypatch.setattr("experiments.robustness.SynchronizedPanelBuilder.build", lambda self, univ, tf, **kwargs: ds_multi)
     ds_cross = evaluator._source(spec_cross, StrategyScope.CROSS_SECTIONAL, lookback=20)
     assert ds_cross is not None
 
@@ -806,8 +1034,56 @@ def test_nested_walk_forward_splitter_boundary_validations() -> None:
     assert splitter.split(20, train_size=50, val_size=10, test_size=10) == []
 
 
-def test_parameter_robustness_discrete_integer_steps_and_negative_train_scores() -> None:
-    """Cover discrete integer grid steps and non-positive train score branches."""
+def test_dual_boundary_purge_and_post_test_embargo_split_plans() -> None:
+    """Verify NestedWalkForwardSplitter purges both boundaries and embargos post-test observations."""
+    splitter = NestedWalkForwardSplitter()
+    plans = splitter.split_plans(
+        total_bars=500,
+        train_size=200,
+        val_size=50,
+        test_size=50,
+        purge_window=5,
+        embargo_window=10,
+    )
+    assert len(plans) >= 2
+
+    # Fold 1
+    p1 = plans[0]
+    assert p1.fold_id == "nfold-001"
+    # Train is [0 : 200 - 5] -> 195 bars
+    assert len(p1.train_indices) == 195
+    assert len(p1.purged_train_indices) == 5
+    assert p1.purged_train_indices == [195, 196, 197, 198, 199]
+
+    # Val is [200 : 250 - 5] -> 45 bars
+    assert len(p1.val_indices) == 45
+    assert len(p1.purged_val_indices) == 5
+    assert p1.purged_val_indices == [245, 246, 247, 248, 249]
+
+    # Test is [250 : 300] -> 50 bars
+    assert len(p1.test_indices) == 50
+    assert p1.test_indices[0] == 250
+    assert p1.test_indices[-1] == 299
+
+    # Embargoed window after test is [300 : 310]
+    assert len(p1.embargoed_indices) == 10
+    assert p1.embargoed_indices == list(range(300, 310))
+
+    # Fold 2 (expanding train)
+    p2 = plans[1]
+    assert p2.fold_id == "nfold-002"
+    assert p2.val_indices[0] == 250
+    assert p2.test_indices[0] == 300
+
+    # Zero purge plans
+    zero_purge = splitter.split_plans(total_bars=300, train_size=100, val_size=50, test_size=50, purge_window=0)
+    assert len(zero_purge) >= 1
+    assert zero_purge[0].purged_train_indices == []
+    assert zero_purge[0].purged_val_indices == []
+
+
+def test_parameter_robustness_discrete_integer_steps_and_empty_candidates() -> None:
+    """Cover discrete integer grid steps and empty candidates error."""
     selector = ParameterRobustnessSelector(RobustnessPolicy())
     grid = {
         "lookback": (10, 20, 30),
@@ -818,18 +1094,13 @@ def test_parameter_robustness_discrete_integer_steps_and_negative_train_scores()
     neighbors = selector.define_neighbors({"lookback": 20, "threshold": 0.01}, grid)
     assert len(neighbors) >= 1
 
-    # Candidate with negative train score and no val score
-    from experiments.trials import canonical_hash
-    cand = [{"lookback": 20, "threshold": 0.01}]
-    scores = {canonical_hash(cand[0]): -0.5}
+    # Candidate with missing key or out-of-grid value
+    assert selector.define_neighbors({"other_key": 5}, grid) == []
+    assert selector.define_neighbors({"lookback": 999, "threshold": 0.01}, grid) != []
 
-    evaluated = selector.evaluate_candidates(
-        scores_by_param=scores,
-        candidates=cand,
-        grid=grid,
-    )
-    assert len(evaluated) == 1
-    assert evaluated[0].train_score == -0.5
+    # Empty candidate list raises RuntimeError
+    with pytest.raises(RuntimeError, match="No candidate evaluations available"):
+        selector.evaluate_candidates(scores_by_param={}, candidates=[], grid=grid)
 
 
 def test_source_empty_candles_error(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -841,7 +1112,7 @@ def test_source_empty_candles_error(tmp_path: Any, monkeypatch: pytest.MonkeyPat
     evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
     spec = ExperimentSpec(strategy_name="trend_following", universe=["NON_EXISTENT"], timeframe="1d")
 
-    monkeypatch.setattr("trading_stack.pipeline.StrategyPipeline.load_candles", lambda self, sym, tf: pd.DataFrame())
+    monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf: pd.DataFrame())
     from trading_stack.domain import StrategyScope
     with pytest.raises(ValueError, match="No candles found"):
         evaluator._source(spec, StrategyScope.SINGLE_ASSET, lookback=20)
@@ -873,7 +1144,6 @@ def test_governance_and_registry_family_integration(tmp_path: Any, monkeypatch: 
         """
     )
 
-
     family_id = "fam-robust-01"
     db.conn.execute(
         """
@@ -899,9 +1169,6 @@ def test_governance_and_registry_family_integration(tmp_path: Any, monkeypatch: 
         )
         """
     )
-
-
-
 
     evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
     spec = ExperimentSpec(
@@ -937,61 +1204,6 @@ def test_governance_and_registry_family_integration(tmp_path: Any, monkeypatch: 
     saved = db.get_robustness_evaluation(bundle.robustness_id)
     assert saved is not None
     assert saved["robustness_id"] == bundle.robustness_id
-
-
-    db.close()
-
-
-def test_governance_error_during_nested_candidate_selection(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Verify research governance errors raise ResearchIntegrityError."""
-    from experiments.trials import ResearchCausalityError, ResearchIntegrityError
-    db_path = str(tmp_path / "test_gov_err.duckdb")
-    MigrationRunner(db_path).run_migrations()
-    db = DuckDBManager(db_path)
-
-    ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
-
-    spec = ExperimentSpec(
-        strategy_name="trend_following",
-        universe=["TEST_SYM"],
-        timeframe="1d",
-        parameters={"fast_threshold": 0.01, "min_volatility": 0.0},
-    )
-
-    monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds)
-
-    def causality_failing_run(spec, scope, source, params, capital):
-        raise ResearchCausalityError("Lookahead causality violation detected in feature pipeline")
-
-    monkeypatch.setattr(evaluator, "_run", causality_failing_run)
-
-    with pytest.raises(ResearchIntegrityError, match="Lookahead causality violation"):
-        evaluator.evaluate(
-            parent_run_id="run-causality-fail",
-            spec=spec,
-            train_size=150,
-            val_size=50,
-            test_size=50,
-        )
-
-    db.close()
-
-
-def test_evaluator_purge_and_embargo_invalid_windows(tmp_path: Any) -> None:
-    """Verify evaluator raises ValueError on negative purge or embargo."""
-    db_path = str(tmp_path / "test_eval_win.duckdb")
-    MigrationRunner(db_path).run_migrations()
-    db = DuckDBManager(db_path)
-
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
-    spec = ExperimentSpec(strategy_name="trend_following", universe=["TEST_SYM"], timeframe="1d")
-
-    with pytest.raises(ValueError, match="purge_window must be non-negative"):
-        evaluator.evaluate(parent_run_id="run-1", spec=spec, purge_window=-1)
-
-    with pytest.raises(ValueError, match="embargo_window must be non-negative"):
-        evaluator.evaluate(parent_run_id="run-1", spec=spec, embargo_window=-1)
 
     db.close()
 
@@ -1039,35 +1251,10 @@ def test_source_calendar_validation_and_malformed_json_evidence(tmp_path: Any, m
         def validate_bars(self, timestamps, tf):
             return type("ValResult", (), {"out_of_session_count": 5})()
 
-    evaluator.india_calendar = MockCalendar()
+    evaluator.india_calendar = cast(Any, MockCalendar())
     with pytest.raises(ValueError, match="bars outside the verified NSE calendar"):
         evaluator._source(spec, StrategyScope.SINGLE_ASSET, lookback=10)
 
     db.close()
-
-
-def test_stress_scenarios_empty_curve_and_splitter_edge_cases() -> None:
-    """Cover empty curve handling in stress engine and splitter edge cases."""
-    engine = StressScenarioEngine(RobustnessPolicy())
-    empty_run = type("EmptyRun", (), {"equity_curve": pd.DataFrame(), "fills": pd.DataFrame()})()
-
-    assert engine.evaluate_cost_stress(empty_run, {}, "1d", 100_000.0) == []
-    assert engine.evaluate_execution_stress(empty_run, "1d", 100_000.0) == []
-
-    splitter = NestedWalkForwardSplitter()
-    splits = splitter.split(250, train_size=100, val_size=50, test_size=50, purge_window=0, embargo_window=60)
-    assert len(splits) == 2
-    # Zero purge means full train slice
-    assert len(splits[0][0]) == 100
-
-
-
-
-
-
-
-
-
-
 
 

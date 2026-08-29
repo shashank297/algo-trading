@@ -82,7 +82,6 @@ def test_psr_negative_sharpe() -> None:
     assert psr.psr_value < 0.25
 
 
-
 def test_psr_skewed_and_kurtotic_returns() -> None:
     """Non-normal returns with negative skew / fat tails appropriately adjust the denominator."""
     rng = np.random.default_rng(777)
@@ -150,9 +149,9 @@ def test_dsr_deflates_as_trials_increase() -> None:
     # Candidate with trial Sharpes across varying registry sizes
     trial_sharpes = list(rng.normal(loc=0.5, scale=0.4, size=100))
 
-    dsr_5 = compute_dsr(returns, trial_sharpes[:5], effective_trials=5)
-    dsr_20 = compute_dsr(returns, trial_sharpes[:20], effective_trials=20)
-    dsr_100 = compute_dsr(returns, trial_sharpes[:100], effective_trials=100)
+    dsr_5 = compute_dsr(returns, trial_sharpes[:5], effective_trials=5, experiment_family_id="fam-01")
+    dsr_20 = compute_dsr(returns, trial_sharpes[:20], effective_trials=20, experiment_family_id="fam-01")
+    dsr_100 = compute_dsr(returns, trial_sharpes[:100], effective_trials=100, experiment_family_id="fam-01")
 
     assert dsr_5.status == EvidenceStatus.VALID
     assert dsr_20.status == EvidenceStatus.VALID
@@ -168,28 +167,52 @@ def test_dsr_deflates_as_trials_increase() -> None:
     assert dsr_100.effective_trials == 100
 
 
-def test_dsr_invalidated_trials_and_edge_cases() -> None:
-    """Handle 0 trials, empty inputs, and invalidated count tracking."""
+def test_dsr_fail_closed_missing_experiment_family() -> None:
+    """DSR must fail closed with INSUFFICIENT_EVIDENCE if experiment_family_id is missing."""
+    returns = [0.001] * 100
+    trial_sharpes = [1.0, 1.2, 0.8]
+
+    dsr_missing_fam = compute_dsr(returns, trial_sharpes, experiment_family_id=None)
+    assert dsr_missing_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_missing_fam.reason == "MISSING_AUTHORITATIVE_TRIAL_FAMILY"
+    assert dsr_missing_fam.dsr_value is None
+
+    dsr_empty_fam = compute_dsr(returns, trial_sharpes, experiment_family_id="   ")
+    assert dsr_empty_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_empty_fam.reason == "MISSING_AUTHORITATIVE_TRIAL_FAMILY"
+
+
+def test_dsr_fail_closed_insufficient_sharpe_observations() -> None:
+    """DSR requires at least 2 valid Sharpe observations to estimate variance."""
     returns = [0.001] * 100
 
-    # Zero trials -> INSUFFICIENT_EVIDENCE
-    dsr_empty = compute_dsr(returns, [], effective_trials=0)
-    assert dsr_empty.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-    assert dsr_empty.dsr_value is None
+    # Single trial Sharpe observation cannot compute variance
+    dsr_single = compute_dsr(returns, [1.5], effective_trials=10, experiment_family_id="fam-01")
+    assert dsr_single.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_single.reason == "INSUFFICIENT_SHARPE_OBSERVATIONS_FOR_VARIANCE"
 
-    # Track invalidated trials in audit metadata
-    dsr_with_inv = compute_dsr(returns, [1.0, 1.2, 0.8], effective_trials=3, invalidated_count=4, experiment_family_id="fam-01")
-    assert dsr_with_inv.total_trials == 7
-    assert dsr_with_inv.invalidated_trials == 4
-    assert dsr_with_inv.experiment_family_id == "fam-01"
 
-    # Edge cases: single trial with high effective_trials and zero variance trials
-    from experiments.statistical_tests import compute_expected_max_sharpe
-    sr0_non_ann, sr0_ann, var = compute_expected_max_sharpe([1.0], effective_trials=5)
-    assert sr0_ann == 0.0
-    sr0_non_ann, sr0_ann, var = compute_expected_max_sharpe([1.0, 1.0])
-    assert sr0_ann == 0.0
+def test_dsr_trial_multiplicity_accounting() -> None:
+    """Failed genuine trials increase effective multiplicity N without contributing a Sharpe ratio."""
+    rng = np.random.default_rng(2026)
+    returns = rng.normal(loc=0.0015, scale=0.01, size=252)
 
+    succeeded_sharpes = [0.8, 1.2, 1.5, 0.9]  # 4 succeeded trials
+    failed_count = 16  # 16 failed trials -> effective N = 20
+
+    dsr_with_failed = compute_dsr(
+        returns,
+        succeeded_sharpes,
+        succeeded_count=4,
+        failed_count=failed_count,
+        effective_trials=20,
+        experiment_family_id="fam-multiplicity",
+    )
+    assert dsr_with_failed.status == EvidenceStatus.VALID
+    assert dsr_with_failed.effective_trials == 20
+    assert dsr_with_failed.sharpe_count == 4
+    assert dsr_with_failed.succeeded_count == 4
+    assert dsr_with_failed.failed_count == 16
 
 
 def test_deterministic_bootstrap_reproducibility_and_intervals() -> None:
@@ -246,12 +269,14 @@ def test_monte_carlo_simulation_distributions_and_ruin() -> None:
         drawdown_threshold=0.15,
         ruin_threshold=0.30,
         seed=42,
+        starting_capital=100_000.0,
     )
     assert mc_pos.status == EvidenceStatus.VALID
     assert mc_pos.prob_negative_return is not None
     assert 0.0 <= mc_pos.prob_negative_return <= 0.10  # Highly profitable, rarely negative
     assert mc_pos.prob_drawdown_exceeds_threshold is not None
     assert mc_pos.capital_ruin_probability is not None
+    assert mc_pos.ruin_level == 70_000.0  # 100_000 * (1 - 0.30)
     assert "p50" in mc_pos.max_drawdown_percentiles
     assert "p95" in mc_pos.max_drawdown_percentiles
     assert mc_pos.max_drawdown_percentiles["p5"] <= mc_pos.max_drawdown_percentiles["p95"]
@@ -263,6 +288,7 @@ def test_monte_carlo_simulation_distributions_and_ruin() -> None:
         drawdown_threshold=0.15,
         ruin_threshold=0.30,
         seed=42,
+        starting_capital=100_000.0,
     )
     assert mc_pos.prob_negative_return == mc_pos_replay.prob_negative_return
     assert mc_pos.max_drawdown_percentiles == mc_pos_replay.max_drawdown_percentiles
@@ -275,11 +301,13 @@ def test_monte_carlo_simulation_distributions_and_ruin() -> None:
         drawdown_threshold=0.20,
         ruin_threshold=0.50,
         seed=42,
+        starting_capital=100_000.0,
     )
     assert mc_neg.prob_negative_return is not None
     assert mc_neg.prob_negative_return > 0.90
     assert mc_neg.capital_ruin_probability is not None
     assert mc_neg.capital_ruin_probability > 0.50
+    assert mc_neg.ruin_level == 50_000.0
 
 
 def test_statistical_tests_edge_cases_and_error_branches() -> None:
@@ -288,28 +316,52 @@ def test_statistical_tests_edge_cases_and_error_branches() -> None:
     sr0_non, sr0_ann, var = compute_expected_max_sharpe([], effective_trials=0)
     assert sr0_non == 0.0 and sr0_ann == 0.0 and var == 0.0
 
-    # 2. compute_dsr with invalid input exceptions
-    dsr_invalid = compute_dsr("invalid_type", [1.0])  # type: ignore[arg-type]
+    # 2. compute_psr with empty returns and zero observations
+    psr_empty = compute_psr(pd.Series([], dtype=float))
+    assert psr_empty.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert psr_empty.reason is not None and "below minimum threshold" in psr_empty.reason
+
+    # 3. compute_dsr with invalid input exceptions
+    from typing import Any, cast
+    dsr_invalid = compute_dsr(cast(Any, "invalid_type"), [1.0, 1.2], experiment_family_id="fam-01")
     assert dsr_invalid.status == EvidenceStatus.INVALID_INPUT
 
-    # 3. compute_dsr with invalid annualization factor
-    dsr_neg_ann = compute_dsr([0.01, 0.02, 0.03] * 20, [1.0], annualization_factor=-1.0)
+    # 4. compute_dsr with invalid annualization factor
+    dsr_neg_ann = compute_dsr([0.01, 0.02, 0.03] * 20, [1.0, 1.2], annualization_factor=-1.0, experiment_family_id="fam-01")
     assert dsr_neg_ann.status == EvidenceStatus.INVALID_INPUT
 
-    # 4. compute_bootstrap_confidence_intervals with invalid inputs
-    ci_invalid = compute_bootstrap_confidence_intervals("not_a_series")  # type: ignore[arg-type]
+    # 5. compute_dsr with identical sharpe observations (variance = 0) fails closed
+    dsr_zero_var = compute_dsr([0.01, 0.02, 0.03] * 20, [1.0, 1.0], experiment_family_id="fam-01")
+    assert dsr_zero_var.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_zero_var.reason == "ZERO_TRIAL_SHARPE_VARIANCE"
+
+    # 6. compute_bootstrap_confidence_intervals with zero variance returns and with fills
+    ci_zero_var = compute_bootstrap_confidence_intervals([0.01] * 50)
+    assert ci_zero_var["sharpe"].status == EvidenceStatus.VALID
+
+    dummy_fills = pd.DataFrame({"cost": [10.0, 20.0], "fill_price": [100.0, 105.0]})
+    ci_fills = compute_bootstrap_confidence_intervals([0.01, -0.005] * 25, fills=dummy_fills)
+    assert ci_fills["expectancy"].status == EvidenceStatus.VALID
+
+    # 7. compute_bootstrap_confidence_intervals with invalid inputs
+    ci_invalid = compute_bootstrap_confidence_intervals(cast(Any, "not_a_series"))
     assert ci_invalid["sharpe"].status == EvidenceStatus.INVALID_INPUT
 
-    # 5. compute_monte_carlo_robustness with invalid simulations and thresholds
+    # 8. compute_monte_carlo_robustness with invalid simulations and thresholds
     mc_invalid_sim = compute_monte_carlo_robustness([0.01] * 50, n_simulations=0)
     assert mc_invalid_sim.status == EvidenceStatus.INVALID_INPUT
 
     mc_invalid_thresh = compute_monte_carlo_robustness([0.01] * 50, drawdown_threshold=-0.1)
     assert mc_invalid_thresh.status == EvidenceStatus.INVALID_INPUT
 
-    mc_invalid_input = compute_monte_carlo_robustness("bad_input")  # type: ignore[arg-type]
+    mc_invalid_ruin = compute_monte_carlo_robustness([0.01] * 50, ruin_threshold=-0.5)
+    assert mc_invalid_ruin.status == EvidenceStatus.INVALID_INPUT
+
+    mc_invalid_cap = compute_monte_carlo_robustness([0.01] * 50, starting_capital=100_000.0)
+    assert mc_invalid_cap.status == EvidenceStatus.VALID
+
+    mc_invalid_input = compute_monte_carlo_robustness(cast(Any, "bad_input"))
     assert mc_invalid_input.status == EvidenceStatus.INVALID_INPUT
 
     mc_low_obs = compute_monte_carlo_robustness([0.01, -0.01], minimum_observations=30)
     assert mc_low_obs.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-

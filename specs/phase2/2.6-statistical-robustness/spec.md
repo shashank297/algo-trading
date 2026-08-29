@@ -3,43 +3,48 @@
 ## Objective
 
 Upgrade strategy validation from ordinary expanding walk-forward validation to a statistically defensible research framework.
-Establish nested walk-forward folds with sealed final OOS testing, purging and embargoing, parameter plateau/sensitivity robustness selection, Probabilistic Sharpe Ratio (PSR), trial-registry-backed Deflated Sharpe Ratio (DSR), deterministic block bootstrap, Monte Carlo path resampling, multi-tiered cost stress, and swing execution stress scenarios.
+Establish nested walk-forward folds with sealed final OOS testing, dual-boundary purging and post-test embargoing, parameter plateau/sensitivity robustness selection, Probabilistic Sharpe Ratio (PSR), trial-registry-backed Deflated Sharpe Ratio (DSR), deterministic block bootstrap, Monte Carlo path resampling, multi-tiered cost stress with slippage and liquidity factors, and swing execution stress scenarios.
 
 ## Requirements
 
-### 1. Nested Walk-Forward Validation
+### 1. Nested Walk-Forward Validation & Single Authoritative Splitter
+- One authoritative `NestedWalkForwardSplitter` generates fold boundaries and index/date partitions consumed by `RobustnessEvaluator`.
 - Explicitly separate each fold into three stages:
   - `TRAIN`: Used for candidate discovery and parameter evaluation.
   - `VALIDATION`: Used strictly in conjunction with `TRAIN` for candidate selection according to an explicit, versioned selection policy.
   - `FINAL_OOS_TEST`: Strictly sealed during parameter selection. Final OOS data, results, labels, returns, statistics, and metadata must never influence candidate discovery or selection. Changing future final OOS data must have zero effect on selected parameters. Final OOS is evaluated exactly once after candidate selection is frozen.
 - Persist for every fold:
-  - fold identifier
+  - fold identifier (`fold_id`)
   - train start/end timestamps
   - validation start/end timestamps
   - final-test start/end timestamps
-  - purge boundaries
-  - embargo boundaries
+  - actual purged timestamp/index ranges (`purged_train_range`, `purged_val_range`)
+  - actual embargoed timestamp/index ranges (`embargoed_ranges`)
   - input dataset IDs and exact data/content hashes
   - frame-certification IDs
   - policy/version identifiers
-  - selected candidate parameters and trial ID
+  - selected candidate parameters and parameter hash (`selected_parameter_hash`)
+  - actual selected research trial ID (`selected_trial_id`) from Phase 2.1 trial registry
   - relevant trial-registry references
-  - deterministic evidence hash
+  - deterministic fold evidence hash (`evidence_hash`)
 
-### 2. Purge & Embargo
-- Support configurable `purge_window` (number of bars/periods before validation/test boundaries to remove overlapping trade horizons) and `embargo_window` (number of bars/periods after validation/test intervals to prevent leakage into subsequent train folds).
+### 2. Dual-Boundary Purge & Post-Test Embargo
+- Purge must protect both stage boundaries:
+  - `TRAIN -> VALIDATION`: Purge trailing observations/labels from TRAIN whose outcome overlaps VALIDATION.
+  - `VALIDATION -> FINAL_OOS_TEST`: Purge trailing observations/labels from VALIDATION whose outcome overlaps FINAL_OOS_TEST.
+- Support configurable `purge_window` (number of bars/periods before boundaries) and `embargo_window` (number of bars/periods after evaluation intervals to prevent leakage into subsequent train folds).
+- Post-test embargo: observations within `[test_end, test_end + embargo_window]` must be excluded from entering subsequent training sets.
 - Support zero window (`0`), reject negative values with a clear error.
-- Enforce deterministic timestamp boundary calculations around fold boundaries for overlapping positions and label horizons.
 
 ### 3. Parameter Robustness Policy
 - Disallow selecting parameters solely on maximum raw TRAIN Sharpe.
 - Evaluate candidate neighborhoods across the parameter grid.
-- Compute:
-  - neighbor performance (mean, standard deviation, minimum)
-  - parameter sensitivity (gradient / variance across immediate neighbors)
-  - plateau width and plateau score (% of neighbors meeting performance threshold)
-  - rank stability across train/val folds (Spearman rank correlation or rank variance)
-  - aggregate robustness score combining raw performance, plateau stability, low sensitivity, and fold rank stability.
+- Compute for every candidate:
+  - `neighbor_mean`, `neighbor_std`, `neighbor_min` (minimum performance among neighbors)
+  - `sensitivity_score` (normalized rate of drop-off / variance across neighbors)
+  - `plateau_neighbor_count`, `neighbor_count`, `plateau_fraction` (% of neighbors meeting performance threshold `plateau_min_ratio * center_score`), `plateau_width`
+  - `train_rank`, `val_rank`, `rank_delta`, and `rank_stability` (computed via Spearman rank correlation / rank displacement between TRAIN and VALIDATION ranks)
+  - `aggregate_robustness_score` combining raw performance, plateau stability, low sensitivity, neighbor min, and fold rank stability.
 - Ensure broad, stable performance plateaus beat isolated high-Sharpe spikes.
 - Persist full candidate evaluations, neighborhood definitions, scores, and selection rationale deterministically.
 
@@ -53,19 +58,19 @@ Establish nested walk-forward folds with sealed final OOS testing, purging and e
 - Implement DSR in `experiments/statistical_tests.py` based on Bailey & López de Prado (2014) using the expected maximum Sharpe ratio under the null hypothesis of no skill across $N$ independent trials:
   $$SR_0 = \sqrt{V(\{SR_k\})} \left( (1 - \gamma) \Phi^{-1}\left(1 - \frac{1}{N}\right) + \gamma \Phi^{-1}\left(1 - \frac{1}{N} e^{-1}\right) \right)$$
 - Derive the effective trial count $N$ and trial Sharpe distribution directly and authoritatively from the Phase 2.1 trial registry (`research_trials_log` via `DuckDBManager.list_research_trials()`).
-- Explicitly reject arbitrary user-supplied trial counts for authoritative DSR.
-- Define and audit the treatment of trials:
-  - `SUCCEEDED` and `FAILED` candidate trials are included in multiplicity accounting.
-  - `INVALIDATED` trials (e.g. data corruption/bug before valid evaluation) are accounted for according to documented policy.
-  - Replays/idempotent trials are deduplicated by definition hash.
-- Persist experiment family ID, query scope, trial IDs, effective count, DSR output, and evidence status.
-- Fail closed if authoritative trial lineage cannot be resolved.
+- Explicitly reject arbitrary user-supplied trial counts and do NOT fall back to local uncertified candidates for authoritative DSR claims.
+- If `experiment_family_id` is missing or cannot be resolved: return `INSUFFICIENT_EVIDENCE` with deterministic reason `MISSING_AUTHORITATIVE_TRIAL_FAMILY`.
+- Account for trial multiplicity:
+  - Deduplicate idempotent/replay trials by definition identity.
+  - Count `succeeded_count`, `failed_count` (which increase multiplicity $N$ even without Sharpe), `invalidated_count`, and `deduplicated_count`.
+  - Effective multiplicity $N = \text{succeeded\_count} + \text{failed\_count}$.
+  - The Sharpe distribution for variance $V(\{SR_k\})$ contains only valid Sharpe observations from succeeded trials; if fewer than 2 exist, return `INSUFFICIENT_EVIDENCE`.
+- Persist experiment family ID, trial IDs, effective count $N$, Sharpe count, succeeded/failed/invalidated/deduplicated counts, trial policy version/hash, DSR output, and evidence status.
 
 ### 6. Deterministic Seeded Bootstrap
-- Implement deterministic seeded bootstrap in `experiments/statistical_tests.py` supporting i.i.d. and block bootstrap (moving block bootstrap with configurable block size).
-- Compute confidence intervals (e.g. 95% CI: lower, upper, median) for Total Return, Sharpe Ratio, Expectancy, and Maximum Drawdown.
+- Implement deterministic seeded bootstrap in `experiments/statistical_tests.py` supporting i.i.d. and moving block bootstrap.
+- Compute confidence intervals (e.g. 95% CI: lower, upper, median) for Total Return, Sharpe Ratio, Expectancy (period return and net trade expectancy when fills provided), and Maximum Drawdown.
 - Ensure identical input + configuration + seed yields identical output.
-- Fail safely on insufficient observations.
 
 ### 7. Monte Carlo Robustness Simulation
 - Resample trade sequences and return paths using seeded simulation to estimate:
@@ -73,29 +78,28 @@ Establish nested walk-forward folds with sealed final OOS testing, purging and e
   - Probability of drawdown exceeding threshold $P(\text{MaxDD} > \text{threshold})$
   - Max Drawdown distribution (percentiles: 5th, 50th, 95th, 99th)
   - Sharpe ratio distribution (percentiles: 5th, 50th, 95th)
-  - Capital ruin probability proxy $P(\text{Equity} \le \text{ruin\_level})$
-- Treat outputs as model-based robustness estimates with explicit assumptions.
+  - Capital ruin probability $P(\text{Equity} \le \text{ruin\_level})$ calculated directly from simulated cumulative equity paths ($ruin\_level = starting\_capital \times (1 - ruin\_threshold)$).
+- Persist `ruin_definition`, `ruin_level`, `capital_ruin_probability`, percentiles, simulations, seed.
 
-### 8. Multi-Tiered Cost Stress
-- Automatically evaluate baseline ($1.0\times$), $1.5\times$, $2.0\times$, and $3.0\times$ transaction-cost scenarios without mutating the baseline backtest result.
-- Support configurable slippage and liquidity stress.
-- Persist stress-scenario metrics independently alongside baseline hashes.
-- Mathematically ensure $2.0\times$ costs worsens net performance whenever gross trade economics are unchanged and trades occur.
+### 8. Multi-Tiered Cost Stress & Slippage/Liquidity
+- Evaluate baseline ($1.0\times$), $1.5\times$, $2.0\times$, and $3.0\times$ transaction-cost scenarios on causally valid out-of-sample (OOS) evidence.
+- Apply configured `slippage_stress_bps` and `liquidity_stress_factor` to stressed runs while keeping baseline $1.0\times$ unperturbed.
+- Persist `multiplier`, `slippage_bps_override`, `liquidity_stress_factor`, `cost_schedule_summary`, and net metrics.
 
-### 9. Execution Stress
-- Provide configurable swing execution stress perturbations:
-  - Overnight gap risk
-  - Stop slippage
-  - 1-bar execution delay
-  - Deterministic seeded missed fills
-  - Liquidity/participation rate constraints
-- Model perturbations as independent research-time scenario evaluations.
+### 9. Swing Execution Stress
+- Provide configurable execution stress scenarios evaluated on OOS evidence:
+  - Overnight gap risk (`overnight_gap_stress`)
+  - Stop slippage (`stop_slippage_stress`)
+  - 1-bar execution delay (`execution_delay_1bar`)
+  - Deterministic seeded missed fills (`missed_fills`)
+  - Reduced liquidity constraints (`reduced_liquidity`)
+- Perturb execution economics / fills / returns deterministically without fabricating precision.
 
-### 10. Structured Robustness Result & Persistence
-- Define typed Pydantic models / dataclasses for all Phase 2.6 results in `experiments/robustness.py` and `experiments/statistical_tests.py`.
-- Add migration `022_phase2_6_robustness.sql` creating `strategy_robustness_evaluations` and indices.
-- Persist robustness bundles immutably in DuckDB: identical replay is idempotent; conflicting payload for an existing identity fails atomically.
-- Preserve existing strategy promotion rules (Phase 2.6 persists evidence for downstream evaluation without altering existing promotion gates).
+### 10. Structured Robustness Result, Evidence Hash Binding & Persistence
+- Define typed Pydantic models for all Phase 2.6 results in `experiments/robustness.py` and `experiments/statistical_tests.py`.
+- Final `evidence_hash` binds all semantic robustness evidence (nested folds, parameter robustness, PSR, DSR, bootstrap, Monte Carlo, cost stress, execution stress, policy version/hash, data hash, frame cert, trial lineage, actual selected trial IDs, purge/embargo boundaries). Excludes non-deterministic timestamps (`created_at`).
+- Overall `evidence_status` fails closed (`INSUFFICIENT_EVIDENCE`) if any required component is insufficient.
+- Persist robustness bundles immutably in DuckDB (`strategy_robustness_evaluations`): identical replay is idempotent; conflicting payload for an existing identity fails atomically.
 
 ## Non-goals
 
@@ -103,4 +107,5 @@ Establish nested walk-forward folds with sealed final OOS testing, purging and e
 - No Phase 2.8 strategy scorecards or ranking.
 - No Phase 2.9 adaptive selector or Phase 2.10 meta-selector.
 - No live order routing or modifications to broker execution.
-- No intraday order-book or microstructure simulation.
+- No direct push to protected main branch (all changes land via PR with full green CI).
+
