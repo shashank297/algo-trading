@@ -150,3 +150,32 @@ research:
     full_liquidity_traded_value: 500000000.0
     gap_return_threshold: 0.02
     gap_frequency_target: 0.20
+  statistical_robustness:
+    policy_version: "2.6.0"
+    train_size: 252
+    val_size: 63
+    test_size: 63
+    purge_window: 5
+    embargo_window: 5
+    plateau_min_ratio: 0.80
+    sensitivity_weight: 0.30
+    stability_weight: 0.20
+    plateau_weight: 0.30
+    raw_score_weight: 0.20
+    cost_multipliers: [1.0, 1.5, 2.0, 3.0]
+    slippage_stress_bps: 10.0
+    liquidity_stress_factor: 1.5
+    overnight_gap_bps: 25.0
+    stop_slippage_bps: 15.0
+    execution_delay_bars: 1
+    missed_fill_rate: 0.05
+    bootstrap_resamples: 1000
+    bootstrap_confidence: 0.95
+    bootstrap_block_size: 10
+    bootstrap_seed: 42
+    monte_carlo_simulations: 1000
+    monte_carlo_drawdown_threshold: 0.20
+    monte_carlo_ruin_threshold: 0.50
+    monte_carlo_seed: 42
+    psr_benchmark_sharpe: 0.0
+

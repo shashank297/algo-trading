@@ -3409,3 +3409,127 @@ class DuckDBManager:
             "ORDER BY decision_time DESC, asset_state_id LIMIT ?",
             params,
         ).fetchdf().to_dict(orient="records")
+
+    def save_robustness_evaluation(self, bundle: Any) -> str:
+        """Persist an immutable strategy robustness evaluation bundle with idempotent replay and conflict check."""
+        if hasattr(bundle, "model_dump"):
+            data = bundle.model_dump(mode="json")
+        elif hasattr(bundle, "to_dict"):
+            data = bundle.to_dict()
+        else:
+            data = dict(bundle)
+
+        columns = (
+            "robustness_id", "run_id", "experiment_family_id", "strategy_name",
+            "strategy_version", "selected_trial_id", "evidence_status",
+            "psr_json", "dsr_json", "bootstrap_json", "monte_carlo_json",
+            "cost_stress_json", "execution_stress_json", "parameter_robustness_json",
+            "nested_folds_json", "policy_version", "policy_hash", "data_hash",
+            "evidence_hash", "created_at",
+        )
+
+        row_payload = {
+            "robustness_id": data["robustness_id"],
+            "run_id": data["run_id"],
+            "experiment_family_id": data.get("experiment_family_id"),
+            "strategy_name": data["strategy_name"],
+            "strategy_version": data["strategy_version"],
+            "selected_trial_id": data.get("selected_trial_id"),
+            "evidence_status": str(data["evidence_status"]),
+            "psr_json": self._canonical_json(data["psr"]),
+            "dsr_json": self._canonical_json(data["dsr"]),
+            "bootstrap_json": self._canonical_json(data["bootstrap_intervals"]),
+            "monte_carlo_json": self._canonical_json(data["monte_carlo"]),
+            "cost_stress_json": self._canonical_json(data["cost_stress"]),
+            "execution_stress_json": self._canonical_json(data["execution_stress"]),
+            "parameter_robustness_json": self._canonical_json(data["parameter_robustness"]),
+            "nested_folds_json": self._canonical_json(data["nested_folds"]),
+            "policy_version": data["policy_version"],
+            "policy_hash": data["policy_hash"],
+            "data_hash": data["data_hash"],
+            "evidence_hash": data["evidence_hash"],
+            "created_at": data.get("created_at") or datetime.now(timezone.utc).isoformat(),
+        }
+
+        with self._write_lock:
+            self.conn.execute("BEGIN TRANSACTION")
+            try:
+                existing = self.conn.execute(
+                    f"SELECT {', '.join(columns)} FROM strategy_robustness_evaluations WHERE robustness_id = ?",
+                    [row_payload["robustness_id"]],
+                ).fetchone()
+                if existing is not None:
+                    existing_data = dict(zip(columns, existing))
+                    if self._robustness_semantic_payload(existing_data) != self._robustness_semantic_payload(row_payload):
+                        raise ValueError(
+                            f"Conflicting immutable robustness evaluation payload: {row_payload['robustness_id']}"
+                        )
+                    self.conn.execute("COMMIT")
+                    return str(row_payload["robustness_id"])
+
+                placeholders = ", ".join("?" for _ in columns)
+                self.conn.execute(
+                    f"INSERT INTO strategy_robustness_evaluations ({', '.join(columns)}) VALUES ({placeholders})",
+                    [row_payload.get(column) for column in columns],
+                )
+                self.conn.execute("COMMIT")
+                return str(row_payload["robustness_id"])
+            except Exception:
+                self.conn.execute("ROLLBACK")
+                raise
+
+    def _robustness_semantic_payload(self, data: dict[str, Any]) -> dict[str, Any]:
+        json_fields = {
+            "psr_json", "dsr_json", "bootstrap_json", "monte_carlo_json",
+            "cost_stress_json", "execution_stress_json",
+            "parameter_robustness_json", "nested_folds_json",
+        }
+        payload: dict[str, Any] = {}
+        for field, value in data.items():
+            if field == "created_at":
+                continue
+            if field in json_fields:
+                value = self._canonical_json(value)
+            payload[field] = value
+        return payload
+
+    def get_robustness_evaluation(self, robustness_id: str) -> dict[str, Any] | None:
+        """Fetch one immutable robustness evaluation by ID."""
+        frame = self.conn.execute(
+            "SELECT * FROM strategy_robustness_evaluations WHERE robustness_id = ?",
+            [robustness_id],
+        ).fetchdf()
+        return None if frame.empty else frame.iloc[0].to_dict()
+
+    def list_robustness_evaluations(
+        self,
+        *,
+        strategy_name: str | None = None,
+        strategy_version: str | None = None,
+        experiment_family_id: str | None = None,
+        run_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """List persisted robustness evaluations using indexed filters."""
+        if limit <= 0:
+            raise ValueError("limit must be positive")
+        filters = {
+            "strategy_name": strategy_name,
+            "strategy_version": strategy_version,
+            "experiment_family_id": experiment_family_id,
+            "run_id": run_id,
+        }
+        clauses: list[str] = []
+        params: list[Any] = []
+        for column, value in filters.items():
+            if value is not None:
+                clauses.append(f"{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        return self.conn.execute(
+            f"SELECT * FROM strategy_robustness_evaluations {where} "
+            "ORDER BY created_at DESC, robustness_id LIMIT ?",
+            params,
+        ).fetchdf().to_dict(orient="records")
+
