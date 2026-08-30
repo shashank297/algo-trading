@@ -49,6 +49,7 @@ def compute_dsr(
     returns: pd.Series | np.ndarray | list[float],
     trial_sharpes: list[float] | np.ndarray,
     *,
+    db: Any | None = None,
     trial_count_source: TrialCountSource = TrialCountSource.MANUAL_STATISTICAL_INPUT,
     effective_trials: int | None = None,
     annualization_factor: float = 252.0,
@@ -66,8 +67,27 @@ def compute_dsr(
     """Calculate Deflated Sharpe Ratio correcting for multiple testing.
     
     Only authoritative registry-backed execution (trial_count_source=PHASE2_1_REGISTRY)
-    with non-empty experiment_family_id and verified trial_ids produces EvidenceStatus.VALID.
-    Fails closed with UNVERIFIED_TRIAL_REGISTRY_PROVENANCE on manual or unverified input.
+    with a verified database handle (db), non-empty experiment_family_id, and verified trial_ids
+    found in DuckDB research_trials_log produces EvidenceStatus.VALID.
+    Fails closed with UNVERIFIED_DATABASE_PROVENANCE if db is None or family/trials are unverified.
+    """
+    ...
+
+
+def resolve_authoritative_dsr(
+    db: Any,
+    returns: pd.Series | np.ndarray | list[float],
+    experiment_family_id: str,
+    *,
+    annualization_factor: float = 252.0,
+    minimum_observations: int = 30,
+    trial_policy_version: str = "2.6.0",
+    trial_policy_hash: str = "",
+) -> DSRResult:
+    """Storage-backed resolver for Deflated Sharpe Ratio with verified DuckDB provenance.
+    
+    Queries research_trials_log from the database, deduplicates idempotent definitions,
+    computes trial multiplicity (succeeded + failed), extracts Sharpe ratios, and calculates DSR.
     """
     ...
 ```

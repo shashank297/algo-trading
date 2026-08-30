@@ -36,6 +36,7 @@ from experiments.statistical_tests import (
     compute_dsr,
     compute_monte_carlo_robustness,
     compute_psr,
+    resolve_authoritative_dsr,
 )
 
 __all__ = [
@@ -68,7 +69,6 @@ __all__ = [
     "compute_bootstrap_confidence_intervals",
     "compute_dsr",
     "compute_monte_carlo_robustness",
-
     "compute_psr",
+    "resolve_authoritative_dsr",
 ]
-

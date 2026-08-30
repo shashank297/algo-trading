@@ -677,6 +677,8 @@ def test_stress_scenario_engine_with_fills_and_cost_drag() -> None:
         "price": [100.0, 105.0, 110.0],
         "quantity": [100, -100, 50],
         "side": ["BUY", "SELL", "BUY"],
+        "order_type": ["BUY", "STOP_LOSS", "BUY"],
+        "market_volume": [100000.0, 100000.0, 100000.0],
         "cost": [50.0, 55.0, 25.0],
         "fees": [10.0, 10.0, 5.0],
         "slippage": [0.0, 0.0, 0.0],
@@ -684,9 +686,16 @@ def test_stress_scenario_engine_with_fills_and_cost_drag() -> None:
         "fill_price": [100.0, 105.0, 110.0],
     })
 
+    delayed_curve = curve.copy()
+    delayed_run = type("DummyDelayedRun", (), {
+        "equity_curve": delayed_curve,
+        "fills": fills,
+    })()
+
     dummy_run = type("DummyRun", (), {
         "equity_curve": curve,
         "fills": fills,
+        "delayed_run": delayed_run,
         "metrics": type("DummyMetrics", (), {"sharpe": 1.0, "cagr": 0.15, "max_drawdown": -0.05, "total_return": 0.20, "profit_factor": 1.5})(),
     })()
 
@@ -700,6 +709,7 @@ def test_stress_scenario_engine_with_fills_and_cost_drag() -> None:
     for c in cost_results:
         assert c.multiplier in [1.0, 1.5, 2.0, 3.0]
         assert "sharpe" in c.metrics
+        assert c.status == EvidenceStatus.VALID
 
     exec_results = engine.evaluate_execution_stress(
         strategy_run=dummy_run,
@@ -707,6 +717,8 @@ def test_stress_scenario_engine_with_fills_and_cost_drag() -> None:
         starting_capital=100_000.0,
     )
     assert len(exec_results) == 5
+    for e in exec_results:
+        assert e.status == EvidenceStatus.VALID
     scenario_names = {e.scenario_name for e in exec_results}
     assert "reduced_liquidity" in scenario_names
     assert "overnight_gap_stress" in scenario_names
@@ -1391,7 +1403,7 @@ def test_parameter_robustness_negative_train_scores() -> None:
 
 
 def test_stress_scenario_without_timestamps_or_positions() -> None:
-    """Stress scenario engine covers fallback paths when timestamps or positions are missing."""
+    """Stress scenario engine fails closed with INSUFFICIENT_EVIDENCE when required evidence is missing."""
     engine = StressScenarioEngine(RobustnessPolicy())
 
     # Fills without timestamp
@@ -1414,23 +1426,35 @@ def test_stress_scenario_without_timestamps_or_positions() -> None:
         fills = fills_no_ts
 
     cost_res = engine.evaluate_cost_stress(RunNoTs(), base_cost_model={"fee_bps": 5.0}, timeframe="1d", starting_capital=100_000.0)
-    assert cost_res[1].status == EvidenceStatus.VALID
+    assert cost_res[0].status == EvidenceStatus.VALID  # baseline
+    assert cost_res[1].status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert cost_res[1].reason == "MISSING_FILL_TIMESTAMP_EVIDENCE"
 
     exec_res = engine.evaluate_execution_stress(RunNoTs(), timeframe="1d", starting_capital=100_000.0)
-    # Overnight gap fails gracefully without timestamp evidence
+    # Overnight gap fails without timestamp evidence
     overnight = next(r for r in exec_res if r.scenario_name == "overnight_gap_stress")
     assert overnight.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert overnight.reason == "MISSING_TIMESTAMP_OR_POSITION_EVIDENCE"
 
-    # Execution delay on very short curve (< 2 bars)
-    class ShortRun:
-        equity_curve = pd.DataFrame({"net_return": [0.001], "position": [1.0], "equity": [100000.0], "drawdown": [0.0]})
-        fills = fills_no_ts
+    # Stop slippage fails without stop order evidence
+    stop_slip = next(r for r in exec_res if r.scenario_name == "stop_slippage_stress")
+    assert stop_slip.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert stop_slip.reason == "NO_STOP_ORDER_EVIDENCE"
 
-    exec_short = engine.evaluate_execution_stress(ShortRun(), timeframe="1d", starting_capital=100_000.0)
-    delay_short = next(r for r in exec_short if r.scenario_name == "execution_delay")
-    assert delay_short.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-    assert delay_short.reason == "INSUFFICIENT_BARS_FOR_EXECUTION_DELAY"
+    # Execution delay fails without delayed replay evidence
+    delay = next(r for r in exec_res if r.scenario_name == "execution_delay")
+    assert delay.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert delay.reason == "NO_DELAYED_FILL_REPLAY_EVIDENCE"
+
+    # Missed fills fails without timestamp evidence
+    missed = next(r for r in exec_res if r.scenario_name == "missed_fills")
+    assert missed.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert missed.reason == "MISSING_TIMESTAMP_EVIDENCE_FOR_MISSED_FILLS"
+
+    # Reduced liquidity fails without market volume evidence
+    liq = next(r for r in exec_res if r.scenario_name == "reduced_liquidity")
+    assert liq.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert liq.reason == "NO_MARKET_VOLUME_EVIDENCE"
 
 
 def test_registry_family_with_deduplicated_and_failed_trials(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:

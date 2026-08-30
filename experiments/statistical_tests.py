@@ -19,6 +19,8 @@ from pydantic import BaseModel, Field
 import scipy.special
 import scipy.stats
 
+from experiments.trials import canonical_hash
+
 EULER_MASCHERONI = 0.57721566490153286060651209
 
 
@@ -369,6 +371,7 @@ def compute_dsr(
     returns: pd.Series | np.ndarray | list[float],
     trial_sharpes: list[float] | np.ndarray,
     *,
+    db: Any | None = None,
     trial_count_source: TrialCountSource = TrialCountSource.MANUAL_STATISTICAL_INPUT,
     effective_trials: int | None = None,
     annualization_factor: float = 252.0,
@@ -385,13 +388,15 @@ def compute_dsr(
 ) -> DSRResult:
     """Calculate Deflated Sharpe Ratio (DSR) correcting for multiple testing.
 
-    Only authoritative registry-backed execution (trial_count_source=PHASE2_1_REGISTRY)
-    with non-empty experiment_family_id and verified trial_ids can produce EvidenceStatus.VALID.
+    Authoritative registry-backed execution requires trial_count_source=PHASE2_1_REGISTRY,
+    a valid database handle (db) containing verified records in research_trials_log for
+    experiment_family_id, and non-empty verified trial_ids.
 
     Args:
         returns: Return series of the selected candidate strategy.
         trial_sharpes: Annualized Sharpe ratios of valid trials evaluated in the experiment family.
-        trial_count_source: Provenance of trial multiplicity (must be PHASE2_1_REGISTRY for VALID status).
+        db: Storage handle (DuckDBManager or connection) to verify registry provenance.
+        trial_count_source: Provenance of trial multiplicity (must be PHASE2_1_REGISTRY with db for VALID status).
         effective_trials: Explicit authoritative count of independent selection trials (succeeded + failed).
         annualization_factor: Annualization frequency factor (default 252).
         minimum_observations: Minimum return observations required.
@@ -408,6 +413,28 @@ def compute_dsr(
     Returns:
         DSRResult with deflated Sharpe ratio and full audit metadata.
     """
+    if annualization_factor <= 0.0:
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            trial_count_source=trial_count_source,
+            experiment_family_id=experiment_family_id,
+            trial_ids=trial_ids or [],
+            status=EvidenceStatus.INVALID_INPUT,
+            reason=f"annualization_factor must be positive, got {annualization_factor}",
+        )
+
+    if not isinstance(returns, (pd.Series, np.ndarray, list)):
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            trial_count_source=trial_count_source,
+            experiment_family_id=experiment_family_id,
+            trial_ids=trial_ids or [],
+            status=EvidenceStatus.INVALID_INPUT,
+            reason=f"returns must be pd.Series, np.ndarray, or list, got {type(returns).__name__}",
+        )
+
     clean_sharpes = [float(x) for x in trial_sharpes if x is not None and not math.isnan(float(x))]
     n_sharpes = sharpe_count if sharpe_count is not None else len(clean_sharpes)
     n_effective = (
@@ -421,7 +448,7 @@ def compute_dsr(
         else (succeeded_count + failed_count + invalidated_count + deduplicated_count or len(clean_sharpes))
     )
 
-    # 1. Enforce provenance: manual or unverified input fails closed
+    # 1. Enforce provenance: manual input without registry provenance fails closed
     if trial_count_source != TrialCountSource.PHASE2_1_REGISTRY:
         math_res = compute_dsr_statistic(
             returns,
@@ -450,10 +477,29 @@ def compute_dsr(
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
             status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
-            reason="UNVERIFIED_TRIAL_REGISTRY_PROVENANCE",
+            reason=math_res.reason or "UNVERIFIED_TRIAL_REGISTRY_PROVENANCE",
         )
 
-    # 2. Fail closed if authoritative experiment family is missing
+    # 2. Enforce database backing: self-declared PHASE2_1_REGISTRY without database handle fails closed
+    if db is None:
+        return DSRResult(
+            effective_trials=n_effective,
+            sharpe_count=n_sharpes,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
+            trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="UNVERIFIED_DATABASE_PROVENANCE",
+        )
+
+    # 3. Fail closed if authoritative experiment family is missing
     if not experiment_family_id or not str(experiment_family_id).strip():
         return DSRResult(
             effective_trials=0,
@@ -472,27 +518,54 @@ def compute_dsr(
             reason="MISSING_AUTHORITATIVE_TRIAL_FAMILY",
         )
 
-    # 3. Fail closed if no authoritative trials are present
-    if not trial_ids or len(trial_ids) == 0 or n_effective <= 0:
-        return DSRResult(
-            effective_trials=0,
-            sharpe_count=0,
-            succeeded_count=succeeded_count,
-            failed_count=failed_count,
-            invalidated_trials=invalidated_count,
-            deduplicated_count=deduplicated_count,
-            total_trials=total_count,
-            experiment_family_id=experiment_family_id,
-            trial_count_source=trial_count_source,
-            trial_ids=trial_ids or [],
-            trial_policy_version=trial_policy_version,
-            trial_policy_hash=trial_policy_hash,
-            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
-            reason="NO_AUTHORITATIVE_TRIALS",
-        )
-
-    # 4. Fail closed if insufficient Sharpe observations exist to estimate variance
-    if len(clean_sharpes) < 2:
+    # 4. Verify experiment family and trial IDs against database storage
+    try:
+        if hasattr(db, "list_research_trials"):
+            db_trials = db.list_research_trials(family_id=experiment_family_id)
+        elif hasattr(db, "conn") and hasattr(db.conn, "execute"):
+            rows = db.conn.execute(
+                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                [experiment_family_id],
+            ).fetchall()
+            db_trials = [
+                {
+                    "trial_id": r[0],
+                    "status": r[1],
+                    "metrics": json.loads(str(r[3])) if r[3] else None,
+                }
+                for r in rows
+            ]
+        elif hasattr(db, "execute"):
+            rows = db.execute(
+                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                [experiment_family_id],
+            ).fetchall()
+            db_trials = [
+                {
+                    "trial_id": r[0],
+                    "status": r[1],
+                    "metrics": json.loads(str(r[3])) if r[3] else None,
+                }
+                for r in rows
+            ]
+        else:
+            return DSRResult(
+                effective_trials=n_effective,
+                sharpe_count=n_sharpes,
+                succeeded_count=succeeded_count,
+                failed_count=failed_count,
+                invalidated_trials=invalidated_count,
+                deduplicated_count=deduplicated_count,
+                total_trials=total_count,
+                experiment_family_id=experiment_family_id,
+                trial_count_source=trial_count_source,
+                trial_ids=trial_ids or [],
+                trial_policy_version=trial_policy_version,
+                trial_policy_hash=trial_policy_hash,
+                status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                reason="UNVERIFIED_DATABASE_PROVENANCE",
+            )
+    except Exception as exc:
         return DSRResult(
             effective_trials=n_effective,
             sharpe_count=n_sharpes,
@@ -504,6 +577,83 @@ def compute_dsr(
             experiment_family_id=experiment_family_id,
             trial_count_source=trial_count_source,
             trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="UNVERIFIED_DATABASE_PROVENANCE",
+        )
+
+    if not db_trials:
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            succeeded_count=0,
+            failed_count=0,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
+            trial_ids=trial_ids or [],
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="EXPERIMENT_FAMILY_NOT_FOUND_IN_DB",
+        )
+
+    db_trial_id_set = {str(t["trial_id"]) for t in db_trials if t.get("trial_id")}
+    if trial_ids:
+        missing_ids = [tid for tid in trial_ids if str(tid) not in db_trial_id_set]
+        if missing_ids:
+            return DSRResult(
+                effective_trials=n_effective,
+                sharpe_count=n_sharpes,
+                succeeded_count=succeeded_count,
+                failed_count=failed_count,
+                invalidated_trials=invalidated_count,
+                deduplicated_count=deduplicated_count,
+                total_trials=total_count,
+                experiment_family_id=experiment_family_id,
+                trial_count_source=trial_count_source,
+                trial_ids=trial_ids or [],
+                trial_policy_version=trial_policy_version,
+                trial_policy_hash=trial_policy_hash,
+                status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                reason="TRIAL_IDS_NOT_FOUND_IN_DB",
+            )
+
+    # 5. Fail closed if no authoritative trials are present
+    if (not trial_ids and not db_trial_id_set) or n_effective <= 0:
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
+            trial_ids=trial_ids or list(db_trial_id_set),
+            trial_policy_version=trial_policy_version,
+            trial_policy_hash=trial_policy_hash,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="NO_AUTHORITATIVE_TRIALS",
+        )
+
+    # 6. Fail closed if insufficient Sharpe observations exist to estimate variance
+    if len(clean_sharpes) < 2:
+        return DSRResult(
+            effective_trials=n_effective,
+            sharpe_count=n_sharpes,
+            succeeded_count=succeeded_count,
+            failed_count=failed_count,
+            invalidated_trials=invalidated_count,
+            deduplicated_count=deduplicated_count,
+            total_trials=total_count,
+            experiment_family_id=experiment_family_id,
+            trial_count_source=trial_count_source,
+            trial_ids=trial_ids or list(db_trial_id_set),
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
             status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
@@ -530,7 +680,7 @@ def compute_dsr(
             total_trials=total_count,
             experiment_family_id=experiment_family_id,
             trial_count_source=trial_count_source,
-            trial_ids=trial_ids or [],
+            trial_ids=trial_ids or list(db_trial_id_set),
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
             status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
@@ -546,7 +696,7 @@ def compute_dsr(
 
     if psr.status != EvidenceStatus.VALID:
         return DSRResult(
-            dsr_value=None,
+            dsr_value=psr.psr_value,
             expected_max_sharpe=sr_0_non_ann,
             annualized_expected_max_sharpe=sr_0_ann,
             sample_sharpe=psr.sample_sharpe,
@@ -561,7 +711,7 @@ def compute_dsr(
             total_trials=total_count,
             experiment_family_id=experiment_family_id,
             trial_count_source=trial_count_source,
-            trial_ids=trial_ids or [],
+            trial_ids=trial_ids or list(db_trial_id_set),
             trial_policy_version=trial_policy_version,
             trial_policy_hash=trial_policy_hash,
             status=psr.status,
@@ -584,10 +734,166 @@ def compute_dsr(
         total_trials=total_count,
         experiment_family_id=experiment_family_id,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        trial_ids=trial_ids or [],
+        trial_ids=trial_ids or list(db_trial_id_set),
         trial_policy_version=trial_policy_version,
         trial_policy_hash=trial_policy_hash,
         status=EvidenceStatus.VALID,
+        reason=None,
+    )
+
+
+def resolve_authoritative_dsr(
+    db: Any,
+    returns: pd.Series | np.ndarray | list[float],
+    experiment_family_id: str,
+    *,
+    annualization_factor: float = 252.0,
+    minimum_observations: int = 30,
+    trial_policy_version: str = "2.6.0",
+    trial_policy_hash: str = "",
+) -> DSRResult:
+    """Storage-backed resolver for Deflated Sharpe Ratio with verified DuckDB provenance.
+
+    Queries research_trials_log from the database, deduplicates idempotent definitions,
+    computes trial multiplicity (succeeded + failed), extracts Sharpe ratios, and calculates DSR.
+
+    Args:
+        db: DuckDBManager or storage instance containing research_trials_log.
+        returns: Return series of the selected candidate strategy.
+        experiment_family_id: Trial registry experiment family identifier.
+        annualization_factor: Annualization frequency factor.
+        minimum_observations: Minimum return observations required.
+        trial_policy_version: Policy version string.
+        trial_policy_hash: Policy hash.
+
+    Returns:
+        DSRResult with authoritative provenance.
+    """
+    if db is None:
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="UNVERIFIED_DATABASE_PROVENANCE",
+        )
+
+    if not experiment_family_id or not str(experiment_family_id).strip():
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="MISSING_AUTHORITATIVE_TRIAL_FAMILY",
+        )
+
+    try:
+        if hasattr(db, "list_research_trials"):
+            trials_log = db.list_research_trials(family_id=experiment_family_id)
+        elif hasattr(db, "conn") and hasattr(db.conn, "execute"):
+            rows = db.conn.execute(
+                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                [experiment_family_id],
+            ).fetchall()
+            trials_log = [
+                {
+                    **(json.loads(str(r[2])) if r[2] else {}),
+                    "trial_id": r[0],
+                    "status": r[1],
+                    "metrics": json.loads(str(r[3])) if r[3] else None,
+                }
+                for r in rows
+            ]
+        else:
+            return DSRResult(
+                effective_trials=0,
+                sharpe_count=0,
+                trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+                status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                reason="UNVERIFIED_DATABASE_PROVENANCE",
+            )
+    except Exception:
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="UNVERIFIED_DATABASE_PROVENANCE",
+        )
+
+    if not trials_log:
+        return DSRResult(
+            effective_trials=0,
+            sharpe_count=0,
+            trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+            status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+            reason="EXPERIMENT_FAMILY_NOT_FOUND_IN_DB",
+        )
+
+    registry_sharpes: list[float] = []
+    registry_trial_ids: list[str] = []
+    succeeded_count = 0
+    failed_count = 0
+    invalidated_count = 0
+    deduplicated_count = 0
+    seen_definitions: set[str] = set()
+
+    for tr in trials_log:
+        t_id = tr.get("trial_id")
+        st = str(tr.get("status", "")).upper()
+        if t_id:
+            registry_trial_ids.append(str(t_id))
+
+        def_key = canonical_hash({
+            "strategy": tr.get("strategy_name"),
+            "timeframe": tr.get("timeframe"),
+            "parameters": tr.get("parameters"),
+            "fold_id": tr.get("fold_id"),
+            "train_start": str(tr.get("train_start")),
+            "train_end": str(tr.get("train_end")),
+            "data_hash": tr.get("data_hash"),
+        })
+
+        if def_key in seen_definitions:
+            deduplicated_count += 1
+            continue
+        seen_definitions.add(def_key)
+
+        if st == "SUCCEEDED":
+            succeeded_count += 1
+            metrics_val = tr.get("metrics") or tr.get("metrics_json") or {}
+            if isinstance(metrics_val, str):
+                try:
+                    metrics_val = json.loads(metrics_val)
+                except Exception:
+                    metrics_val = {}
+            sh_val = metrics_val.get("sharpe") if isinstance(metrics_val, dict) else None
+            if sh_val is not None and not math.isnan(float(sh_val)):
+                registry_sharpes.append(float(sh_val))
+        elif st == "FAILED":
+            failed_count += 1
+        elif st == "INVALIDATED":
+            invalidated_count += 1
+
+    effective_multiplicity = succeeded_count + failed_count
+
+    return compute_dsr(
+        returns,
+        registry_sharpes,
+        db=db,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=effective_multiplicity,
+        annualization_factor=annualization_factor,
+        minimum_observations=minimum_observations,
+        experiment_family_id=experiment_family_id,
+        trial_ids=registry_trial_ids,
+        sharpe_count=len(registry_sharpes),
+        succeeded_count=succeeded_count,
+        failed_count=failed_count,
+        invalidated_count=invalidated_count,
+        deduplicated_count=deduplicated_count,
+        trial_policy_version=trial_policy_version,
+        trial_policy_hash=trial_policy_hash,
     )
 
 
