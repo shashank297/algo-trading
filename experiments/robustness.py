@@ -29,9 +29,9 @@ from experiments.statistical_tests import (
     PSRResult,
     TrialCountSource,
     compute_bootstrap_confidence_intervals,
-    compute_dsr,
     compute_monte_carlo_robustness,
     compute_psr,
+    resolve_authoritative_dsr,
 )
 from experiments.trials import (
     ResearchIntegrityError,
@@ -148,7 +148,6 @@ class CostStressResult(BaseModel):
     """Evaluated performance under an independent transaction-cost scenario."""
     multiplier: float
     slippage_bps_override: float | None = None
-    liquidity_stress_factor: float | None = None
     metrics: dict[str, float] = Field(default_factory=dict)
     cost_schedule_summary: dict[str, Any] = Field(default_factory=dict)
     status: EvidenceStatus = EvidenceStatus.VALID
@@ -627,12 +626,10 @@ class StressScenarioEngine:
                 CostStressResult(
                     multiplier=mult,
                     slippage_bps_override=self.policy.slippage_stress_bps,
-                    liquidity_stress_factor=self.policy.liquidity_stress_factor,
                     metrics=metrics_dict,
                     cost_schedule_summary={
                         "multiplier": mult,
                         "slippage_bps": self.policy.slippage_stress_bps,
-                        "liquidity_factor": self.policy.liquidity_stress_factor,
                         "base_keys": list(base_cost_model.keys()),
                     },
                     status=EvidenceStatus.VALID,
@@ -927,61 +924,141 @@ class StressScenarioEngine:
                     reason="NO_MARKET_VOLUME_EVIDENCE",
                 )
             )
+        elif "participation_rate" in fills.columns:
+            p_rate = pd.to_numeric(fills["participation_rate"], errors="coerce")
+            qty = pd.to_numeric(fills["quantity"], errors="coerce").abs()
+            px = pd.to_numeric(fills["price"], errors="coerce").abs()
+            if p_rate.isna().any() or (p_rate < 0.0).any() or qty.isna().any() or px.isna().any():
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="reduced_liquidity",
+                        perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor},
+                        metrics={},
+                        seed=None,
+                        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                        reason="INVALID_MARKET_VOLUME_EVIDENCE",
+                    )
+                )
+            else:
+                participation_rate = p_rate.clip(upper=1.0)
+                fill_notional = qty * px
+                impact_bps = participation_rate * (self.policy.liquidity_stress_factor - 1.0) * 100.0
+                liq_impact_cost = fill_notional * (impact_bps / 10000.0)
+
+                liq_curve = raw_curve.copy()
+                liq_net_ret = liq_curve["net_return"].fillna(0.0).copy()
+                curve_ts = pd.to_datetime(liq_curve["timestamp"], utc=True)
+                fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
+
+                bar_drags = np.zeros(len(liq_curve))
+                for f_t, d in zip(fill_ts, liq_impact_cost):
+                    matching_indices = np.where(curve_ts == f_t)[0]
+                    if len(matching_indices) > 0:
+                        bar_drags[matching_indices[0]] += d
+                    else:
+                        prior_indices = np.where(curve_ts <= f_t)[0]
+                        if len(prior_indices) > 0:
+                            bar_drags[prior_indices[-1]] += d
+                        else:
+                            bar_drags[0] += d
+
+                equity_vals = starting_capital * (1.0 + liq_net_ret).cumprod()
+                ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
+                liq_net_ret = liq_net_ret - ret_drags
+
+                liq_curve["net_return"] = liq_net_ret
+                liq_curve["equity"] = starting_capital * (1.0 + liq_net_ret).cumprod()
+                liq_curve["drawdown"] = liq_curve["equity"] / liq_curve["equity"].cummax() - 1.0
+                liq_mets = _compute_metrics(
+                    equity_curve=liq_curve,
+                    net_returns=liq_net_ret,
+                    fills=fills,
+                    execution_model=ExecutionModel(),
+                    timeframe=timeframe,
+                    starting_capital=starting_capital,
+                )
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="reduced_liquidity",
+                        perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor, "participation_source": "participation_rate", "traded_notional": float(fill_notional.sum())},
+                        metrics={
+                            "sharpe": float(liq_mets.sharpe) if liq_mets.sharpe is not None else 0.0,
+                            "cagr": float(liq_mets.cagr) if liq_mets.cagr is not None else 0.0,
+                            "max_drawdown": float(liq_mets.max_drawdown) if liq_mets.max_drawdown is not None else 0.0,
+                            "total_return": float(liq_mets.total_return) if liq_mets.total_return is not None else 0.0,
+                        },
+                        seed=None,
+                        status=EvidenceStatus.VALID,
+                    )
+                )
         else:
             vol_col = "market_volume" if "market_volume" in fills.columns else ("bar_volume" if "bar_volume" in fills.columns else "adv")
-            volumes = fills[vol_col].replace(0.0, np.nan).fillna(1e6)
-            participation_rate = (fills["quantity"].abs() / volumes).clip(upper=1.0)
-            fill_notional = (fills["quantity"] * fills["price"]).abs()
-            # Non-linear impact proportional to actual market participation
-            impact_bps = participation_rate * (self.policy.liquidity_stress_factor - 1.0) * 100.0
-            liq_impact_cost = fill_notional * (impact_bps / 10000.0)
-
-            liq_curve = raw_curve.copy()
-            liq_net_ret = liq_curve["net_return"].fillna(0.0).copy()
-            curve_ts = pd.to_datetime(liq_curve["timestamp"], utc=True)
-            fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
-
-            bar_drags = np.zeros(len(liq_curve))
-            for f_t, d in zip(fill_ts, liq_impact_cost):
-                matching_indices = np.where(curve_ts == f_t)[0]
-                if len(matching_indices) > 0:
-                    bar_drags[matching_indices[0]] += d
-                else:
-                    prior_indices = np.where(curve_ts <= f_t)[0]
-                    if len(prior_indices) > 0:
-                        bar_drags[prior_indices[-1]] += d
-                    else:
-                        bar_drags[0] += d
-
-            equity_vals = starting_capital * (1.0 + liq_net_ret).cumprod()
-            ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
-            liq_net_ret = liq_net_ret - ret_drags
-
-            liq_curve["net_return"] = liq_net_ret
-            liq_curve["equity"] = starting_capital * (1.0 + liq_net_ret).cumprod()
-            liq_curve["drawdown"] = liq_curve["equity"] / liq_curve["equity"].cummax() - 1.0
-            liq_mets = _compute_metrics(
-                equity_curve=liq_curve,
-                net_returns=liq_net_ret,
-                fills=fills,
-                execution_model=ExecutionModel(),
-                timeframe=timeframe,
-                starting_capital=starting_capital,
-            )
-            results.append(
-                ExecutionStressResult(
-                    scenario_name="reduced_liquidity",
-                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor, "traded_notional": float(fill_notional.sum())},
-                    metrics={
-                        "sharpe": float(liq_mets.sharpe) if liq_mets.sharpe is not None else 0.0,
-                        "cagr": float(liq_mets.cagr) if liq_mets.cagr is not None else 0.0,
-                        "max_drawdown": float(liq_mets.max_drawdown) if liq_mets.max_drawdown is not None else 0.0,
-                        "total_return": float(liq_mets.total_return) if liq_mets.total_return is not None else 0.0,
-                    },
-                    seed=None,
-                    status=EvidenceStatus.VALID,
+            volumes = pd.to_numeric(fills[vol_col], errors="coerce")
+            qty = pd.to_numeric(fills["quantity"], errors="coerce").abs()
+            px = pd.to_numeric(fills["price"], errors="coerce").abs()
+            if volumes.isna().any() or (volumes <= 0.0).any() or qty.isna().any() or px.isna().any():
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="reduced_liquidity",
+                        perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor},
+                        metrics={},
+                        seed=None,
+                        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                        reason="INVALID_MARKET_VOLUME_EVIDENCE",
+                    )
                 )
-            )
+            else:
+                participation_rate = (qty / volumes).clip(upper=1.0)
+                fill_notional = qty * px
+                impact_bps = participation_rate * (self.policy.liquidity_stress_factor - 1.0) * 100.0
+                liq_impact_cost = fill_notional * (impact_bps / 10000.0)
+
+                liq_curve = raw_curve.copy()
+                liq_net_ret = liq_curve["net_return"].fillna(0.0).copy()
+                curve_ts = pd.to_datetime(liq_curve["timestamp"], utc=True)
+                fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
+
+                bar_drags = np.zeros(len(liq_curve))
+                for f_t, d in zip(fill_ts, liq_impact_cost):
+                    matching_indices = np.where(curve_ts == f_t)[0]
+                    if len(matching_indices) > 0:
+                        bar_drags[matching_indices[0]] += d
+                    else:
+                        prior_indices = np.where(curve_ts <= f_t)[0]
+                        if len(prior_indices) > 0:
+                            bar_drags[prior_indices[-1]] += d
+                        else:
+                            bar_drags[0] += d
+
+                equity_vals = starting_capital * (1.0 + liq_net_ret).cumprod()
+                ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
+                liq_net_ret = liq_net_ret - ret_drags
+
+                liq_curve["net_return"] = liq_net_ret
+                liq_curve["equity"] = starting_capital * (1.0 + liq_net_ret).cumprod()
+                liq_curve["drawdown"] = liq_curve["equity"] / liq_curve["equity"].cummax() - 1.0
+                liq_mets = _compute_metrics(
+                    equity_curve=liq_curve,
+                    net_returns=liq_net_ret,
+                    fills=fills,
+                    execution_model=ExecutionModel(),
+                    timeframe=timeframe,
+                    starting_capital=starting_capital,
+                )
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="reduced_liquidity",
+                        perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor, "traded_notional": float(fill_notional.sum())},
+                        metrics={
+                            "sharpe": float(liq_mets.sharpe) if liq_mets.sharpe is not None else 0.0,
+                            "cagr": float(liq_mets.cagr) if liq_mets.cagr is not None else 0.0,
+                            "max_drawdown": float(liq_mets.max_drawdown) if liq_mets.max_drawdown is not None else 0.0,
+                            "total_return": float(liq_mets.total_return) if liq_mets.total_return is not None else 0.0,
+                        },
+                        seed=None,
+                        status=EvidenceStatus.VALID,
+                    )
+                )
 
         return results
 
@@ -1187,82 +1264,37 @@ class RobustnessEvaluator:
             minimum_observations=self.policy.minimum_observations,
         )
 
-        # 2. Deflated Sharpe Ratio (DSR) derived from Phase 2.1 Trial Registry
-        registry_sharpes: list[float] = []
-        registry_trial_ids: list[str] = []
-        succeeded_count = 0
-        failed_count = 0
-        invalidated_count = 0
-        deduplicated_count = 0
-        seen_definitions: set[str] = set()
-
-        if spec.experiment_family_id:
-            try:
-                trials_log = self.db.list_research_trials(family_id=spec.experiment_family_id)
-                for tr in trials_log:
-                    t_id = tr.get("trial_id")
-                    st = tr.get("status")
-                    if t_id:
-                        registry_trial_ids.append(str(t_id))
-
-                    def_key = canonical_hash({
-                        "strategy": tr.get("strategy_name"),
-                        "timeframe": tr.get("timeframe"),
-                        "parameters": tr.get("parameters"),
-                        "fold_id": tr.get("fold_id"),
-                        "train_start": str(tr.get("train_start")),
-                        "train_end": str(tr.get("train_end")),
-                        "data_hash": tr.get("data_hash"),
-                    })
-
-                    if def_key in seen_definitions:
-                        deduplicated_count += 1
-                        continue
-                    seen_definitions.add(def_key)
-
-                    if st == TrialStatus.SUCCEEDED.value:
-                        succeeded_count += 1
-                        metrics_val = tr.get("metrics") or tr.get("metrics_json") or {}
-                        if isinstance(metrics_val, str):
-                            try:
-                                metrics_val = json.loads(metrics_val)
-                            except Exception:
-                                metrics_val = {}
-                        sh_val = metrics_val.get("sharpe") if isinstance(metrics_val, dict) else None
-                        if sh_val is not None and not math.isnan(float(sh_val)):
-                            registry_sharpes.append(float(sh_val))
-                    elif st == TrialStatus.FAILED.value:
-                        failed_count += 1
-                    elif st == TrialStatus.INVALIDATED.value:
-                        invalidated_count += 1
-            except Exception as exc:
-                logger.warning(f"Could not retrieve registry trials for family {spec.experiment_family_id}: {exc}")
-
-        effective_multiplicity = succeeded_count + failed_count
-        trial_source_provenance = (
-            TrialCountSource.PHASE2_1_REGISTRY
-            if (spec.experiment_family_id and len(registry_trial_ids) > 0)
-            else TrialCountSource.MANUAL_STATISTICAL_INPUT
-        )
-
-        dsr_result = compute_dsr(
-            combined_final_returns,
-            registry_sharpes,
-            db=self.db,
-            trial_count_source=trial_source_provenance,
-            effective_trials=effective_multiplicity,
-            annualization_factor=self.policy.annualization_factor,
-            minimum_observations=self.policy.minimum_observations,
-            experiment_family_id=spec.experiment_family_id,
-            trial_ids=registry_trial_ids,
-            sharpe_count=len(registry_sharpes),
-            succeeded_count=succeeded_count,
-            failed_count=failed_count,
-            invalidated_count=invalidated_count,
-            deduplicated_count=deduplicated_count,
-            trial_policy_version=self.policy.policy_version,
-            trial_policy_hash=self.policy.policy_hash,
-        )
+        # 2. Deflated Sharpe Ratio (DSR) via Authoritative Storage Resolver
+        if spec.experiment_family_id and self.db is not None:
+            dsr_result = resolve_authoritative_dsr(
+                db=self.db,
+                returns=combined_final_returns,
+                experiment_family_id=spec.experiment_family_id,
+                annualization_factor=self.policy.annualization_factor,
+                minimum_observations=self.policy.minimum_observations,
+                trial_policy_version=self.policy.policy_version,
+                trial_policy_hash=self.policy.policy_hash,
+            )
+        elif spec.experiment_family_id and self.db is None:
+            dsr_result = DSRResult(
+                effective_trials=0,
+                sharpe_count=0,
+                trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+                experiment_family_id=spec.experiment_family_id,
+                trial_ids=[],
+                status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                reason="UNVERIFIED_DATABASE_PROVENANCE",
+            )
+        else:
+            dsr_result = DSRResult(
+                effective_trials=0,
+                sharpe_count=0,
+                trial_count_source=TrialCountSource.MANUAL_STATISTICAL_INPUT,
+                experiment_family_id=None,
+                trial_ids=[],
+                status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                reason="MISSING_AUTHORITATIVE_TRIAL_FAMILY",
+            )
 
         # 3. Deterministic Seeded Bootstrap
         bootstrap_cis = compute_bootstrap_confidence_intervals(

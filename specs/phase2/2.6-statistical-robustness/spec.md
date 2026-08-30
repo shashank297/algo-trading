@@ -81,18 +81,19 @@ Establish nested walk-forward folds with sealed final OOS testing, dual-boundary
   - Capital ruin probability $P(\text{Equity} \le \text{ruin\_level})$ calculated directly from simulated cumulative equity paths ($ruin\_level = starting\_capital \times (1 - ruin\_threshold)$).
 - Persist `ruin_definition`, `ruin_level`, `capital_ruin_probability`, percentiles, simulations, seed.
 
-### 8. Multi-Tiered Cost Stress & Slippage/Liquidity
+### 8. Multi-Tiered Cost Stress & Slippage
 - Evaluate baseline ($1.0\times$), $1.5\times$, $2.0\times$, and $3.0\times$ transaction-cost scenarios on causally valid out-of-sample (OOS) evidence.
-- Apply configured `slippage_stress_bps` and `liquidity_stress_factor` to stressed runs while keeping baseline $1.0\times$ unperturbed.
-- Persist `multiplier`, `slippage_bps_override`, `liquidity_stress_factor`, `cost_schedule_summary`, and net metrics.
+- Apply configured `slippage_stress_bps` to stressed runs while keeping baseline $1.0\times$ unperturbed.
+- Persist `multiplier`, `slippage_bps_override`, `cost_schedule_summary`, and net metrics.
+- Cost stress is strictly focused on fee schedule and bid-ask slippage multiplier stresses; liquidity impact is handled as a separate execution stress scenario.
 
-### 9. Swing Execution Stress
+### 9. Swing Execution Stress & Reduced Liquidity
 - Provide configurable execution stress scenarios evaluated on OOS evidence:
   - Overnight gap risk (`overnight_gap_stress`)
   - Stop slippage (`stop_slippage_stress`)
   - 1-bar execution delay (`execution_delay_1bar`)
   - Deterministic seeded missed fills (`missed_fills`)
-  - Reduced liquidity constraints (`reduced_liquidity`)
+  - Reduced liquidity constraints (`reduced_liquidity`): requires genuine market volume or participation rate observations; fails closed with `INVALID_MARKET_VOLUME_EVIDENCE` on non-positive, NaN, or non-finite volume (never fabricates 1,000,000 synthetic shares).
 - Perturb execution economics / fills / returns deterministically without fabricating precision.
 
 ### 10. Structured Robustness Result, Evidence Hash Binding & Persistence

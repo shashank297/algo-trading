@@ -6,6 +6,7 @@ and Monte Carlo simulations against analytical formulas and edge cases.
 
 from __future__ import annotations
 
+import json
 import math
 from typing import Any
 
@@ -204,34 +205,51 @@ def test_dsr_deflates_as_trials_increase(tmp_path: Any) -> None:
     assert math_5.trial_count_source == TrialCountSource.MANUAL_STATISTICAL_INPUT
 
     # Authoritative storage-backed registry path deflates as N grows and is VALID
-    db = _make_test_db(tmp_path, "fam-01", [f"t-{i}" for i in range(100)], trial_sharpes)
+    db = _make_test_db(tmp_path, "fam-05", [f"t-5-{i}" for i in range(5)], trial_sharpes[:5])
+
+    # Add fam-20
+    db.conn.execute(
+        "INSERT INTO experiment_families (experiment_family_id, definition_hash, definition_json, maximum_trials, created_at, started_at) "
+        "VALUES ('fam-20', 'hash', '{}', 500, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    for i, sh in enumerate(trial_sharpes[:20]):
+        t_json = json.dumps({"strategy_name": "test", "parameters": {"p": i}, "fold_id": f"fold-{i}"})
+        db.conn.execute(
+            "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+            "VALUES (?, 'fam-20', 'SUCCEEDED', ?, ?, CURRENT_TIMESTAMP)",
+            [f"t-20-{i}", t_json, f'{{"sharpe": {sh}}}'],
+        )
+
+    # Add fam-100
+    db.conn.execute(
+        "INSERT INTO experiment_families (experiment_family_id, definition_hash, definition_json, maximum_trials, created_at, started_at) "
+        "VALUES ('fam-100', 'hash', '{}', 500, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    for i, sh in enumerate(trial_sharpes[:100]):
+        t_json = json.dumps({"strategy_name": "test", "parameters": {"p": i}, "fold_id": f"fold-{i}"})
+        db.conn.execute(
+            "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+            "VALUES (?, 'fam-100', 'SUCCEEDED', ?, ?, CURRENT_TIMESTAMP)",
+            [f"t-100-{i}", t_json, f'{{"sharpe": {sh}}}'],
+        )
 
     dsr_5 = compute_dsr(
         returns,
-        trial_sharpes[:5],
         db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        effective_trials=5,
-        experiment_family_id="fam-01",
-        trial_ids=[f"t-{i}" for i in range(5)],
+        experiment_family_id="fam-05",
     )
     dsr_20 = compute_dsr(
         returns,
-        trial_sharpes[:20],
         db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        effective_trials=20,
-        experiment_family_id="fam-01",
-        trial_ids=[f"t-{i}" for i in range(20)],
+        experiment_family_id="fam-20",
     )
     dsr_100 = compute_dsr(
         returns,
-        trial_sharpes[:100],
         db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        effective_trials=100,
-        experiment_family_id="fam-01",
-        trial_ids=[f"t-{i}" for i in range(100)],
+        experiment_family_id="fam-100",
     )
 
     assert dsr_5.status == EvidenceStatus.VALID
@@ -245,6 +263,7 @@ def test_dsr_deflates_as_trials_increase(tmp_path: Any) -> None:
     # More trials tried -> higher hurdle SR0 -> lower DSR
     assert dsr_5.dsr_value > dsr_20.dsr_value > dsr_100.dsr_value
     assert dsr_5.effective_trials == 5
+    assert dsr_20.effective_trials == 20
     assert dsr_100.effective_trials == 100
 
     db.close()
@@ -293,18 +312,21 @@ def test_dsr_spoofing_prevention_adversarial(tmp_path: Any) -> None:
     assert dsr_fake_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_fake_fam.reason == "EXPERIMENT_FAMILY_NOT_FOUND_IN_DB"
 
-    # 4. Fabricated trial IDs not present in DB fail closed
-    dsr_fake_ids = compute_dsr(
+    # 4. Caller passing fabricated Sharpes or multiplicity cannot spoof DSR
+    dsr_spoof_sharpes = compute_dsr(
         returns,
-        trial_sharpes,
+        trial_sharpes=[10.0, 11.0, 12.0],  # fabricated
         db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        effective_trials=4,
+        effective_trials=500,  # fabricated
         experiment_family_id="fam-real",
         trial_ids=["fake-1", "fake-2"],
     )
-    assert dsr_fake_ids.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-    assert dsr_fake_ids.reason == "TRIAL_IDS_NOT_FOUND_IN_DB"
+    # The resolver strictly loads the genuine 4 trials from DB
+    assert dsr_spoof_sharpes.status == EvidenceStatus.VALID
+    assert dsr_spoof_sharpes.effective_trials == 4
+    assert dsr_spoof_sharpes.sharpe_count == 4
+    assert dsr_spoof_sharpes.trial_ids == ["t-1", "t-2", "t-3", "t-4"]
 
     # 5. Genuine authoritative trial family in DB passes with VALID status
     dsr_auth = compute_dsr(
@@ -318,13 +340,16 @@ def test_dsr_spoofing_prevention_adversarial(tmp_path: Any) -> None:
     )
     assert dsr_auth.status == EvidenceStatus.VALID
     assert dsr_auth.trial_count_source == TrialCountSource.PHASE2_1_REGISTRY
+    assert dsr_auth.effective_trials == 4
+    assert dsr_auth.sharpe_count == 4
 
-    # 6. resolve_authoritative_dsr also resolves and passes with VALID status
+    # 6. resolve_authoritative_dsr is the sole authoritative evaluation engine
     dsr_resolved = resolve_authoritative_dsr(db, returns, "fam-real")
     assert dsr_resolved.status == EvidenceStatus.VALID
     assert dsr_resolved.trial_count_source == TrialCountSource.PHASE2_1_REGISTRY
     assert dsr_resolved.effective_trials == 4
     assert dsr_resolved.sharpe_count == 4
+    assert dsr_resolved.dsr_value == dsr_auth.dsr_value
 
     db.close()
 
