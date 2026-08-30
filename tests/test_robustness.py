@@ -1620,10 +1620,43 @@ def test_robustness_stress_and_edge_branches() -> None:
         fills = fills_bad_part
         metrics = TaggedRun.metrics
 
-    exec_bad_part = engine.evaluate_execution_stress(BadPartRun(), timeframe="1d", starting_capital=100_000.0)
-    liq_bad_part = next(r for r in exec_bad_part if r.scenario_name == "reduced_liquidity")
-    assert liq_bad_part.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-    assert liq_bad_part.reason == "INVALID_MARKET_VOLUME_EVIDENCE"
+    # Non-finite (+Inf / -Inf) market volume fails closed with INVALID_MARKET_VOLUME_EVIDENCE
+    fills_inf_vol = fills_reason.copy()
+    fills_inf_vol["market_volume"] = np.inf
+    class InfVolRun:
+        equity_curve = curve
+        fills = fills_inf_vol
+        metrics = TaggedRun.metrics
+
+    exec_inf_vol = engine.evaluate_execution_stress(InfVolRun(), timeframe="1d", starting_capital=100_000.0)
+    liq_inf_vol = next(r for r in exec_inf_vol if r.scenario_name == "reduced_liquidity")
+    assert liq_inf_vol.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert liq_inf_vol.reason == "INVALID_MARKET_VOLUME_EVIDENCE"
+
+    # Non-finite (+Inf / -Inf) participation rate fails closed with INVALID_MARKET_VOLUME_EVIDENCE
+    fills_inf_part = fills_part.copy()
+    fills_inf_part["participation_rate"] = np.inf
+    class InfPartRun:
+        equity_curve = curve
+        fills = fills_inf_part
+        metrics = TaggedRun.metrics
+
+    exec_inf_part = engine.evaluate_execution_stress(InfPartRun(), timeframe="1d", starting_capital=100_000.0)
+    liq_inf_part = next(r for r in exec_inf_part if r.scenario_name == "reduced_liquidity")
+    assert liq_inf_part.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert liq_inf_part.reason == "INVALID_MARKET_VOLUME_EVIDENCE"
+
+    fills_neginf_part = fills_part.copy()
+    fills_neginf_part["participation_rate"] = -np.inf
+    class NegInfPartRun:
+        equity_curve = curve
+        fills = fills_neginf_part
+        metrics = TaggedRun.metrics
+
+    exec_neginf_part = engine.evaluate_execution_stress(NegInfPartRun(), timeframe="1d", starting_capital=100_000.0)
+    liq_neginf_part = next(r for r in exec_neginf_part if r.scenario_name == "reduced_liquidity")
+    assert liq_neginf_part.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert liq_neginf_part.reason == "INVALID_MARKET_VOLUME_EVIDENCE"
 
 
 

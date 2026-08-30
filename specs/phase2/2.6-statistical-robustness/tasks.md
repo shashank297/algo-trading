@@ -6,8 +6,9 @@
 - [x] R004 Update mathematical and adversarial unit tests in `tests/test_statistical_tests.py` (anti-spoofing guarantees ignoring caller Sharpes, DSR database backing, trade expectancy units independence).
 - [x] R005 Update integration, purge exhaustion, fold dataset lineage, real trial ID linkage, participation rate, and fail-closed volume stress tests in `tests/test_robustness.py`.
 - [x] R006 Execute full local verification matrix (pytest, compileall, coverage on Phase 2.6 >= 95%).
-- [x] R007 Push branch `phase2.6-final-certification-remediation`, open PR to `main`, wait for all 6 required CI status checks to pass, and merge through protected branch rules (PR #11).
-- [x] R008 Fetch merged `main`, verify exact-main CI (CI run green), and generate final certification report.
+- [x] R007 Push branch `phase2.6-final-certification-remediation`, open PR to `main`, wait for all 6 required CI status checks to pass, and merge through protected branch rules (PR #11 merged).
+- [x] R008 Push branch `phase2.6-closure-remediation` with non-finite (+Inf/-Inf) volume fail-closed validation and adversarial tests, open PR #12, merge to `main`, verify exact-main CI green, and persist `certification_report.md`.
+
 
 
 
