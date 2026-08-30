@@ -561,37 +561,45 @@ class StressScenarioEngine:
                 )
                 continue
 
+            if "timestamp" not in fills.columns or "timestamp" not in raw_curve.columns:
+                results.append(
+                    CostStressResult(
+                        multiplier=mult,
+                        slippage_bps_override=self.policy.slippage_stress_bps,
+                        liquidity_stress_factor=self.policy.liquidity_stress_factor,
+                        metrics={},
+                        cost_schedule_summary={"multiplier": mult},
+                        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                        reason="MISSING_FILL_TIMESTAMP_EVIDENCE",
+                    )
+                )
+                continue
+
             stressed_curve = raw_curve.copy()
             stressed_net_ret = stressed_curve["net_return"].fillna(0.0).copy()
-            curve_ts = pd.to_datetime(stressed_curve["timestamp"], utc=True) if "timestamp" in stressed_curve.columns else None
+            curve_ts = pd.to_datetime(stressed_curve["timestamp"], utc=True)
 
             base_fees = fills["fees"] if "fees" in fills.columns else (fills["cost"] if "cost" in fills.columns else pd.Series(0.0, index=fills.index))
             extra_fees = base_fees * (mult - 1.0)
             fill_notional = (fills["quantity"] * fills["price"]).abs() if {"quantity", "price"}.issubset(fills.columns) else pd.Series(0.0, index=fills.index)
             extra_slippage = fill_notional * (self.policy.slippage_stress_bps / 10000.0)
-            extra_liquidity = fill_notional * ((self.policy.liquidity_stress_factor - 1.0) * 0.0002)
-            total_fill_drag = extra_fees + extra_slippage + extra_liquidity
+            total_fill_drag = extra_fees + extra_slippage
 
-            if curve_ts is not None and "timestamp" in fills.columns and len(curve_ts) > 0:
-                fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
-                bar_drags = np.zeros(len(stressed_curve))
-                for f_t, d in zip(fill_ts, total_fill_drag):
-                    matching_indices = np.where(curve_ts == f_t)[0]
-                    if len(matching_indices) > 0:
-                        bar_drags[matching_indices[0]] += d
+            fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
+            bar_drags = np.zeros(len(stressed_curve))
+            for f_t, d in zip(fill_ts, total_fill_drag):
+                matching_indices = np.where(curve_ts == f_t)[0]
+                if len(matching_indices) > 0:
+                    bar_drags[matching_indices[0]] += d
+                else:
+                    prior_indices = np.where(curve_ts <= f_t)[0]
+                    if len(prior_indices) > 0:
+                        bar_drags[prior_indices[-1]] += d
                     else:
-                        prior_indices = np.where(curve_ts <= f_t)[0]
-                        if len(prior_indices) > 0:
-                            bar_drags[prior_indices[-1]] += d
-                        else:
-                            bar_drags[0] += d
-                equity_vals = starting_capital * (1.0 + stressed_net_ret).cumprod()
-                ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
-                stressed_net_ret = stressed_net_ret - ret_drags
-            else:
-                total_drag_sum = float(total_fill_drag.sum())
-                per_bar_drag = total_drag_sum / (len(stressed_curve) * starting_capital)
-                stressed_net_ret = stressed_net_ret - per_bar_drag
+                        bar_drags[0] += d
+            equity_vals = starting_capital * (1.0 + stressed_net_ret).cumprod()
+            ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
+            stressed_net_ret = stressed_net_ret - ret_drags
 
             stressed_curve["net_return"] = stressed_net_ret
             stressed_curve["equity"] = starting_capital * (1.0 + stressed_net_ret).cumprod()
@@ -639,7 +647,7 @@ class StressScenarioEngine:
         timeframe: str,
         starting_capital: float,
     ) -> list[ExecutionStressResult]:
-        """Evaluate overnight gap, stop slippage, delay, missed fills, and reduced liquidity."""
+        """Evaluate overnight gap, stop slippage, delay, missed fills, and reduced liquidity on actual evidence."""
         results: list[ExecutionStressResult] = []
         raw_curve = getattr(strategy_run, "equity_curve", pd.DataFrame())
         fills = getattr(strategy_run, "fills", pd.DataFrame())
@@ -701,46 +709,8 @@ class StressScenarioEngine:
                 )
             )
 
-        # 2. Stop Slippage Stress on identifiable exit/closing fills
-        if not fills.empty and {"quantity", "price"}.issubset(fills.columns):
-            exit_fills = fills[fills["side"].astype(str).str.upper().isin(["SELL", "SHORT"])] if "side" in fills.columns else fills
-            if exit_fills.empty:
-                exit_fills = fills
-
-            slip_notional = (exit_fills["quantity"] * exit_fills["price"]).abs()
-            total_stop_slip_loss = float(slip_notional.sum() * (self.policy.stop_slippage_bps / 10000.0))
-
-            slip_curve = raw_curve.copy()
-            slip_net_ret = slip_curve["net_return"].fillna(0.0).copy()
-            per_bar_slip = total_stop_slip_loss / (len(slip_curve) * starting_capital)
-            slip_net_ret = slip_net_ret - per_bar_slip
-
-            slip_curve["net_return"] = slip_net_ret
-            slip_curve["equity"] = starting_capital * (1.0 + slip_net_ret).cumprod()
-            slip_curve["drawdown"] = slip_curve["equity"] / slip_curve["equity"].cummax() - 1.0
-            slip_mets = _compute_metrics(
-                equity_curve=slip_curve,
-                net_returns=slip_net_ret,
-                fills=fills,
-                execution_model=ExecutionModel(),
-                timeframe=timeframe,
-                starting_capital=starting_capital,
-            )
-            results.append(
-                ExecutionStressResult(
-                    scenario_name="stop_slippage_stress",
-                    perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps, "exit_fills_count": len(exit_fills)},
-                    metrics={
-                        "sharpe": float(slip_mets.sharpe) if slip_mets.sharpe is not None else 0.0,
-                        "cagr": float(slip_mets.cagr) if slip_mets.cagr is not None else 0.0,
-                        "max_drawdown": float(slip_mets.max_drawdown) if slip_mets.max_drawdown is not None else 0.0,
-                        "total_return": float(slip_mets.total_return) if slip_mets.total_return is not None else 0.0,
-                    },
-                    seed=None,
-                    status=EvidenceStatus.VALID,
-                )
-            )
-        else:
+        # 2. Stop Slippage Stress on identifiable stop orders
+        if fills.empty or not {"quantity", "price"}.issubset(fills.columns):
             results.append(
                 ExecutionStressResult(
                     scenario_name="stop_slippage_stress",
@@ -751,17 +721,101 @@ class StressScenarioEngine:
                     reason="NO_FILL_RECORDS_FOR_STOP_SLIPPAGE",
                 )
             )
+        else:
+            is_stop_mask = pd.Series(False, index=fills.index)
+            if "order_type" in fills.columns:
+                is_stop_mask |= fills["order_type"].astype(str).str.upper().isin(["STOP", "STOP_LOSS", "TRAILING_STOP", "SL"])
+            if "order_tag" in fills.columns:
+                is_stop_mask |= fills["order_tag"].astype(str).str.upper().str.contains("STOP|SL")
+            if "reason" in fills.columns:
+                is_stop_mask |= fills["reason"].astype(str).str.upper().str.contains("STOP|SL")
+            if "is_stop" in fills.columns:
+                is_stop_mask |= fills["is_stop"].astype(bool)
 
-        # 3. Execution Delay (1-bar lag causal simulation)
-        if len(raw_curve) > self.policy.execution_delay_bars:
-            delay_curve = raw_curve.copy()
-            lagged_ret = delay_curve["net_return"].fillna(0.0).shift(self.policy.execution_delay_bars).fillna(0.0)
-            delay_curve["equity"] = starting_capital * (1.0 + lagged_ret).cumprod()
-            delay_curve["drawdown"] = delay_curve["equity"] / delay_curve["equity"].cummax() - 1.0
+            if not is_stop_mask.any():
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="stop_slippage_stress",
+                        perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps},
+                        metrics={},
+                        seed=None,
+                        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                        reason="NO_STOP_ORDER_EVIDENCE",
+                    )
+                )
+            elif "timestamp" not in fills.columns or "timestamp" not in raw_curve.columns:
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="stop_slippage_stress",
+                        perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps},
+                        metrics={},
+                        seed=None,
+                        status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                        reason="MISSING_FILL_TIMESTAMP_EVIDENCE",
+                    )
+                )
+            else:
+                stop_fills = fills[is_stop_mask].copy()
+                slip_notional = (stop_fills["quantity"] * stop_fills["price"]).abs()
+                stop_slip_loss = slip_notional * (self.policy.stop_slippage_bps / 10000.0)
+
+                slip_curve = raw_curve.copy()
+                slip_net_ret = slip_curve["net_return"].fillna(0.0).copy()
+                curve_ts = pd.to_datetime(slip_curve["timestamp"], utc=True)
+                fill_ts = pd.to_datetime(stop_fills["timestamp"], utc=True)
+
+                bar_drags = np.zeros(len(slip_curve))
+                for f_t, d in zip(fill_ts, stop_slip_loss):
+                    matching_indices = np.where(curve_ts == f_t)[0]
+                    if len(matching_indices) > 0:
+                        bar_drags[matching_indices[0]] += d
+                    else:
+                        prior_indices = np.where(curve_ts <= f_t)[0]
+                        if len(prior_indices) > 0:
+                            bar_drags[prior_indices[-1]] += d
+                        else:
+                            bar_drags[0] += d
+
+                equity_vals = starting_capital * (1.0 + slip_net_ret).cumprod()
+                ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
+                slip_net_ret = slip_net_ret - ret_drags
+
+                slip_curve["net_return"] = slip_net_ret
+                slip_curve["equity"] = starting_capital * (1.0 + slip_net_ret).cumprod()
+                slip_curve["drawdown"] = slip_curve["equity"] / slip_curve["equity"].cummax() - 1.0
+                slip_mets = _compute_metrics(
+                    equity_curve=slip_curve,
+                    net_returns=slip_net_ret,
+                    fills=fills,
+                    execution_model=ExecutionModel(),
+                    timeframe=timeframe,
+                    starting_capital=starting_capital,
+                )
+                results.append(
+                    ExecutionStressResult(
+                        scenario_name="stop_slippage_stress",
+                        perturbation_params={"stop_slippage_bps": self.policy.stop_slippage_bps, "exit_fills_count": len(stop_fills)},
+                        metrics={
+                            "sharpe": float(slip_mets.sharpe) if slip_mets.sharpe is not None else 0.0,
+                            "cagr": float(slip_mets.cagr) if slip_mets.cagr is not None else 0.0,
+                            "max_drawdown": float(slip_mets.max_drawdown) if slip_mets.max_drawdown is not None else 0.0,
+                            "total_return": float(slip_mets.total_return) if slip_mets.total_return is not None else 0.0,
+                        },
+                        seed=None,
+                        status=EvidenceStatus.VALID,
+                    )
+                )
+
+        # 3. Execution Delay Stress
+        delayed_run = getattr(strategy_run, "delayed_run", None)
+        if delayed_run is not None and hasattr(delayed_run, "equity_curve") and not delayed_run.equity_curve.empty:
+            del_curve = delayed_run.equity_curve
+            del_ret = del_curve["net_return"].fillna(0.0)
+            del_fills = getattr(delayed_run, "fills", fills)
             delay_mets = _compute_metrics(
-                equity_curve=delay_curve,
-                net_returns=lagged_ret,
-                fills=fills,
+                equity_curve=del_curve,
+                net_returns=del_ret,
+                fills=del_fills,
                 execution_model=ExecutionModel(),
                 timeframe=timeframe,
                 starting_capital=starting_capital,
@@ -788,12 +842,34 @@ class StressScenarioEngine:
                     metrics={},
                     seed=None,
                     status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
-                    reason="INSUFFICIENT_BARS_FOR_EXECUTION_DELAY",
+                    reason="NO_DELAYED_FILL_REPLAY_EVIDENCE",
                 )
             )
 
-        # 4. Missed Fills (Deterministic seeded fill omissions)
-        if not fills.empty:
+        # 4. Missed Fills Stress
+        if fills.empty:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="missed_fills",
+                    perturbation_params={"missed_fill_rate": self.policy.missed_fill_rate},
+                    metrics={},
+                    seed=self.policy.monte_carlo_seed,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="NO_FILL_RECORDS_FOR_MISSED_FILLS",
+                )
+            )
+        elif "timestamp" not in fills.columns or "timestamp" not in raw_curve.columns:
+            results.append(
+                ExecutionStressResult(
+                    scenario_name="missed_fills",
+                    perturbation_params={"missed_fill_rate": self.policy.missed_fill_rate},
+                    metrics={},
+                    seed=self.policy.monte_carlo_seed,
+                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
+                    reason="MISSING_TIMESTAMP_EVIDENCE_FOR_MISSED_FILLS",
+                )
+            )
+        else:
             rng = np.random.default_rng(self.policy.monte_carlo_seed)
             n_fills = len(fills)
             omission_mask = rng.random(n_fills) < self.policy.missed_fill_rate
@@ -801,15 +877,10 @@ class StressScenarioEngine:
 
             missed_curve = raw_curve.copy()
             missed_ret = missed_curve["net_return"].fillna(0.0).copy()
-
-            if "timestamp" in fills.columns and "timestamp" in missed_curve.columns:
-                omitted_ts = set(pd.to_datetime(fills.loc[omission_mask, "timestamp"], utc=True))
-                curve_ts = pd.to_datetime(missed_curve["timestamp"], utc=True)
-                bar_mask = curve_ts.isin(omitted_ts)
-                missed_ret.loc[bar_mask] = 0.0
-            else:
-                frac_omitted = float(omission_mask.sum() / max(1, n_fills))
-                missed_ret = missed_ret * (1.0 - frac_omitted)
+            omitted_ts = set(pd.to_datetime(fills.loc[omission_mask, "timestamp"], utc=True))
+            curve_ts = pd.to_datetime(missed_curve["timestamp"], utc=True)
+            bar_mask = curve_ts.isin(omitted_ts)
+            missed_ret.loc[bar_mask] = 0.0
 
             missed_curve["net_return"] = missed_ret
             missed_curve["equity"] = starting_capital * (1.0 + missed_ret).cumprod()
@@ -836,27 +907,55 @@ class StressScenarioEngine:
                     status=EvidenceStatus.VALID,
                 )
             )
-        else:
+
+        # 5. Reduced Liquidity Stress
+        has_volume_evidence = (
+            not fills.empty
+            and ("market_volume" in fills.columns or "bar_volume" in fills.columns or "adv" in fills.columns or "participation_rate" in fills.columns)
+            and {"quantity", "price"}.issubset(fills.columns)
+            and "timestamp" in fills.columns
+            and "timestamp" in raw_curve.columns
+        )
+        if not has_volume_evidence:
             results.append(
                 ExecutionStressResult(
-                    scenario_name="missed_fills",
-                    perturbation_params={"missed_fill_rate": self.policy.missed_fill_rate},
+                    scenario_name="reduced_liquidity",
+                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor},
                     metrics={},
-                    seed=self.policy.monte_carlo_seed,
+                    seed=None,
                     status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
-                    reason="NO_FILL_RECORDS_FOR_MISSED_FILLS",
+                    reason="NO_MARKET_VOLUME_EVIDENCE",
                 )
             )
+        else:
+            vol_col = "market_volume" if "market_volume" in fills.columns else ("bar_volume" if "bar_volume" in fills.columns else "adv")
+            volumes = fills[vol_col].replace(0.0, np.nan).fillna(1e6)
+            participation_rate = (fills["quantity"].abs() / volumes).clip(upper=1.0)
+            fill_notional = (fills["quantity"] * fills["price"]).abs()
+            # Non-linear impact proportional to actual market participation
+            impact_bps = participation_rate * (self.policy.liquidity_stress_factor - 1.0) * 100.0
+            liq_impact_cost = fill_notional * (impact_bps / 10000.0)
 
-        # 5. Reduced Liquidity Stress (Restricting capacity & scaling impact on actual fill volume)
-        if not fills.empty and {"quantity", "price"}.issubset(fills.columns):
             liq_curve = raw_curve.copy()
-            traded_notional = (fills["quantity"] * fills["price"]).abs().sum()
-            impact_bps = (self.policy.liquidity_stress_factor - 1.0) * 5.0
-            liq_impact_cost = float(traded_notional * (impact_bps / 10000.0))
+            liq_net_ret = liq_curve["net_return"].fillna(0.0).copy()
+            curve_ts = pd.to_datetime(liq_curve["timestamp"], utc=True)
+            fill_ts = pd.to_datetime(fills["timestamp"], utc=True)
 
-            per_bar_liq = liq_impact_cost / (len(liq_curve) * starting_capital)
-            liq_net_ret = liq_curve["net_return"].fillna(0.0) - per_bar_liq
+            bar_drags = np.zeros(len(liq_curve))
+            for f_t, d in zip(fill_ts, liq_impact_cost):
+                matching_indices = np.where(curve_ts == f_t)[0]
+                if len(matching_indices) > 0:
+                    bar_drags[matching_indices[0]] += d
+                else:
+                    prior_indices = np.where(curve_ts <= f_t)[0]
+                    if len(prior_indices) > 0:
+                        bar_drags[prior_indices[-1]] += d
+                    else:
+                        bar_drags[0] += d
+
+            equity_vals = starting_capital * (1.0 + liq_net_ret).cumprod()
+            ret_drags = bar_drags / np.maximum(equity_vals.values, starting_capital * 0.1)
+            liq_net_ret = liq_net_ret - ret_drags
 
             liq_curve["net_return"] = liq_net_ret
             liq_curve["equity"] = starting_capital * (1.0 + liq_net_ret).cumprod()
@@ -872,7 +971,7 @@ class StressScenarioEngine:
             results.append(
                 ExecutionStressResult(
                     scenario_name="reduced_liquidity",
-                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor, "traded_notional": float(traded_notional)},
+                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor, "traded_notional": float(fill_notional.sum())},
                     metrics={
                         "sharpe": float(liq_mets.sharpe) if liq_mets.sharpe is not None else 0.0,
                         "cagr": float(liq_mets.cagr) if liq_mets.cagr is not None else 0.0,
@@ -881,17 +980,6 @@ class StressScenarioEngine:
                     },
                     seed=None,
                     status=EvidenceStatus.VALID,
-                )
-            )
-        else:
-            results.append(
-                ExecutionStressResult(
-                    scenario_name="reduced_liquidity",
-                    perturbation_params={"liquidity_factor": self.policy.liquidity_stress_factor},
-                    metrics={},
-                    seed=None,
-                    status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
-                    reason="NO_FILL_RECORDS_FOR_REDUCED_LIQUIDITY",
                 )
             )
 
@@ -1160,6 +1248,7 @@ class RobustnessEvaluator:
         dsr_result = compute_dsr(
             combined_final_returns,
             registry_sharpes,
+            db=self.db,
             trial_count_source=trial_source_provenance,
             effective_trials=effective_multiplicity,
             annualization_factor=self.policy.annualization_factor,
@@ -1218,8 +1307,8 @@ class RobustnessEvaluator:
 
         # Overall evidence status fails closed if any critical component is non-valid
         boot_valid = all(b.status == EvidenceStatus.VALID for b in bootstrap_cis.values())
-        cost_valid = all(c.status == EvidenceStatus.VALID for c in cost_stress_res)
-        exec_valid = all(e.status == EvidenceStatus.VALID for e in exec_stress_res)
+        cost_valid = len(cost_stress_res) > 0 and all(c.status == EvidenceStatus.VALID for c in cost_stress_res)
+        exec_executed = len(exec_stress_res) > 0 and all(e.status != EvidenceStatus.INVALID_INPUT for e in exec_stress_res)
         overall_status = EvidenceStatus.VALID
         if (
             psr_result.status != EvidenceStatus.VALID
@@ -1227,7 +1316,7 @@ class RobustnessEvaluator:
             or not boot_valid
             or monte_carlo_res.status != EvidenceStatus.VALID
             or not cost_valid
-            or not exec_valid
+            or not exec_executed
             or not nested_folds
         ):
             overall_status = EvidenceStatus.INSUFFICIENT_EVIDENCE

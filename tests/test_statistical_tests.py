@@ -7,10 +7,14 @@ and Monte Carlo simulations against analytical formulas and edge cases.
 from __future__ import annotations
 
 import math
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import scipy.stats
 
+from storage.duckdb_manager import DuckDBManager
+from storage.migrations.runner import MigrationRunner
 from experiments.statistical_tests import (
     EvidenceStatus,
     ExpectancyBasis,
@@ -21,7 +25,44 @@ from experiments.statistical_tests import (
     compute_expected_max_sharpe,
     compute_monte_carlo_robustness,
     compute_psr,
+    resolve_authoritative_dsr,
 )
+
+
+def _make_test_db(
+    tmp_path: Any,
+    family_id: str,
+    trial_ids: list[str],
+    sharpes: list[float],
+    failed_ids: list[str] | None = None,
+) -> DuckDBManager:
+    """Helper to initialize a DuckDB instance with registered research trial logs."""
+    import json
+    import uuid
+
+    db_path = str(tmp_path / f"test_dsr_{family_id}_{uuid.uuid4().hex[:6]}.duckdb")
+    MigrationRunner(db_path).run_migrations()
+    db = DuckDBManager(db_path)
+    db.conn.execute(
+        f"INSERT INTO experiment_families (experiment_family_id, definition_hash, definition_json, maximum_trials, created_at, started_at) "
+        f"VALUES ('{family_id}', 'hash', '{{}}', 500, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+    )
+    for i, (tid, sh) in enumerate(zip(trial_ids, sharpes)):
+        t_json = json.dumps({"strategy_name": "test", "parameters": {"p": i}, "fold_id": f"fold-{i}"})
+        db.conn.execute(
+            "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+            "VALUES (?, ?, 'SUCCEEDED', ?, ?, CURRENT_TIMESTAMP)",
+            [tid, family_id, t_json, f'{{"sharpe": {sh}}}'],
+        )
+    if failed_ids:
+        for j, fid in enumerate(failed_ids):
+            t_json = json.dumps({"strategy_name": "test", "parameters": {"p_failed": j}, "fold_id": f"fold-failed-{j}"})
+            db.conn.execute(
+                "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+                "VALUES (?, ?, 'FAILED', ?, '{}', CURRENT_TIMESTAMP)",
+                [fid, family_id, t_json],
+            )
+    return db
 
 
 def test_psr_analytical_reference_normal() -> None:
@@ -144,7 +185,7 @@ def test_dsr_expected_max_sharpe_mathematical_formula() -> None:
     assert 0.0 < sr0_ann_10 < sr0_ann_50 < sr0_ann_200
 
 
-def test_dsr_deflates_as_trials_increase() -> None:
+def test_dsr_deflates_as_trials_increase(tmp_path: Any) -> None:
     """DSR value strictly decreases as the number of trials in the experiment family grows."""
     rng = np.random.default_rng(101)
     returns = rng.normal(loc=0.0012, scale=0.01, size=252)
@@ -162,10 +203,13 @@ def test_dsr_deflates_as_trials_increase() -> None:
     assert math_5.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert math_5.trial_count_source == TrialCountSource.MANUAL_STATISTICAL_INPUT
 
-    # Authoritative registry path deflates as N grows and is VALID
+    # Authoritative storage-backed registry path deflates as N grows and is VALID
+    db = _make_test_db(tmp_path, "fam-01", [f"t-{i}" for i in range(100)], trial_sharpes)
+
     dsr_5 = compute_dsr(
         returns,
         trial_sharpes[:5],
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         effective_trials=5,
         experiment_family_id="fam-01",
@@ -174,6 +218,7 @@ def test_dsr_deflates_as_trials_increase() -> None:
     dsr_20 = compute_dsr(
         returns,
         trial_sharpes[:20],
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         effective_trials=20,
         experiment_family_id="fam-01",
@@ -182,6 +227,7 @@ def test_dsr_deflates_as_trials_increase() -> None:
     dsr_100 = compute_dsr(
         returns,
         trial_sharpes[:100],
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         effective_trials=100,
         experiment_family_id="fam-01",
@@ -201,13 +247,15 @@ def test_dsr_deflates_as_trials_increase() -> None:
     assert dsr_5.effective_trials == 5
     assert dsr_100.effective_trials == 100
 
+    db.close()
 
-def test_dsr_spoofing_prevention_adversarial() -> None:
-    """Adversarial test: user-supplied trial counts and family IDs without registry authority cannot claim VALID."""
+
+def test_dsr_spoofing_prevention_adversarial(tmp_path: Any) -> None:
+    """Adversarial test: caller cannot self-declare PHASE2_1_REGISTRY without genuine DB verification."""
     returns = [0.001, -0.0005, 0.002, 0.0015] * 50
     trial_sharpes = [0.8, 1.2, 1.5, 0.9]
 
-    # 1. Manual statistical input without registry provenance must fail closed
+    # 1. Manual statistical input without registry provenance fails closed
     dsr_spoofed = compute_dsr(
         returns,
         trial_sharpes,
@@ -216,23 +264,11 @@ def test_dsr_spoofing_prevention_adversarial() -> None:
         trial_ids=["fake-trial-1", "fake-trial-2"],
     )
     assert dsr_spoofed.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-    assert dsr_spoofed.reason == "UNVERIFIED_TRIAL_REGISTRY_PROVENANCE"
+    assert dsr_spoofed.reason == "MANUAL_STATISTICAL_INPUT_NOT_AUTHORITATIVE"
     assert dsr_spoofed.trial_count_source == TrialCountSource.MANUAL_STATISTICAL_INPUT
 
-    # 2. Registry provenance claiming PHASE2_1_REGISTRY but with empty trial IDs fails closed
-    dsr_empty_ids = compute_dsr(
-        returns,
-        trial_sharpes,
-        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        effective_trials=10,
-        experiment_family_id="fam-01",
-        trial_ids=[],
-    )
-    assert dsr_empty_ids.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
-    assert dsr_empty_ids.reason == "NO_AUTHORITATIVE_TRIALS"
-
-    # 3. Genuine authoritative trial family passes
-    dsr_auth = compute_dsr(
+    # 2. Self-declared PHASE2_1_REGISTRY without database handle fails closed
+    dsr_no_db = compute_dsr(
         returns,
         trial_sharpes,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
@@ -240,18 +276,69 @@ def test_dsr_spoofing_prevention_adversarial() -> None:
         experiment_family_id="fam-01",
         trial_ids=["t-1", "t-2", "t-3", "t-4"],
     )
+    assert dsr_no_db.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_no_db.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # 3. Non-existent experiment family in DB fails closed
+    db = _make_test_db(tmp_path, "fam-real", ["t-1", "t-2", "t-3", "t-4"], trial_sharpes)
+    dsr_fake_fam = compute_dsr(
+        returns,
+        trial_sharpes,
+        db=db,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=4,
+        experiment_family_id="fam-nonexistent",
+        trial_ids=["t-1", "t-2", "t-3", "t-4"],
+    )
+    assert dsr_fake_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_fake_fam.reason == "EXPERIMENT_FAMILY_NOT_FOUND_IN_DB"
+
+    # 4. Fabricated trial IDs not present in DB fail closed
+    dsr_fake_ids = compute_dsr(
+        returns,
+        trial_sharpes,
+        db=db,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=4,
+        experiment_family_id="fam-real",
+        trial_ids=["fake-1", "fake-2"],
+    )
+    assert dsr_fake_ids.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_fake_ids.reason == "TRIAL_IDS_NOT_FOUND_IN_DB"
+
+    # 5. Genuine authoritative trial family in DB passes with VALID status
+    dsr_auth = compute_dsr(
+        returns,
+        trial_sharpes,
+        db=db,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        effective_trials=4,
+        experiment_family_id="fam-real",
+        trial_ids=["t-1", "t-2", "t-3", "t-4"],
+    )
     assert dsr_auth.status == EvidenceStatus.VALID
     assert dsr_auth.trial_count_source == TrialCountSource.PHASE2_1_REGISTRY
 
+    # 6. resolve_authoritative_dsr also resolves and passes with VALID status
+    dsr_resolved = resolve_authoritative_dsr(db, returns, "fam-real")
+    assert dsr_resolved.status == EvidenceStatus.VALID
+    assert dsr_resolved.trial_count_source == TrialCountSource.PHASE2_1_REGISTRY
+    assert dsr_resolved.effective_trials == 4
+    assert dsr_resolved.sharpe_count == 4
 
-def test_dsr_fail_closed_missing_experiment_family() -> None:
+    db.close()
+
+
+def test_dsr_fail_closed_missing_experiment_family(tmp_path: Any) -> None:
     """DSR must fail closed with INSUFFICIENT_EVIDENCE if experiment_family_id is missing."""
     returns = [0.001] * 100
     trial_sharpes = [1.0, 1.2, 0.8]
+    db = _make_test_db(tmp_path, "fam-miss", ["t-1", "t-2", "t-3"], trial_sharpes)
 
     dsr_missing_fam = compute_dsr(
         returns,
         trial_sharpes,
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         trial_ids=["t-1"],
         experiment_family_id=None,
@@ -263,6 +350,7 @@ def test_dsr_fail_closed_missing_experiment_family() -> None:
     dsr_empty_fam = compute_dsr(
         returns,
         trial_sharpes,
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         trial_ids=["t-1"],
         experiment_family_id="   ",
@@ -270,47 +358,67 @@ def test_dsr_fail_closed_missing_experiment_family() -> None:
     assert dsr_empty_fam.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_empty_fam.reason == "MISSING_AUTHORITATIVE_TRIAL_FAMILY"
 
+    db.close()
 
-def test_dsr_fail_closed_insufficient_sharpe_observations() -> None:
+
+def test_dsr_fail_closed_insufficient_sharpe_observations(tmp_path: Any) -> None:
     """DSR requires at least 2 valid Sharpe observations to estimate variance."""
     returns = [0.001] * 100
+    db = _make_test_db(tmp_path, "fam-single", ["t-1"], [1.5])
 
     # Single trial Sharpe observation cannot compute variance
     dsr_single = compute_dsr(
         returns,
         [1.5],
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         effective_trials=10,
-        experiment_family_id="fam-01",
+        experiment_family_id="fam-single",
         trial_ids=["t-1"],
     )
     assert dsr_single.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_single.reason == "INSUFFICIENT_SHARPE_OBSERVATIONS_FOR_VARIANCE"
 
+    db.close()
 
-def test_dsr_trial_multiplicity_accounting() -> None:
+
+def test_dsr_trial_multiplicity_accounting(tmp_path: Any) -> None:
     """Failed genuine trials increase effective multiplicity N without contributing a Sharpe ratio."""
     rng = np.random.default_rng(2026)
     returns = rng.normal(loc=0.0015, scale=0.01, size=252)
 
     succeeded_sharpes = [0.8, 1.2, 1.5, 0.9]  # 4 succeeded trials
-    failed_count = 16  # 16 failed trials -> effective N = 20
+    succeeded_ids = [f"t-succ-{i}" for i in range(4)]
+    failed_ids = [f"t-fail-{i}" for i in range(16)]  # 16 failed trials -> effective N = 20
+
+    db = _make_test_db(tmp_path, "fam-multiplicity", succeeded_ids, succeeded_sharpes, failed_ids=failed_ids)
 
     dsr_with_failed = compute_dsr(
         returns,
         succeeded_sharpes,
+        db=db,
         trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
         succeeded_count=4,
-        failed_count=failed_count,
+        failed_count=16,
         effective_trials=20,
         experiment_family_id="fam-multiplicity",
-        trial_ids=[f"t-{i}" for i in range(20)],
+        trial_ids=succeeded_ids + failed_ids,
     )
     assert dsr_with_failed.status == EvidenceStatus.VALID
     assert dsr_with_failed.effective_trials == 20
     assert dsr_with_failed.sharpe_count == 4
     assert dsr_with_failed.succeeded_count == 4
     assert dsr_with_failed.failed_count == 16
+
+    # Test resolution through resolve_authoritative_dsr
+    dsr_resolved = resolve_authoritative_dsr(db, returns, "fam-multiplicity")
+    assert dsr_resolved.status == EvidenceStatus.VALID
+    assert dsr_resolved.effective_trials == 20
+    assert dsr_resolved.sharpe_count == 4
+    assert dsr_resolved.succeeded_count == 4
+    assert dsr_resolved.failed_count == 16
+
+    db.close()
 
 
 def test_deterministic_bootstrap_reproducibility_and_intervals() -> None:
@@ -489,9 +597,6 @@ def test_statistical_tests_edge_cases_and_error_branches() -> None:
     dsr_zero_var = compute_dsr(
         [0.01, 0.02, 0.03] * 20,
         [1.0, 1.0],
-        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
-        experiment_family_id="fam-01",
-        trial_ids=["t-1", "t-2"],
     )
     assert dsr_zero_var.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
     assert dsr_zero_var.reason == "ZERO_TRIAL_SHARPE_VARIANCE"
@@ -526,3 +631,127 @@ def test_statistical_tests_edge_cases_and_error_branches() -> None:
 
     mc_low_obs = compute_monte_carlo_robustness([0.01, -0.01], minimum_observations=30)
     assert mc_low_obs.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_statistical_tests_full_coverage(tmp_path: Any) -> None:
+    """Cover all remaining branches of statistical_tests.py."""
+    # 1. compute_dsr with raw db.conn object and db.execute object
+    db = _make_test_db(tmp_path, "fam-cov-01", ["t1", "t2"], [1.0, 1.5])
+    returns = [0.001 * i for i in range(100)]
+
+    # Pass db.conn directly
+    dsr_conn = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=db.conn,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_conn.status == EvidenceStatus.VALID
+
+    # Pass object with execute method
+    class RawExecuteDb:
+        def __init__(self, conn: Any) -> None:
+            self._conn = conn
+        def execute(self, q: str, params: Any = None) -> Any:
+            return self._conn.execute(q, params)
+
+    dsr_exec = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=RawExecuteDb(db.conn),
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_exec.status == EvidenceStatus.VALID
+
+    # Pass invalid object lacking execute/conn
+    class EmptyObj:
+        pass
+
+    dsr_empty_obj = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=EmptyObj(),
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_empty_obj.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_empty_obj.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # Pass throwing db
+    class ThrowingDb:
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("Database boom")
+
+    dsr_throw = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=ThrowingDb(),
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_throw.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_throw.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # resolve_authoritative_dsr with raw connection
+    res_conn = resolve_authoritative_dsr(type("ConnHolder", (), {"conn": db.conn})(), returns, "fam-cov-01")
+    assert res_conn.status == EvidenceStatus.VALID
+
+    # resolve_authoritative_dsr with empty obj
+    res_empty = resolve_authoritative_dsr(EmptyObj(), returns, "fam-cov-01")
+    assert res_empty.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert res_empty.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # resolve_authoritative_dsr with throwing db
+    res_throw = resolve_authoritative_dsr(ThrowingDb(), returns, "fam-cov-01")
+    assert res_throw.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert res_throw.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # resolve_authoritative_dsr with missing family
+    res_missing = resolve_authoritative_dsr(db, returns, "non_existent_family")
+    assert res_missing.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert res_missing.reason == "EXPERIMENT_FAMILY_NOT_FOUND_IN_DB"
+
+    # resolve_authoritative_dsr with invalid input returns
+    res_invalid_ret = resolve_authoritative_dsr(db, "not_returns", "fam-cov-01")  # type: ignore
+    assert res_invalid_ret.status == EvidenceStatus.INVALID_INPUT
+
+    # compute_bootstrap_confidence_intervals invalid args
+    ci_bad_conf = compute_bootstrap_confidence_intervals(returns, confidence_level=1.5)
+    assert ci_bad_conf["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    ci_bad_resamples = compute_bootstrap_confidence_intervals(returns, n_resamples=0)
+    assert ci_bad_resamples["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    ci_bad_block = compute_bootstrap_confidence_intervals(returns, method="MOVING_BLOCK", block_size=0)
+    assert ci_bad_block["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    ci_bad_ann = compute_bootstrap_confidence_intervals(returns, annualization_factor=-1.0)
+    assert ci_bad_ann["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    # compute_psr invalid inputs
+    psr_bad_ann = compute_psr(returns, annualization_factor=-1.0)
+    assert psr_bad_ann.status == EvidenceStatus.INVALID_INPUT
+
+    psr_bad_input = compute_psr("not_returns")  # type: ignore
+    assert psr_bad_input.status == EvidenceStatus.INVALID_INPUT
+
+    # resolve_authoritative_dsr with failed trial and string metrics
+    db_mixed = _make_test_db(tmp_path, "fam-mixed", ["t1", "t2"], [1.0, 1.5], failed_ids=["f1"])
+    db_mixed.conn.execute(
+        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+        "VALUES ('t_str', 'fam-mixed', 'SUCCEEDED', '{\"strategy_name\": \"test\", \"parameters\": {\"p\": 99}}', '{\"sharpe\": 1.2}', CURRENT_TIMESTAMP)"
+    )
+    db_mixed.conn.execute(
+        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+        "VALUES ('t_bad_str', 'fam-mixed', 'SUCCEEDED', '{\"strategy_name\": \"test\", \"parameters\": {\"p\": 100}}', '{\"other_metric\": 100}', CURRENT_TIMESTAMP)"
+    )
+    res_mixed = resolve_authoritative_dsr(db_mixed, returns, "fam-mixed")
+    assert res_mixed.status == EvidenceStatus.VALID
+    assert res_mixed.failed_count == 1
+    assert res_mixed.succeeded_count == 4
