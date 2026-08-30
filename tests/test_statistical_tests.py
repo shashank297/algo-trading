@@ -631,3 +631,127 @@ def test_statistical_tests_edge_cases_and_error_branches() -> None:
 
     mc_low_obs = compute_monte_carlo_robustness([0.01, -0.01], minimum_observations=30)
     assert mc_low_obs.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+
+
+def test_statistical_tests_full_coverage(tmp_path: Any) -> None:
+    """Cover all remaining branches of statistical_tests.py."""
+    # 1. compute_dsr with raw db.conn object and db.execute object
+    db = _make_test_db(tmp_path, "fam-cov-01", ["t1", "t2"], [1.0, 1.5])
+    returns = [0.001 * i for i in range(100)]
+
+    # Pass db.conn directly
+    dsr_conn = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=db.conn,
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_conn.status == EvidenceStatus.VALID
+
+    # Pass object with execute method
+    class RawExecuteDb:
+        def __init__(self, conn: Any) -> None:
+            self._conn = conn
+        def execute(self, q: str, params: Any = None) -> Any:
+            return self._conn.execute(q, params)
+
+    dsr_exec = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=RawExecuteDb(db.conn),
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_exec.status == EvidenceStatus.VALID
+
+    # Pass invalid object lacking execute/conn
+    class EmptyObj:
+        pass
+
+    dsr_empty_obj = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=EmptyObj(),
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_empty_obj.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_empty_obj.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # Pass throwing db
+    class ThrowingDb:
+        def execute(self, *args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("Database boom")
+
+    dsr_throw = compute_dsr(
+        returns,
+        [1.0, 1.5],
+        db=ThrowingDb(),
+        trial_count_source=TrialCountSource.PHASE2_1_REGISTRY,
+        experiment_family_id="fam-cov-01",
+        trial_ids=["t1", "t2"],
+    )
+    assert dsr_throw.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert dsr_throw.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # resolve_authoritative_dsr with raw connection
+    res_conn = resolve_authoritative_dsr(type("ConnHolder", (), {"conn": db.conn})(), returns, "fam-cov-01")
+    assert res_conn.status == EvidenceStatus.VALID
+
+    # resolve_authoritative_dsr with empty obj
+    res_empty = resolve_authoritative_dsr(EmptyObj(), returns, "fam-cov-01")
+    assert res_empty.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert res_empty.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # resolve_authoritative_dsr with throwing db
+    res_throw = resolve_authoritative_dsr(ThrowingDb(), returns, "fam-cov-01")
+    assert res_throw.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert res_throw.reason == "UNVERIFIED_DATABASE_PROVENANCE"
+
+    # resolve_authoritative_dsr with missing family
+    res_missing = resolve_authoritative_dsr(db, returns, "non_existent_family")
+    assert res_missing.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert res_missing.reason == "EXPERIMENT_FAMILY_NOT_FOUND_IN_DB"
+
+    # resolve_authoritative_dsr with invalid input returns
+    res_invalid_ret = resolve_authoritative_dsr(db, "not_returns", "fam-cov-01")  # type: ignore
+    assert res_invalid_ret.status == EvidenceStatus.INVALID_INPUT
+
+    # compute_bootstrap_confidence_intervals invalid args
+    ci_bad_conf = compute_bootstrap_confidence_intervals(returns, confidence_level=1.5)
+    assert ci_bad_conf["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    ci_bad_resamples = compute_bootstrap_confidence_intervals(returns, n_resamples=0)
+    assert ci_bad_resamples["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    ci_bad_block = compute_bootstrap_confidence_intervals(returns, method="MOVING_BLOCK", block_size=0)
+    assert ci_bad_block["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    ci_bad_ann = compute_bootstrap_confidence_intervals(returns, annualization_factor=-1.0)
+    assert ci_bad_ann["sharpe"].status == EvidenceStatus.INVALID_INPUT
+
+    # compute_psr invalid inputs
+    psr_bad_ann = compute_psr(returns, annualization_factor=-1.0)
+    assert psr_bad_ann.status == EvidenceStatus.INVALID_INPUT
+
+    psr_bad_input = compute_psr("not_returns")  # type: ignore
+    assert psr_bad_input.status == EvidenceStatus.INVALID_INPUT
+
+    # resolve_authoritative_dsr with failed trial and string metrics
+    db_mixed = _make_test_db(tmp_path, "fam-mixed", ["t1", "t2"], [1.0, 1.5], failed_ids=["f1"])
+    db_mixed.conn.execute(
+        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+        "VALUES ('t_str', 'fam-mixed', 'SUCCEEDED', '{\"strategy_name\": \"test\", \"parameters\": {\"p\": 99}}', '{\"sharpe\": 1.2}', CURRENT_TIMESTAMP)"
+    )
+    db_mixed.conn.execute(
+        "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
+        "VALUES ('t_bad_str', 'fam-mixed', 'SUCCEEDED', '{\"strategy_name\": \"test\", \"parameters\": {\"p\": 100}}', 'invalid_json', CURRENT_TIMESTAMP)"
+    )
+    res_mixed = resolve_authoritative_dsr(db_mixed, returns, "fam-mixed")
+    assert res_mixed.status == EvidenceStatus.VALID
+    assert res_mixed.failed_count == 1
+    assert res_mixed.succeeded_count == 4

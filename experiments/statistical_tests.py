@@ -972,6 +972,25 @@ def compute_bootstrap_confidence_intervals(
     results: dict[str, BootstrapConfidenceIntervals] = {}
     metric_names = ["total_return", "sharpe", "expectancy", "max_drawdown"]
 
+    if not (0.0 < confidence_level < 1.0) or n_resamples <= 0 or block_size <= 0 or annualization_factor <= 0.0:
+        for name in metric_names:
+            results[name] = BootstrapConfidenceIntervals(
+                metric_name=name,
+                point_estimate=0.0,
+                median=0.0,
+                lower_bound=0.0,
+                upper_bound=0.0,
+                expectancy_basis=ExpectancyBasis.PERIOD_RETURN,
+                confidence_level=confidence_level,
+                resamples=n_resamples,
+                method=method,
+                block_size=block_size,
+                seed=seed,
+                status=EvidenceStatus.INVALID_INPUT,
+                reason="Invalid bootstrap parameters (confidence_level, n_resamples, block_size, or annualization_factor)",
+            )
+        return results
+
     try:
         arr = _clean_returns(returns)
     except Exception as exc:

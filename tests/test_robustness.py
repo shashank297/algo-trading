@@ -1514,4 +1514,72 @@ def test_registry_family_with_deduplicated_and_failed_trials(tmp_path: Any, monk
     db.close()
 
 
+def test_robustness_stress_and_edge_branches() -> None:
+    """Cover stop order tags, boolean is_stop, reason tags, and timestamp alignment in stress testing."""
+    engine = StressScenarioEngine(RobustnessPolicy())
+    dates = pd.date_range("2024-01-01", periods=10, freq="D", tz="UTC")
+
+    curve = pd.DataFrame({
+        "timestamp": dates,
+        "net_return": [0.001] * 10,
+        "equity": [100000.0] * 10,
+        "drawdown": [0.0] * 10,
+        "position": [1.0] * 10,
+    })
+
+    # Fills with order_tag and is_stop and off-grid timestamps (prior and before first bar)
+    fills_tagged = pd.DataFrame({
+        "timestamp": [dates[0] - pd.Timedelta(hours=2), dates[3] + pd.Timedelta(hours=5), dates[6]],
+        "symbol": ["TEST"] * 3,
+        "price": [100.0, 102.0, 105.0],
+        "quantity": [10, -10, 5],
+        "side": ["BUY", "SELL", "BUY"],
+        "order_tag": ["ENTRY", "STOP_LOSS", "RE_ENTRY"],
+        "is_stop": [False, True, False],
+        "market_volume": [50000.0, 50000.0, 50000.0],
+        "fees": [1.0, 1.0, 1.0],
+        "cost": [1.0, 1.0, 1.0],
+        "slippage": [0.0, 0.0, 0.0],
+        "slippage_bps": [0.0, 0.0, 0.0],
+        "fill_price": [100.0, 102.0, 105.0],
+    })
+
+    class TaggedRun:
+        equity_curve = curve
+        fills = fills_tagged
+        metrics = type("Metrics", (), {"sharpe": 1.0, "cagr": 0.1, "max_drawdown": -0.05, "total_return": 0.1, "profit_factor": 1.5})()
+
+    cost_res = engine.evaluate_cost_stress(TaggedRun(), base_cost_model={"fee_bps": 5.0}, timeframe="1d", starting_capital=100_000.0)
+    assert all(c.status == EvidenceStatus.VALID for c in cost_res)
+
+    exec_res = engine.evaluate_execution_stress(TaggedRun(), timeframe="1d", starting_capital=100_000.0)
+    stop_slip = next(r for r in exec_res if r.scenario_name == "stop_slippage_stress")
+    assert stop_slip.status == EvidenceStatus.VALID
+
+    # Reason tag test
+    fills_reason = pd.DataFrame({
+        "timestamp": [dates[2]],
+        "symbol": ["TEST"],
+        "price": [100.0],
+        "quantity": [-10],
+        "side": ["SELL"],
+        "reason": ["SL_TRIGGERED"],
+        "market_volume": [50000.0],
+        "fees": [1.0],
+        "cost": [1.0],
+        "slippage": [0.0],
+        "slippage_bps": [0.0],
+        "fill_price": [100.0],
+    })
+
+    class ReasonRun:
+        equity_curve = curve
+        fills = fills_reason
+        metrics = TaggedRun.metrics
+
+    exec_reason = engine.evaluate_execution_stress(ReasonRun(), timeframe="1d", starting_capital=100_000.0)
+    stop_reason = next(r for r in exec_reason if r.scenario_name == "stop_slippage_stress")
+    assert stop_reason.status == EvidenceStatus.VALID
+
+
 
