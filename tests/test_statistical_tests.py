@@ -749,7 +749,7 @@ def test_statistical_tests_full_coverage(tmp_path: Any) -> None:
     )
     db_mixed.conn.execute(
         "INSERT INTO research_trials_log (trial_id, experiment_family_id, status, trial_json, metrics_json, created_at) "
-        "VALUES ('t_bad_str', 'fam-mixed', 'SUCCEEDED', '{\"strategy_name\": \"test\", \"parameters\": {\"p\": 100}}', 'invalid_json', CURRENT_TIMESTAMP)"
+        "VALUES ('t_bad_str', 'fam-mixed', 'SUCCEEDED', '{\"strategy_name\": \"test\", \"parameters\": {\"p\": 100}}', '{\"other_metric\": 100}', CURRENT_TIMESTAMP)"
     )
     res_mixed = resolve_authoritative_dsr(db_mixed, returns, "fam-mixed")
     assert res_mixed.status == EvidenceStatus.VALID
