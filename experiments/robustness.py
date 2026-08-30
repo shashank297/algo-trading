@@ -538,7 +538,6 @@ class StressScenarioEngine:
                     CostStressResult(
                         multiplier=1.0,
                         slippage_bps_override=None,
-                        liquidity_stress_factor=None,
                         metrics=base_metrics_dict,
                         cost_schedule_summary={"multiplier": 1.0, "base_keys": list(base_cost_model.keys())},
                         status=EvidenceStatus.VALID,
@@ -551,7 +550,6 @@ class StressScenarioEngine:
                     CostStressResult(
                         multiplier=mult,
                         slippage_bps_override=self.policy.slippage_stress_bps,
-                        liquidity_stress_factor=self.policy.liquidity_stress_factor,
                         metrics=base_metrics_dict,
                         cost_schedule_summary={"multiplier": mult},
                         status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
@@ -565,7 +563,6 @@ class StressScenarioEngine:
                     CostStressResult(
                         multiplier=mult,
                         slippage_bps_override=self.policy.slippage_stress_bps,
-                        liquidity_stress_factor=self.policy.liquidity_stress_factor,
                         metrics={},
                         cost_schedule_summary={"multiplier": mult},
                         status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
