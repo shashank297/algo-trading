@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
             "market-regime",
             # Phase 2.6 — Statistical research framework
             "robustness",
+            "strategy-regime-analysis",
         ],
         help="Workflow to run. Existing calls default to backtest.",
     )
@@ -103,7 +104,13 @@ def build_parser() -> argparse.ArgumentParser:
     # Phase 2.6 — Statistical research framework
     parser.add_argument("--robustness-id", default=None, help="Robustness evaluation ID for inspection")
     parser.add_argument("--purge-window", type=int, default=None, help="Purge window in bars for nested walk-forward")
-    parser.add_argument("--embargo-window", type=int, default=None, help="Embargo window in bars for nested walk-forward")
+    parser.add_argument(
+        "--embargo-window", type=int, default=None, help="Embargo window in bars for nested walk-forward"
+    )
+    parser.add_argument(
+        "--evidence-at", default=None, help="Causal evidence cutoff ISO timestamp for strategy-regime-analysis"
+    )
+    parser.add_argument("--database-path", default=None, help=argparse.SUPPRESS)
     return parser
 
 
@@ -128,7 +135,7 @@ def main(argv: list[str] | None = None) -> int:
     started_at = time.perf_counter()
     project_logger.info("operation_started")
 
-    db_path = Path(config["database"]["path"])
+    db_path = Path(args.database_path or config["database"]["path"])
     if not db_path.is_absolute():
         db_path = (PROJECT_ROOT / db_path).resolve()
     db = DuckDBManager(str(db_path))
@@ -546,12 +553,40 @@ def main(argv: list[str] | None = None) -> int:
                 strategy=args.strategy if args.strategy != "trend_following" or (argv and "--strategy" in argv) else None,
                 status=args.status,
             )
-            print(json.dumps({
-                "families": families,
-                "trials": trials,
-                "total_families": len(families),
-                "total_trials": len(trials),
-            }, default=str, indent=2))
+            print(
+                json.dumps(
+                    {
+                        "families": families,
+                        "trials": trials,
+                        "total_families": len(families),
+                        "total_trials": len(trials),
+                    },
+                    default=str,
+                    indent=2,
+                )
+            )
+            return 0
+        if args.command == "strategy-regime-analysis":
+            cutoff = (
+                datetime.fromisoformat(args.evidence_at.replace("Z", "+00:00"))
+                if args.evidence_at
+                else datetime.now(ZoneInfo("UTC"))
+            )
+            if cutoff.tzinfo is None:
+                raise ValueError("--evidence-at must include a timezone offset")
+            evidence = db.list_phase2_7_conditional_evidence_at(cutoff, strategy_name=args.strategy)
+            print(
+                json.dumps(
+                    {
+                        "cutoff": cutoff.isoformat(),
+                        "strategy": args.strategy,
+                        "evidence": evidence,
+                        "explanation": "Only net-of-cost OUT_OF_SAMPLE evidence available at or before the cutoff is shown.",
+                    },
+                    default=str,
+                    indent=2,
+                )
+            )
             return 0
         if args.command == "robustness":
             if args.robustness_id:
