@@ -7,6 +7,8 @@ and Monte Carlo simulations against analytical formulas and edge cases.
 from __future__ import annotations
 
 import math
+from typing import Any
+
 import numpy as np
 import pandas as pd
 import scipy.stats
@@ -14,8 +16,6 @@ import scipy.stats
 from storage.duckdb_manager import DuckDBManager
 from storage.migrations.runner import MigrationRunner
 from experiments.statistical_tests import (
-    BootstrapConfidenceIntervals,
-    DSRResult,
     EvidenceStatus,
     ExpectancyBasis,
     TrialCountSource,

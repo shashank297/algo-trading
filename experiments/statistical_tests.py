@@ -10,8 +10,10 @@ References:
 
 from __future__ import annotations
 
+import json
 import math
 from enum import Enum
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -565,7 +567,7 @@ def compute_dsr(
                 status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
                 reason="UNVERIFIED_DATABASE_PROVENANCE",
             )
-    except Exception as exc:
+    except Exception:
         return DSRResult(
             effective_trials=n_effective,
             sharpe_count=n_sharpes,
