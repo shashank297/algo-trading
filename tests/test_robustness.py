@@ -948,11 +948,9 @@ def test_cost_and_execution_stress_on_oos_evidence(tmp_path: Any, monkeypatch: p
     # Cost stress checks
     cost_15x = next(c for c in bundle.cost_stress if c.multiplier == 1.5)
     assert cost_15x.slippage_bps_override == 15.0
-    assert cost_15x.liquidity_stress_factor == 2.0
 
     cost_1x = next(c for c in bundle.cost_stress if c.multiplier == 1.0)
     assert cost_1x.slippage_bps_override is None
-    assert cost_1x.liquidity_stress_factor is None
 
     # Execution stress checks
     exec_scenarios = {e.scenario_name for e in bundle.execution_stress}
@@ -1577,9 +1575,55 @@ def test_robustness_stress_and_edge_branches() -> None:
         fills = fills_reason
         metrics = TaggedRun.metrics
 
-    exec_reason = engine.evaluate_execution_stress(ReasonRun(), timeframe="1d", starting_capital=100_000.0)
-    stop_reason = next(r for r in exec_reason if r.scenario_name == "stop_slippage_stress")
-    assert stop_reason.status == EvidenceStatus.VALID
+    # Participation rate column support
+    fills_part = pd.DataFrame({
+        "timestamp": [dates[2]],
+        "symbol": ["TEST"],
+        "price": [100.0],
+        "quantity": [10],
+        "side": ["BUY"],
+        "participation_rate": [0.05],
+        "fees": [1.0],
+        "cost": [1.0],
+        "slippage": [0.0],
+        "slippage_bps": [0.0],
+        "fill_price": [100.0],
+    })
+    class PartRun:
+        equity_curve = curve
+        fills = fills_part
+        metrics = TaggedRun.metrics
+
+    exec_part = engine.evaluate_execution_stress(PartRun(), timeframe="1d", starting_capital=100_000.0)
+    liq_part = next(r for r in exec_part if r.scenario_name == "reduced_liquidity")
+    assert liq_part.status == EvidenceStatus.VALID
+    assert liq_part.perturbation_params.get("participation_source") == "participation_rate"
+
+    # Zero / NaN / negative market volume must fail closed with INVALID_MARKET_VOLUME_EVIDENCE
+    fills_zero_vol = fills_reason.copy()
+    fills_zero_vol["market_volume"] = 0.0
+    class ZeroVolRun:
+        equity_curve = curve
+        fills = fills_zero_vol
+        metrics = TaggedRun.metrics
+
+    exec_zero_vol = engine.evaluate_execution_stress(ZeroVolRun(), timeframe="1d", starting_capital=100_000.0)
+    liq_zero_vol = next(r for r in exec_zero_vol if r.scenario_name == "reduced_liquidity")
+    assert liq_zero_vol.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert liq_zero_vol.reason == "INVALID_MARKET_VOLUME_EVIDENCE"
+
+    # Invalid participation rate (< 0 or NaN) fails closed
+    fills_bad_part = fills_part.copy()
+    fills_bad_part["participation_rate"] = -0.1
+    class BadPartRun:
+        equity_curve = curve
+        fills = fills_bad_part
+        metrics = TaggedRun.metrics
+
+    exec_bad_part = engine.evaluate_execution_stress(BadPartRun(), timeframe="1d", starting_capital=100_000.0)
+    liq_bad_part = next(r for r in exec_bad_part if r.scenario_name == "reduced_liquidity")
+    assert liq_bad_part.status == EvidenceStatus.INSUFFICIENT_EVIDENCE
+    assert liq_bad_part.reason == "INVALID_MARKET_VOLUME_EVIDENCE"
 
 
 
