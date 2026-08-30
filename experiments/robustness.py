@@ -925,7 +925,16 @@ class StressScenarioEngine:
             p_rate = pd.to_numeric(fills["participation_rate"], errors="coerce")
             qty = pd.to_numeric(fills["quantity"], errors="coerce").abs()
             px = pd.to_numeric(fills["price"], errors="coerce").abs()
-            if p_rate.isna().any() or (p_rate < 0.0).any() or qty.isna().any() or px.isna().any():
+            if (
+                p_rate.isna().any()
+                or not np.isfinite(p_rate).all()
+                or (p_rate < 0.0).any()
+                or (p_rate > 1.0).any()
+                or qty.isna().any()
+                or not np.isfinite(qty).all()
+                or px.isna().any()
+                or not np.isfinite(px).all()
+            ):
                 results.append(
                     ExecutionStressResult(
                         scenario_name="reduced_liquidity",
@@ -993,7 +1002,15 @@ class StressScenarioEngine:
             volumes = pd.to_numeric(fills[vol_col], errors="coerce")
             qty = pd.to_numeric(fills["quantity"], errors="coerce").abs()
             px = pd.to_numeric(fills["price"], errors="coerce").abs()
-            if volumes.isna().any() or (volumes <= 0.0).any() or qty.isna().any() or px.isna().any():
+            if (
+                volumes.isna().any()
+                or not np.isfinite(volumes).all()
+                or (volumes <= 0.0).any()
+                or qty.isna().any()
+                or not np.isfinite(qty).all()
+                or px.isna().any()
+                or not np.isfinite(px).all()
+            ):
                 results.append(
                     ExecutionStressResult(
                         scenario_name="reduced_liquidity",
