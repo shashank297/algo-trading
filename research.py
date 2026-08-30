@@ -123,7 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     if not config_file.is_file():
         config_file = PROJECT_ROOT / "config" / "config.example.yaml"
     config = apply_env_overrides(load_yaml(str(config_file)))
-    validate_config(config)
+    if args.command != "strategy-regime-analysis":
+        validate_config(config)
     symbols = validate_symbols(load_yaml(str(PROJECT_ROOT / "config" / "symbols.yaml")))
     symbol = args.symbol or str(symbols[0]["symbol"])
     configured_equities = [str(item["symbol"]) for item in symbols if str(item.get("instrument_type", "")).upper() == "EQUITY"]

@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -360,6 +361,9 @@ def test_phase2_7_cli_is_read_only_end_to_end(tmp_path: Path) -> None:
     protected = ("strategy_runs", "promotion_reviews", "strategy_orders", "paper_sessions")
     before = {table: db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in protected}
     db.close()
+    clean_env = os.environ.copy()
+    for name in ("SMARTAPI_API_KEY", "SMARTAPI_CLIENT_CODE", "SMARTAPI_PIN", "SMARTAPI_TOTP_SECRET"):
+        clean_env.pop(name, None)
     result = subprocess.run(
         [
             sys.executable,
@@ -376,8 +380,10 @@ def test_phase2_7_cli_is_read_only_end_to_end(tmp_path: Path) -> None:
         cwd=Path(__file__).resolve().parents[1],
         capture_output=True,
         text=True,
-        check=True,
+        env=clean_env,
+        check=False,
     )
+    assert result.returncode == 0, result.stderr
     for field in (
         "strategy_version",
         "aggregation_level",
