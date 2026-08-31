@@ -591,6 +591,9 @@ class MetaResearchRunner:
             raise ValueError("frozen policy selected trial is not SUCCEEDED")
         if trial.get("parameters", {}).get("candidate_id") != artifact.get("selection_result"):
             raise ValueError("frozen policy selected trial candidate binding mismatch")
+        family = self.db.get_experiment_family(str(trial["experiment_family_id"]))
+        if family is None or family.get("universe_snapshot_id") != final_dataset_reference.universe_snapshot_id:
+            raise ValueError("FINAL universe snapshot does not match registered experiment family")
         resolver = HistoricalEvidenceResolver(self.db)
         items = resolver.final_observations(final_dataset_reference)
         resolved_strategies = {card.strategy_name for item in items for card in item.scorecards}
