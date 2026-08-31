@@ -926,6 +926,22 @@ def test_t2_10_zd_certificate_materializes_after_final_oos_and_is_persisted():
     assert row is not None
     assert row[2] > row[1]
     assert row[3] == result.final_oos_result.final_oos_execution_hash
+    certificate = db.validate_final_oos_provenance_certificate(str(row[0]))
+    assert certificate["certificate_id"] == certificate["certificate_hash"][:32]
+
+
+def test_t2_10_zd_result_persists_detailed_costs_json():
+    db = DuckDBManager(":memory:")
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(datetime(2024, 4, 1, tzinfo=UTC), [], {})])
+    db.persist_meta_selector_result(
+        result,
+        policy_version="meta-v1",
+        selector_policy_version="selector-v1",
+        selector_policy_hash="selector-hash",
+        available_at=datetime(2024, 4, 2, tzinfo=UTC),
+    )
+    persisted = db.load_meta_selector_result_record(result.meta_run_id)
+    assert persisted["costs"] == []
 
 
 def test_t2_10_ze_stored_policy_payload_hash_mismatch_fails_final_loading():

@@ -2375,6 +2375,7 @@ class DuckDBManager:
         ).fetchall()
         required = {"schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"}
         valid_cert = False
+        valid_certification_id: str | None = None
         for cert_id, checks_json in certs:
             try:
                 bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
@@ -2385,6 +2386,7 @@ class DuckDBManager:
             ).fetchall()
             if bound_hash == content_hash and len(checks) == 6 and {str(c[0]) for c in checks if int(c[1]) == 0} == required:
                 valid_cert = True
+                valid_certification_id = str(cert_id)
                 break
         if not valid_cert:
             raise ValueError("Source dataset lacks DQ certification bound to its immutable hash.")
@@ -2414,8 +2416,14 @@ class DuckDBManager:
         ).df()
         if bars.empty:
             raise ValueError("No authoritative 1m source bars exist for the requested range.")
-        return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash,
-                "provider_token": str(token or "DERIVED"), "dataset_available_at": dataset_available_at}
+        return {
+            "bars": bars,
+            "adjustment": str(adjustment),
+            "content_hash": content_hash,
+            "provider_token": str(token or "DERIVED"),
+            "dataset_available_at": dataset_available_at,
+            "certification_id": valid_certification_id,
+        }
 
     def _has_authoritative_dq_certification(
         self,
@@ -3708,7 +3716,7 @@ class DuckDBManager:
             "scorecard_policy_version", "meta_split", "purge_periods", "embargo_periods",
             "status", "verdict", "metrics_json", "baselines_json", "stress_results_json",
             "attribution_json", "checkpoint_json", "checkpoint_hash", "orders_json", "fills_json",
-            "risk_decisions_json", "evidence_hash", "available_at",
+            "risk_decisions_json", "costs_json", "evidence_hash", "available_at",
             "final_oos_execution_hash",
         )
         run_data = {
@@ -3731,6 +3739,7 @@ class DuckDBManager:
             "orders_json": json.dumps(result.orders, sort_keys=True, default=str),
             "fills_json": json.dumps(result.fills, sort_keys=True, default=str),
             "risk_decisions_json": json.dumps(result.risk_decisions, sort_keys=True, default=str),
+            "costs_json": json.dumps(getattr(result, "costs", ()), sort_keys=True, default=str),
             "evidence_hash": result.evidence_hash,
             "available_at": timestamp,
             "final_oos_execution_hash": getattr(result, "final_oos_execution_hash", result.evidence_hash),
@@ -3852,7 +3861,8 @@ class DuckDBManager:
             "dataset_ids", "dataset_content_hashes", "evidence_hashes",
             "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
             "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
-            "outcome_series_ids", "execution_bar_hashes", "dataset_bindings",
+            "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
+            "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
         )
         for field in json_fields:
             values[field] = json.dumps(values[field], sort_keys=True)
@@ -3883,7 +3893,8 @@ class DuckDBManager:
             "dataset_ids", "dataset_content_hashes", "evidence_hashes",
             "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
             "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
-            "outcome_series_ids", "execution_bar_hashes", "dataset_bindings",
+            "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
+            "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
         ):
             result[field] = json.loads(str(result[field] or "[]"))
         return result
@@ -3902,16 +3913,22 @@ class DuckDBManager:
                 "acceptance_policy_version", "acceptance_policy_hash", "universe_snapshot_id",
                 "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
                 "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
-                "outcome_series_ids", "execution_bar_hashes", "dataset_bindings",
+                "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
+                "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
+                "knowledge_cutoff",
             )
         }
-        for field in ("final_oos_start", "final_oos_end", "materialized_at"):
+        for field in ("final_oos_start", "final_oos_end", "materialized_at", "knowledge_cutoff"):
+            if payload.get(field) is None:
+                continue
             payload[field] = pd.Timestamp(payload[field]).tz_convert("UTC").to_pydatetime()
         expected_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
         ).hexdigest()
         if expected_hash != certificate["certificate_hash"]:
             raise ValueError("FINAL_OOS provenance certificate hash mismatch")
+        if str(certificate["certificate_id"]) != str(certificate["certificate_hash"])[:32]:
+            raise ValueError("FINAL_OOS provenance certificate ID binding mismatch")
         artifact = self.load_frozen_meta_policy(str(certificate["frozen_policy_id"]))
         artifact_payload = {
             "selector_policy_version": artifact["selector_policy_version"],
@@ -3973,6 +3990,11 @@ class DuckDBManager:
             else self.list_research_trials_at(
                 pd.Timestamp(certificate["final_oos_start"]).to_pydatetime(),
                 family_id=str(certificate["experiment_family_id"]),
+                knowledge_cutoff=(
+                    pd.Timestamp(certificate["knowledge_cutoff"]).to_pydatetime()
+                    if certificate.get("knowledge_cutoff") is not None
+                    else pd.Timestamp(certificate["final_oos_start"]).to_pydatetime()
+                ),
             )
         )
         if not any(row.get("trial_id") == certificate["selected_trial_id"] for row in historical_trials):
@@ -4014,26 +4036,38 @@ class DuckDBManager:
         if certificate.get("dataset_certification_ids"):
             placeholders = ",".join("?" for _ in certificate["dataset_certification_ids"])
             certification_rows = self.conn.execute(
-                f"SELECT certification_id FROM data_quality_certifications WHERE certification_id IN ({placeholders}) AND status='CERTIFIED' AND issue_count=0",
+                f"SELECT certification_id, dataset_id, checks_json FROM data_quality_certifications WHERE certification_id IN ({placeholders}) AND status='CERTIFIED' AND issue_count=0",
                 list(certificate["dataset_certification_ids"]),
             ).fetchall()
             if {str(row[0]) for row in certification_rows} != {str(value) for value in certificate["dataset_certification_ids"]}:
                 raise ValueError("FINAL_OOS certificate dataset-certification binding mismatch")
-        if certificate.get("evidence_ids"):
-            known_ids: set[str] = set()
-            for table, column in (
-                ("strategy_conditional_evidence", "evidence_id"),
-                ("strategy_scorecards", "scorecard_id"),
-                ("research_trials_log", "trial_id"),
-                ("data_quality_certifications", "certification_id"),
-                ("strategy_robustness_evaluations", "robustness_id"),
-            ):
+            actual_cert_bindings = {(str(row[1]), str(row[0])) for row in certification_rows}
+            expected_cert_bindings = {(str(pair[0]), str(pair[1])) for pair in certificate.get("dataset_certification_bindings", []) if len(pair) == 2}
+            if actual_cert_bindings != expected_cert_bindings:
+                raise ValueError("FINAL_OOS certificate dataset-certification pair binding mismatch")
+            certified_hashes: dict[str, str] = {}
+            for _, dataset_id, checks_json in certification_rows:
                 try:
-                    known_ids.update(str(row[0]) for row in self.conn.execute(f"SELECT {column} FROM {table}").fetchall())
-                except Exception:
-                    continue
-            if not set(map(str, certificate["evidence_ids"])).issubset(known_ids):
+                    certified_hashes[str(dataset_id)] = str(json.loads(str(checks_json or "{}")).get("dataset_content_hash") or "")
+                except (TypeError, json.JSONDecodeError):
+                    certified_hashes[str(dataset_id)] = ""
+            if any(
+                certified_hashes.get(str(dataset_id)) != str(content_hash)
+                for dataset_id, content_hash in certificate.get("dataset_bindings", [])
+            ):
+                raise ValueError("FINAL_OOS certificate certification content-hash mismatch")
+        if certificate.get("conditional_evidence_ids"):
+            placeholders = ",".join("?" for _ in certificate["conditional_evidence_ids"])
+            evidence_rows = self.conn.execute(
+                f"SELECT evidence_id, evidence_hash FROM strategy_conditional_evidence WHERE evidence_id IN ({placeholders})",
+                list(certificate["conditional_evidence_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in evidence_rows} != {str(value) for value in certificate["conditional_evidence_ids"]}:
+                raise ValueError("FINAL_OOS certificate conditional-evidence binding mismatch")
+            if certificate.get("evidence_ids") and set(map(str, certificate["evidence_ids"])) != {str(row[0]) for row in evidence_rows}:
                 raise ValueError("FINAL_OOS certificate evidence ID binding mismatch")
+        elif certificate.get("evidence_ids"):
+            raise ValueError("FINAL_OOS certificate evidence IDs lack typed conditional-evidence bindings")
         if certificate["materialized_at"] <= certificate["final_oos_end"]:
             raise ValueError("FINAL_OOS provenance certificate materialized before completion")
         result = self.conn.execute(
@@ -4058,14 +4092,40 @@ class DuckDBManager:
             }
             if actual_bar_hashes != {str(value) for value in certificate["execution_bar_hashes"]}:
                 raise ValueError("FINAL_OOS certificate execution-bar binding mismatch")
+            actual_bar_ids = {
+                str(order.get("execution_lineage", {}).get("historical_bar_id"))
+                for order in orders if order.get("execution_lineage", {}).get("historical_bar_id")
+            }
+            expected_bar_ids = {str(value) for value in certificate.get("execution_bar_ids", [])}
+            if expected_bar_ids and actual_bar_ids != expected_bar_ids:
+                raise ValueError("FINAL_OOS certificate execution-bar ID binding mismatch")
+        if certificate.get("scorecard_ids"):
+            placeholders = ",".join("?" for _ in certificate["scorecard_ids"])
+            scorecard_rows = self.conn.execute(
+                f"SELECT scorecard_id, evidence_hash, conditional_evidence_id FROM strategy_scorecards WHERE scorecard_id IN ({placeholders})",
+                list(certificate["scorecard_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in scorecard_rows} != {str(value) for value in certificate["scorecard_ids"]}:
+                raise ValueError("FINAL_OOS certificate scorecard binding mismatch")
+            declared_conditional_ids = {str(value) for value in certificate.get("conditional_evidence_ids", [])}
+            if declared_conditional_ids and not {str(row[2]) for row in scorecard_rows if row[2]} <= declared_conditional_ids:
+                raise ValueError("FINAL_OOS certificate scorecard evidence binding mismatch")
         if certificate.get("outcome_series_ids"):
             placeholders = ",".join("?" for _ in certificate["outcome_series_ids"])
             series_rows = self.conn.execute(
-                f"SELECT DISTINCT series_id FROM phase2_10_outcome_series WHERE series_id IN ({placeholders})",
+                f"SELECT DISTINCT series_id, content_hash FROM phase2_10_outcome_series WHERE series_id IN ({placeholders})",
                 list(certificate["outcome_series_ids"]),
             ).fetchall()
             if {str(row[0]) for row in series_rows} != {str(value) for value in certificate["outcome_series_ids"]}:
                 raise ValueError("FINAL_OOS certificate outcome-series binding mismatch")
+            actual_bindings = {(str(row[0]), str(row[1])) for row in series_rows}
+            expected_bindings = {
+                (str(pair[0]), str(pair[1]))
+                for pair in certificate.get("outcome_series_bindings", [])
+                if len(pair) == 2
+            }
+            if actual_bindings != expected_bindings:
+                raise ValueError("FINAL_OOS certificate outcome-series content-hash mismatch")
         return certificate
 
     def load_meta_selector_result_record(self, meta_run_id: str) -> dict[str, Any]:
@@ -4076,7 +4136,7 @@ class DuckDBManager:
             raise ValueError(f"Unknown meta selector run {meta_run_id}")
         columns = [item[0] for item in self.conn.description]
         result = dict(zip(columns, row))
-        for field in ("metrics_json", "baselines_json", "stress_results_json", "attribution_json", "orders_json", "fills_json", "risk_decisions_json"):
+        for field in ("metrics_json", "baselines_json", "stress_results_json", "attribution_json", "orders_json", "fills_json", "risk_decisions_json", "costs_json"):
             result[field[:-5]] = json.loads(str(result[field] or "{}"))
         return result
 
@@ -4150,8 +4210,18 @@ class DuckDBManager:
                 )
         return acceptance_id
 
-    def list_research_trials_at(self, cutoff: datetime, *, family_id: str | None = None) -> list[dict[str, Any]]:
-        return self.list_research_trials_at_bitemporal(cutoff, knowledge_cutoff=cutoff, family_id=family_id)
+    def list_research_trials_at(
+        self,
+        cutoff: datetime,
+        *,
+        family_id: str | None = None,
+        knowledge_cutoff: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.list_research_trials_at_bitemporal(
+            cutoff,
+            knowledge_cutoff=knowledge_cutoff or cutoff,
+            family_id=family_id,
+        )
 
     def list_research_trials_at_bitemporal(
         self, effective_cutoff: datetime, *, knowledge_cutoff: datetime,

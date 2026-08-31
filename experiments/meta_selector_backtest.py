@@ -95,6 +95,7 @@ class MetaSelectorObservation:
     asset_cluster: str | None
     scorecards: tuple[Any, ...]
     strategy_returns: dict[str, float]
+    outcome_series_bindings: tuple[tuple[str, str], ...] = ()
     target_portfolios: dict[str, dict[str, float]] = field(default_factory=dict)
     asset_returns: dict[str, float] = field(default_factory=dict)
     prices: dict[str, float] = field(default_factory=dict)
@@ -126,6 +127,7 @@ class MetaSelectorObservation:
     risk_snapshot: dict[str, Any] = field(default_factory=dict)
     risk_batch_id: str | None = None
     batch_start_snapshot_id: str | None = None
+    knowledge_cutoff: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -145,6 +147,7 @@ class FinalDatasetReference:
     benchmark_series_id: str | None = None
     strategy_series_ids: tuple[str, ...] = ()
     outcome_materialization_cutoff: datetime | None = None
+    knowledge_cutoff: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.decision_times or any(timestamp.tzinfo is None for timestamp in self.decision_times):
@@ -153,6 +156,10 @@ class FinalDatasetReference:
             raise ValueError("FINAL dataset reference requires canonical 1m data")
         if self.outcome_materialization_cutoff is not None and self.outcome_materialization_cutoff.tzinfo is None:
             raise ValueError("outcome_materialization_cutoff must be timezone-aware")
+        if self.knowledge_cutoff is not None and self.knowledge_cutoff.tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
+        if self.dataset_id != "synthetic" and self.knowledge_cutoff is None:
+            raise ValueError("non-synthetic FINAL references require an explicit knowledge_cutoff")
 
 
 @dataclass(frozen=True)
@@ -244,6 +251,7 @@ class MetaSelectorResult:
     checkpoint: MetaSelectorCheckpoint
     orders: tuple[dict[str, Any], ...] = ()
     fills: tuple[dict[str, Any], ...] = ()
+    costs: tuple[dict[str, Any], ...] = ()
     risk_decisions: tuple[dict[str, Any], ...] = ()
     final_oos_execution_hash: str = ""
 
@@ -282,17 +290,27 @@ class FinalOOSProvenanceCertificate:
     dataset_certification_ids: tuple[str, ...] = ()
     evidence_ids: tuple[str, ...] = ()
     outcome_series_ids: tuple[str, ...] = ()
+    outcome_series_bindings: tuple[tuple[str, str], ...] = ()
     execution_bar_hashes: tuple[str, ...] = ()
+    execution_bar_ids: tuple[str, ...] = ()
+    scorecard_ids: tuple[str, ...] = ()
+    conditional_evidence_ids: tuple[str, ...] = ()
+    dataset_certification_bindings: tuple[tuple[str, str], ...] = ()
     dataset_bindings: tuple[tuple[str, str], ...] = ()
+    knowledge_cutoff: datetime | None = None
 
     @classmethod
-    def create(cls, *, meta_run_id: str, frozen_policy_id: str, frozen_policy_hash: str, selected_trial_id: str, selector_policy_hash: str, meta_policy_hash: str, scorecard_policy_hash: str, dataset_ids: Iterable[str], dataset_content_hashes: Iterable[str], evidence_hashes: Iterable[str], resolver_hash: str, execution_hash: str, final_oos_start: datetime, final_oos_end: datetime, materialized_at: datetime, cost_model_version: str, cost_model_hash: str, purge_periods: int, embargo_periods: int, acceptance_policy_version: str = "phase2-10-acceptance-v1", acceptance_policy_hash: str = "", experiment_family_id: str = "meta-selector-phase2-10", universe_snapshot_id: str = "", regime_snapshot_ids: Iterable[str] = (), asset_state_snapshot_ids: Iterable[str] = (), risk_snapshot_ids: Iterable[str] = (), risk_snapshot_hashes: Iterable[str] = (), dataset_certification_ids: Iterable[str] = (), evidence_ids: Iterable[str] = (), outcome_series_ids: Iterable[str] = (), execution_bar_hashes: Iterable[str] = (), dataset_bindings: Iterable[tuple[str, str]] = ()) -> FinalOOSProvenanceCertificate:
+    def create(cls, *, meta_run_id: str, frozen_policy_id: str, frozen_policy_hash: str, selected_trial_id: str, selector_policy_hash: str, meta_policy_hash: str, scorecard_policy_hash: str, dataset_ids: Iterable[str], dataset_content_hashes: Iterable[str], evidence_hashes: Iterable[str], resolver_hash: str, execution_hash: str, final_oos_start: datetime, final_oos_end: datetime, materialized_at: datetime, cost_model_version: str, cost_model_hash: str, purge_periods: int, embargo_periods: int, acceptance_policy_version: str = "phase2-10-acceptance-v1", acceptance_policy_hash: str = "", experiment_family_id: str = "meta-selector-phase2-10", universe_snapshot_id: str = "", regime_snapshot_ids: Iterable[str] = (), asset_state_snapshot_ids: Iterable[str] = (), risk_snapshot_ids: Iterable[str] = (), risk_snapshot_hashes: Iterable[str] = (), dataset_certification_ids: Iterable[str] = (), evidence_ids: Iterable[str] = (), outcome_series_ids: Iterable[str] = (), outcome_series_bindings: Iterable[tuple[str, str]] = (), execution_bar_hashes: Iterable[str] = (), execution_bar_ids: Iterable[str] = (), scorecard_ids: Iterable[str] = (), conditional_evidence_ids: Iterable[str] = (), dataset_certification_bindings: Iterable[tuple[str, str]] = (), dataset_bindings: Iterable[tuple[str, str]] = (), knowledge_cutoff: datetime | None = None) -> FinalOOSProvenanceCertificate:
         final_oos_start = final_oos_start.astimezone(timezone.utc)
         final_oos_end = final_oos_end.astimezone(timezone.utc)
         materialized_at = materialized_at.astimezone(timezone.utc)
+        if knowledge_cutoff is not None:
+            if knowledge_cutoff.tzinfo is None:
+                raise ValueError("knowledge_cutoff must be timezone-aware")
+            knowledge_cutoff = knowledge_cutoff.astimezone(timezone.utc)
         if materialized_at <= final_oos_end:
             raise ValueError("provenance certificate must materialize after FINAL_OOS")
-        values: dict[str, Any] = {"meta_run_id": meta_run_id, "frozen_policy_id": frozen_policy_id, "frozen_policy_hash": frozen_policy_hash, "selected_trial_id": selected_trial_id, "experiment_family_id": experiment_family_id, "selector_policy_hash": selector_policy_hash, "meta_policy_hash": meta_policy_hash, "scorecard_policy_hash": scorecard_policy_hash, "dataset_ids": tuple(sorted(dataset_ids)), "dataset_content_hashes": tuple(sorted(dataset_content_hashes)), "evidence_hashes": tuple(sorted(evidence_hashes)), "resolver_hash": resolver_hash, "execution_hash": execution_hash, "materialized_at": materialized_at, "final_oos_start": final_oos_start, "final_oos_end": final_oos_end, "cost_model_version": cost_model_version, "cost_model_hash": cost_model_hash, "purge_periods": purge_periods, "embargo_periods": embargo_periods, "acceptance_policy_version": acceptance_policy_version, "acceptance_policy_hash": acceptance_policy_hash, "universe_snapshot_id": universe_snapshot_id, "regime_snapshot_ids": tuple(sorted(regime_snapshot_ids)), "asset_state_snapshot_ids": tuple(sorted(asset_state_snapshot_ids)), "risk_snapshot_ids": tuple(sorted(risk_snapshot_ids)), "risk_snapshot_hashes": tuple(sorted(risk_snapshot_hashes)), "dataset_certification_ids": tuple(sorted(dataset_certification_ids)), "evidence_ids": tuple(sorted(evidence_ids)), "outcome_series_ids": tuple(sorted(outcome_series_ids)), "execution_bar_hashes": tuple(sorted(execution_bar_hashes)), "dataset_bindings": tuple(sorted((str(dataset_id), str(content_hash)) for dataset_id, content_hash in dataset_bindings))}
+        values: dict[str, Any] = {"meta_run_id": meta_run_id, "frozen_policy_id": frozen_policy_id, "frozen_policy_hash": frozen_policy_hash, "selected_trial_id": selected_trial_id, "experiment_family_id": experiment_family_id, "selector_policy_hash": selector_policy_hash, "meta_policy_hash": meta_policy_hash, "scorecard_policy_hash": scorecard_policy_hash, "dataset_ids": tuple(sorted(dataset_ids)), "dataset_content_hashes": tuple(sorted(dataset_content_hashes)), "evidence_hashes": tuple(sorted(evidence_hashes)), "resolver_hash": resolver_hash, "execution_hash": execution_hash, "materialized_at": materialized_at, "final_oos_start": final_oos_start, "final_oos_end": final_oos_end, "cost_model_version": cost_model_version, "cost_model_hash": cost_model_hash, "purge_periods": purge_periods, "embargo_periods": embargo_periods, "acceptance_policy_version": acceptance_policy_version, "acceptance_policy_hash": acceptance_policy_hash, "universe_snapshot_id": universe_snapshot_id, "regime_snapshot_ids": tuple(sorted(regime_snapshot_ids)), "asset_state_snapshot_ids": tuple(sorted(asset_state_snapshot_ids)), "risk_snapshot_ids": tuple(sorted(risk_snapshot_ids)), "risk_snapshot_hashes": tuple(sorted(risk_snapshot_hashes)), "dataset_certification_ids": tuple(sorted(dataset_certification_ids)), "evidence_ids": tuple(sorted(evidence_ids)), "outcome_series_ids": tuple(sorted(outcome_series_ids)), "outcome_series_bindings": tuple(sorted((str(series_id), str(content_hash)) for series_id, content_hash in outcome_series_bindings)), "execution_bar_hashes": tuple(sorted(execution_bar_hashes)), "execution_bar_ids": tuple(sorted(execution_bar_ids)), "scorecard_ids": tuple(sorted(scorecard_ids)), "conditional_evidence_ids": tuple(sorted(conditional_evidence_ids)), "dataset_certification_bindings": tuple(sorted((str(dataset_id), str(certification_id)) for dataset_id, certification_id in dataset_certification_bindings)), "dataset_bindings": tuple(sorted((str(dataset_id), str(content_hash)) for dataset_id, content_hash in dataset_bindings)), "knowledge_cutoff": knowledge_cutoff}
         certificate_hash = _canonical_hash(values)
         return cls(certificate_id=certificate_hash[:32], certificate_hash=certificate_hash, **values)
 
@@ -562,16 +580,41 @@ class MetaResearchRunner:
             acceptance_policy_hash=frozen.acceptance_policy_hash,
             experiment_family_id="meta-selector-phase2-10",
             universe_snapshot_id=final_oos.universe_snapshot_id,
+            knowledge_cutoff=final_oos.knowledge_cutoff,
             regime_snapshot_ids=final_oos.regime_snapshot_ids,
             asset_state_snapshot_ids=final_oos.asset_state_snapshot_ids,
             risk_snapshot_ids=final_oos.risk_snapshot_ids,
             risk_snapshot_hashes=[item.risk_snapshot_hash for item in final_items if item.risk_snapshot_hash],
             dataset_certification_ids=[str(row["dataset_certification_id"]) for item in final_items for row in item.historical_bars if row.get("dataset_certification_id")],
-            evidence_ids=[str(value) for item in final_items for card in item.scorecards for key, value in card.evidence_ids.items() if value and key.endswith("_id")],
+            evidence_ids=[
+                str(card.conditional_evidence_id) for item in final_items for card in item.scorecards
+                if card.available_at <= item.decision_time and card.conditional_evidence_id
+            ],
             outcome_series_ids=tuple(series_id for series_id in (final_oos.benchmark_series_id, *final_oos.strategy_series_ids) if series_id),
             execution_bar_hashes=[
                 str(order["execution_lineage"]["historical_bar_hash"])
                 for order in final_result.orders if order.get("execution_lineage")
+            ],
+            execution_bar_ids=[
+                str(order["execution_lineage"]["historical_bar_id"])
+                for order in final_result.orders
+                if order.get("execution_lineage", {}).get("historical_bar_id")
+            ],
+            scorecard_ids=[
+                str(card.scorecard_id) for item in final_items for card in item.scorecards
+                if card.available_at <= item.decision_time
+            ],
+            conditional_evidence_ids=[
+                str(card.conditional_evidence_id) for item in final_items for card in item.scorecards
+                if card.available_at <= item.decision_time and card.conditional_evidence_id
+            ],
+            outcome_series_bindings=[
+                binding for item in final_items for binding in item.outcome_series_bindings
+            ],
+            dataset_certification_bindings=[
+                (str(row["dataset_id"]), str(row["dataset_certification_id"]))
+                for item in final_items for row in item.historical_bars
+                if row.get("dataset_id") and row.get("dataset_certification_id")
             ],
             dataset_bindings=[
                 (str(row.get("dataset_id")), str(row.get("dataset_hash")))
@@ -628,10 +671,15 @@ class MetaResearchRunner:
         if replay_policy.policy_hash != artifact["meta_policy_hash"]:
             raise ValueError("stored meta policy hash does not match frozen artifact")
         final_cutoff = min(final_dataset_reference.decision_times)
+        knowledge_cutoff = final_dataset_reference.knowledge_cutoff or final_cutoff
         historical_trials = (
             [self.db.get_research_trial(str(artifact["selected_trial_id"]))]
             if final_dataset_reference.dataset_id == "synthetic"
-            else self.db.list_research_trials_at(final_cutoff, family_id="meta-selector-phase2-10")
+            else self.db.list_research_trials_at(
+                final_cutoff,
+                family_id=str(artifact.get("experiment_family_id") or "meta-selector-phase2-10"),
+                knowledge_cutoff=knowledge_cutoff,
+            )
         )
         historical_trials = [trial for trial in historical_trials if trial is not None]
         trial = next((candidate for candidate in historical_trials if candidate["trial_id"] == str(artifact["selected_trial_id"])), None)
@@ -701,16 +749,41 @@ class MetaResearchRunner:
             acceptance_policy_hash=str(artifact.get("acceptance_policy_hash") or ""),
             experiment_family_id=str(trial["experiment_family_id"]),
             universe_snapshot_id=final_dataset_reference.universe_snapshot_id,
+            knowledge_cutoff=final_dataset_reference.knowledge_cutoff,
             regime_snapshot_ids=final_dataset_reference.regime_snapshot_ids,
             asset_state_snapshot_ids=final_dataset_reference.asset_state_snapshot_ids,
             risk_snapshot_ids=final_dataset_reference.risk_snapshot_ids,
             risk_snapshot_hashes=[item.risk_snapshot_hash for item in items if item.risk_snapshot_hash],
             dataset_certification_ids=[str(row["dataset_certification_id"]) for item in items for row in item.historical_bars if row.get("dataset_certification_id")],
-            evidence_ids=[str(value) for item in items for card in item.scorecards for key, value in card.evidence_ids.items() if value and key.endswith("_id")],
+            evidence_ids=[
+                str(card.conditional_evidence_id) for item in items for card in item.scorecards
+                if card.available_at <= item.decision_time and card.conditional_evidence_id
+            ],
             outcome_series_ids=tuple(series_id for series_id in (final_dataset_reference.benchmark_series_id, *final_dataset_reference.strategy_series_ids) if series_id),
             execution_bar_hashes=[
                 str(order["execution_lineage"]["historical_bar_hash"])
                 for order in result.orders if order.get("execution_lineage")
+            ],
+            execution_bar_ids=[
+                str(order["execution_lineage"]["historical_bar_id"])
+                for order in result.orders
+                if order.get("execution_lineage", {}).get("historical_bar_id")
+            ],
+            scorecard_ids=[
+                str(card.scorecard_id) for item in items for card in item.scorecards
+                if card.available_at <= item.decision_time
+            ],
+            conditional_evidence_ids=[
+                str(card.conditional_evidence_id) for item in items for card in item.scorecards
+                if card.available_at <= item.decision_time and card.conditional_evidence_id
+            ],
+            outcome_series_bindings=[
+                binding for item in items for binding in item.outcome_series_bindings
+            ],
+            dataset_certification_bindings=[
+                (str(row["dataset_id"]), str(row["dataset_certification_id"]))
+                for item in items for row in item.historical_bars
+                if row.get("dataset_id") and row.get("dataset_certification_id")
             ],
             dataset_bindings=[
                 (str(row.get("dataset_id")), str(row.get("dataset_hash")))
@@ -719,6 +792,7 @@ class MetaResearchRunner:
             ],
         )
         self.db.persist_final_oos_provenance_certificate(certificate)
+        self.db.validate_final_oos_provenance_certificate(certificate.certificate_id)
         return result
 
     def evaluate_final_oos_acceptance(self, certificate_id: str) -> str:
@@ -837,6 +911,7 @@ class HistoricalEvidenceResolver:
             raise ValueError("FINAL dataset reference snapshot identifiers must align with decision times")
         observations: list[MetaSelectorObservation] = []
         for index, decision_time in enumerate(reference.decision_times):
+            knowledge_cutoff = reference.knowledge_cutoff or decision_time
             regime_id = reference.regime_snapshot_ids[index] if reference.regime_snapshot_ids else ""
             asset_id = reference.asset_state_snapshot_ids[index] if reference.asset_state_snapshot_ids else ""
             risk_id = reference.risk_snapshot_ids[index] if reference.risk_snapshot_ids else ""
@@ -895,6 +970,7 @@ class HistoricalEvidenceResolver:
                 decision_time=decision_time, symbol=reference.symbol, horizon="1d",
                 market_regime=regime.get("raw_regime"), regime_confidence=float(regime.get("confidence", 1.0) or 1.0),
                 asset_cluster=asset.get("behavior_cluster"), scorecards=(), strategy_returns=strategy_returns,
+                outcome_series_bindings=tuple(sorted((str(row["series_id"]), str(row["content_hash"])) for row in outcome_rows)),
                 benchmark_return=benchmark_return,
                 meta_split="FINAL_OOS", data_hash=str(reference.dataset_content_hash),
                 execution_dataset_id=None if reference.dataset_id == "synthetic" else reference.dataset_id,
@@ -904,6 +980,7 @@ class HistoricalEvidenceResolver:
                 risk_snapshot=dict(risk),
                 risk_batch_id=_canonical_hash({"decision_time": decision_time, "snapshot_id": risk.get("snapshot_id")})[:32] if risk.get("snapshot_id") else None,
                 batch_start_snapshot_id=risk.get("snapshot_id"),
+                knowledge_cutoff=knowledge_cutoff,
                 label_start=decision_time, label_end=decision_time,
                 evidence_start=decision_time, evidence_end=decision_time,
             )
@@ -943,7 +1020,7 @@ class HistoricalEvidenceResolver:
         return self.db.list_phase2_7_conditional_evidence_at(decision_time, strategy_name=strategy_name, knowledge_cutoff=knowledge_cutoff)
 
     def observation_at(self, decision_time: datetime, *, template: MetaSelectorObservation) -> MetaSelectorObservation:
-        knowledge_cutoff = template.known_at or decision_time
+        knowledge_cutoff = template.knowledge_cutoff or template.known_at or decision_time
         evidence = self.conditional_evidence_at(decision_time, knowledge_cutoff=knowledge_cutoff)
         visible_evidence_ids = {str(row.get("evidence_id")) for row in evidence}
         cards = tuple(
@@ -1150,6 +1227,7 @@ class MetaSelectorBacktest:
         peak_equity = float(checkpoint.peak_equity) if checkpoint and checkpoint.peak_equity is not None else previous_equity
         orders: list[dict[str, Any]] = []
         fills: list[dict[str, Any]] = []
+        costs: list[dict[str, Any]] = []
         risk_rows: list[dict[str, Any]] = []
         last_period_pnl = 0.0
 
@@ -1215,6 +1293,7 @@ class MetaSelectorBacktest:
             self._attach_execution_lineage(generated, item, execution_item, day)
             orders.extend(generated["orders"])
             fills.extend(generated["fills"])
+            costs.extend(generated.get("costs", []))
             for risk_row in risk_batch:
                 risk_row["order_ids"] = tuple(order["order_id"] for order in generated["orders"] if order["symbol"] == risk_row["symbol"])
                 risk_row["fill_ids"] = tuple(fill["fill_id"] for fill in generated["fills"] if fill["symbol"] == risk_row["symbol"])
@@ -1328,19 +1407,20 @@ class MetaSelectorBacktest:
                 "total_return": scenario.metrics["total_return"],
                 "cost_model_version": schedule.version,
                 "cost_model_hash": self._cost_model_hash(schedule),
-                "execution_hash": scenario.evidence_hash,
+                "execution_hash": scenario.final_oos_execution_hash,
                 "fill_count": float(len(scenario.fills)),
                 "execution_cost": scenario.metrics["total_execution_cost"],
                 "orders": scenario.orders,
                 "fills": scenario.fills,
+                "costs": scenario.costs,
                 "risk_decisions": scenario.risk_decisions,
                 "attribution": scenario.attribution,
                 "execution_lineage": [order.get("execution_lineage") for order in scenario.orders],
-                "result_hash": scenario.evidence_hash,
+                "result_hash": scenario.final_oos_execution_hash,
             }
 
         stress_results = {
-            "1.0x_cost": {"scenario_id": "1.0x_cost", "total_return": metrics["total_return"], "cost_model_version": self.execution_adapter.cost_schedule.version, "cost_model_hash": self._cost_model_hash(self.execution_adapter.cost_schedule), "execution_hash": _canonical_hash(orders + fills), "fill_count": float(len(fills)), "execution_cost": metrics["total_execution_cost"]},
+            "1.0x_cost": {"scenario_id": "1.0x_cost", "total_return": metrics["total_return"], "cost_model_version": self.execution_adapter.cost_schedule.version, "cost_model_hash": self._cost_model_hash(self.execution_adapter.cost_schedule), "execution_hash": _canonical_hash(orders + fills + costs), "fill_count": float(len(fills)), "execution_cost": metrics["total_execution_cost"], "orders": tuple(orders), "fills": tuple(fills), "costs": tuple(costs), "risk_decisions": tuple(risk_rows)},
         }
         if include_stress:
             stress_results.update({
@@ -1389,6 +1469,7 @@ class MetaSelectorBacktest:
             "baselines": baselines,
             "stress": stress_results,
             "checkpoint": checkpoint_out.checkpoint_hash,
+            "costs": costs,
         }
         evidence_hash = _canonical_hash(payload)
         final_oos_execution_hash = _canonical_hash({
@@ -1400,15 +1481,23 @@ class MetaSelectorBacktest:
             ],
             "orders": orders,
             "fills": fills,
+            "costs": costs,
             "risk_decisions": risk_rows,
+            "cost_model_version": self._stressed_cost_schedule(cost_multiplier, items[0].decision_time if items else datetime.now(timezone.utc)).version,
+            "cost_model_hash": effective_cost_model_hash,
             "equity_curve": equity_rows,
             "metrics": metrics,
             "baselines": baselines,
             "attribution": attribution,
             "dataset_ids": sorted({item.execution_dataset_id for item in items if item.execution_dataset_id}),
             "dataset_hashes": sorted({item.data_hash for item in items}),
-            "evidence_ids": sorted({card.evidence_hash for item in items for card in item.scorecards}),
+            "evidence_ids": sorted({
+                card.evidence_hash for item in items for card in item.scorecards
+                if card.available_at <= item.decision_time
+            }),
             "risk_snapshot_ids": sorted({item.risk_snapshot_id for item in items if item.risk_snapshot_id}),
+            "risk_snapshot_hashes": sorted({item.risk_snapshot_hash for item in items if item.risk_snapshot_hash}),
+            "outcome_series_bindings": [binding for item in items for binding in item.outcome_series_bindings],
             "execution_bar_lineage": [
                 {key: row.get(key) for key in ("symbol", "timestamp", "dataset_id", "dataset_hash", "known_at")}
                 for item in items for row in item.historical_bars
@@ -1428,6 +1517,7 @@ class MetaSelectorBacktest:
             checkpoint=checkpoint_out,
             orders=tuple(orders),
             fills=tuple(fills),
+            costs=tuple(costs),
             risk_decisions=tuple(risk_rows),
             final_oos_execution_hash=final_oos_execution_hash,
         )
@@ -1917,7 +2007,27 @@ class MetaSelectorBacktest:
             "execution_data_known_at": max((row.get("known_at") for row in records if row.get("known_at") is not None), default=None),
         }
         for record in (*generated.get("orders", []), *generated.get("fills", [])):
-            record["execution_lineage"] = {**lineage, "symbol": record.get("symbol")}
+            symbol = str(record.get("symbol"))
+            symbol_records = [row for row in records if str(row.get("symbol")) == symbol]
+            if not symbol_records:
+                raise ValueError("execution result symbol has no authoritative bar lineage")
+            first = symbol_records[0]
+            symbol_bar_hash = _canonical_hash(symbol_records)
+            symbol_bar_id = str(first.get("historical_bar_id") or _canonical_hash({
+                "dataset_id": first.get("dataset_id"),
+                "dataset_hash": first.get("dataset_hash"),
+                "symbol": symbol,
+                "timestamp": first.get("timestamp"),
+            })[:32])
+            record["execution_lineage"] = {
+                **lineage,
+                "symbol": symbol,
+                "historical_bar_id": symbol_bar_id,
+                "historical_bar_hash": symbol_bar_hash,
+                "historical_dataset_id": first.get("dataset_id"),
+                "historical_dataset_content_hash": first.get("dataset_hash"),
+                "dataset_certification_id": first.get("dataset_certification_id"),
+            }
 
     @staticmethod
     def _target_return(target_weights: dict[str, float], asset_returns: dict[str, float]) -> float:
