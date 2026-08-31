@@ -59,6 +59,39 @@ def _list_phase2_7_conditional_evidence_read_only(
         conn.close()
 
 
+def _list_phase2_8_to_2_10_read_only(
+    db_path: Path,
+    table: str,
+    decision_time: datetime,
+    *,
+    horizon: str | None = None,
+    strategy_name: str | None = None,
+) -> list[dict[str, Any]]:
+    if pd.Timestamp(decision_time).tzinfo is None:
+        raise ValueError("decision_time must be timezone-aware")
+    allowed_tables = {
+        "strategy_scorecards": "available_at",
+        "selector_decisions": "decision_time",
+        "meta_selector_runs": "available_at",
+    }
+    if table not in allowed_tables:
+        raise ValueError(f"Unsupported read-only Phase 2.8-2.10 table: {table}")
+    cutoff_column = allowed_tables[table]
+    conn = duckdb.connect(database=str(db_path), read_only=True)
+    try:
+        query = f"SELECT * FROM {table} WHERE {cutoff_column} <= ?"
+        params: list[Any] = [decision_time]
+        if horizon is not None and table in {"strategy_scorecards", "selector_decisions"}:
+            query += " AND horizon = ?"
+            params.append(horizon)
+        if strategy_name is not None and table == "strategy_scorecards":
+            query += " AND strategy_name = ?"
+            params.append(strategy_name)
+        return conn.execute(query + f" ORDER BY {cutoff_column}", params).fetchdf().to_dict("records")
+    finally:
+        conn.close()
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a strategy against stored market data.")
     parser.add_argument(
@@ -85,6 +118,9 @@ def build_parser() -> argparse.ArgumentParser:
             # Phase 2.6 — Statistical research framework
             "robustness",
             "strategy-regime-analysis",
+            "strategy-scorecards",
+            "selector-decisions",
+            "meta-selector-runs",
         ],
         help="Workflow to run. Existing calls default to backtest.",
     )
@@ -224,6 +260,39 @@ def main(argv: list[str] | None = None) -> int:
                     "strategy": args.strategy,
                     "evidence": evidence,
                     "explanation": "Only net-of-cost OUT_OF_SAMPLE evidence available at or before the cutoff is shown.",
+                },
+                default=str,
+                indent=2,
+            )
+        )
+        return 0
+    if args.command in {"strategy-scorecards", "selector-decisions", "meta-selector-runs"}:
+        cutoff = (
+            datetime.fromisoformat(args.evidence_at.replace("Z", "+00:00"))
+            if args.evidence_at
+            else datetime.now(ZoneInfo("UTC"))
+        )
+        if cutoff.tzinfo is None:
+            raise ValueError("--evidence-at must include a timezone offset")
+        table = {
+            "strategy-scorecards": "strategy_scorecards",
+            "selector-decisions": "selector_decisions",
+            "meta-selector-runs": "meta_selector_runs",
+        }[args.command]
+        report_rows = _list_phase2_8_to_2_10_read_only(
+            db_path,
+            table,
+            cutoff,
+            horizon=args.timeframe if args.command != "meta-selector-runs" else None,
+            strategy_name=args.strategy if args.command == "strategy-scorecards" else None,
+        )
+        print(
+            json.dumps(
+                {
+                    "cutoff": cutoff.isoformat(),
+                    "command": args.command,
+                    "rows": report_rows,
+                    "explanation": "Read-only PIT query; no latest fallback and no DuckDB migration/checkpoint side effects.",
                 },
                 default=str,
                 indent=2,

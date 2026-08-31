@@ -3546,3 +3546,179 @@ class DuckDBManager:
             query += " AND strategy_name = ?"
             params.append(strategy_name)
         return self.conn.execute(query + " ORDER BY available_at, evidence_id", params).fetchdf().to_dict("records")
+
+    def persist_scorecard(self, scorecard: Any) -> str:
+        data = dict(scorecard.__dict__)
+        columns = (
+            "scorecard_id", "strategy_name", "strategy_version", "horizon", "timeframe",
+            "global_evidence_id", "conditional_evidence_id", "eligibility_status",
+            "rejection_reasons_json", "performance_score", "downside_score",
+            "fold_consistency_score", "parameter_robustness_score", "cost_robustness_score",
+            "breadth_score", "paper_score", "regime_compatibility_score", "asset_compatibility_score",
+            "drawdown_penalty", "turnover_penalty", "correlation_penalty", "capacity_penalty",
+            "uncertainty_penalty", "overall_score", "available_at", "scorecard_version",
+            "scorecard_policy_version", "scorecard_policy_hash", "evidence_hash",
+            "evidence_ids_json", "explanation_json",
+        )
+        data.update(
+            {
+                "rejection_reasons_json": json.dumps(data.pop("rejection_reasons"), sort_keys=True),
+                "evidence_ids_json": json.dumps(data.pop("evidence_ids"), sort_keys=True),
+                "explanation_json": json.dumps(data.pop("explanation"), sort_keys=True, default=str),
+            }
+        )
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash FROM strategy_scorecards WHERE scorecard_id=?", [data["scorecard_id"]]
+            ).fetchone()
+            if existing and existing[0] != data["evidence_hash"]:
+                raise ValueError("Conflicting immutable scorecard")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO strategy_scorecards ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [data.get(column) for column in columns],
+                )
+        return str(data["scorecard_id"])
+
+    def list_scorecards_at(
+        self, decision_time: datetime, *, horizon: str | None = None, strategy_name: str | None = None
+    ) -> list[dict[str, Any]]:
+        if pd.Timestamp(decision_time).tzinfo is None:
+            raise ValueError("decision_time must be timezone-aware")
+        query = "SELECT * FROM strategy_scorecards WHERE available_at <= ?"
+        params: list[Any] = [decision_time]
+        if horizon:
+            query += " AND horizon = ?"
+            params.append(horizon)
+        if strategy_name:
+            query += " AND strategy_name = ?"
+            params.append(strategy_name)
+        return self.conn.execute(query + " ORDER BY available_at, scorecard_id", params).fetchdf().to_dict("records")
+
+    def persist_selector_decision(self, decision: Any) -> str:
+        data = dict(decision.__dict__)
+        json_fields = (
+            "selected_strategies", "weights", "candidate_scorecards", "decision_reasons", "rejection_reasons",
+        )
+        for field in json_fields:
+            data[field + "_json"] = json.dumps(data.pop(field), sort_keys=True)
+        data["evidence_ids_json"] = json.dumps(data.pop("evidence_ids"), sort_keys=True, default=str)
+        columns = (
+            "selector_decision_id", "decision_time", "symbol", "horizon", "market_regime",
+            "regime_confidence", "asset_cluster", "decision", "selected_strategies_json",
+            "weights_json", "candidate_scorecards_json", "current_incumbent_strategy",
+            "expected_benefit_estimate", "uncertainty", "switch_required", "estimated_switch_cost",
+            "switch_buffer", "decision_reasons_json", "rejection_reasons_json",
+            "selector_policy_version", "selector_policy_hash", "evidence_hash", "available_at",
+            "evidence_ids_json",
+        )
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash FROM selector_decisions WHERE selector_decision_id=?",
+                [data["selector_decision_id"]],
+            ).fetchone()
+            if existing and existing[0] != data["evidence_hash"]:
+                raise ValueError("Conflicting immutable selector decision")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO selector_decisions ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [data.get(column) for column in columns],
+                )
+        return str(data["selector_decision_id"])
+
+    def get_selector_incumbent(self, symbol: str, horizon: str, at: datetime) -> str | None:
+        row = self.conn.execute(
+            """SELECT selected_strategies_json FROM selector_decisions
+               WHERE symbol=? AND horizon=? AND decision_time <= ? AND decision <> 'ABSTAIN'
+               ORDER BY decision_time DESC LIMIT 1""",
+            [symbol, horizon, at],
+        ).fetchone()
+        return json.loads(row[0])[0] if row and json.loads(row[0]) else None
+
+    def persist_meta_selector_result(
+        self,
+        result: Any,
+        *,
+        policy_version: str,
+        selector_policy_version: str,
+        selector_policy_hash: str,
+        scorecard_policy_version: str | None = None,
+        meta_split: str = "FINAL_OOS",
+        purge_periods: int = 0,
+        embargo_periods: int = 0,
+        available_at: datetime | None = None,
+    ) -> str:
+        timestamp = available_at or datetime.now(timezone.utc)
+        if pd.Timestamp(timestamp).tzinfo is None:
+            raise ValueError("available_at must be timezone-aware")
+        run_columns = (
+            "meta_run_id", "policy_version", "selector_policy_version", "selector_policy_hash",
+            "scorecard_policy_version", "meta_split", "purge_periods", "embargo_periods",
+            "status", "verdict", "metrics_json", "baselines_json", "stress_results_json",
+            "attribution_json", "evidence_hash", "available_at",
+        )
+        run_data = {
+            "meta_run_id": result.meta_run_id,
+            "policy_version": policy_version,
+            "selector_policy_version": selector_policy_version,
+            "selector_policy_hash": selector_policy_hash,
+            "scorecard_policy_version": scorecard_policy_version,
+            "meta_split": meta_split,
+            "purge_periods": purge_periods,
+            "embargo_periods": embargo_periods,
+            "status": "SUCCEEDED",
+            "verdict": result.verdict,
+            "metrics_json": json.dumps(result.metrics, sort_keys=True),
+            "baselines_json": json.dumps(result.baselines, sort_keys=True),
+            "stress_results_json": json.dumps(result.stress_results, sort_keys=True),
+            "attribution_json": json.dumps(result.attribution, sort_keys=True),
+            "evidence_hash": result.evidence_hash,
+            "available_at": timestamp,
+        }
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash FROM meta_selector_runs WHERE meta_run_id=?", [result.meta_run_id]
+            ).fetchone()
+            if existing and existing[0] != result.evidence_hash:
+                raise ValueError("Conflicting immutable meta selector run")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO meta_selector_runs ({', '.join(run_columns)}) VALUES ({', '.join('?' for _ in run_columns)})",
+                    [run_data[column] for column in run_columns],
+                )
+                for row in result.equity_curve:
+                    self.conn.execute(
+                        """INSERT INTO meta_selector_equity_curve
+                           (meta_run_id, timestamp, equity, net_return, drawdown, position, decision)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            result.meta_run_id, row["timestamp"], row["equity"], row["net_return"],
+                            row["drawdown"], row["position"], row["decision"],
+                        ],
+                    )
+                for decision in result.decisions:
+                    self.conn.execute(
+                        """INSERT INTO meta_selector_decisions
+                           (meta_run_id, selector_decision_id, decision_time, evidence_hash)
+                           VALUES (?, ?, ?, ?)""",
+                        [result.meta_run_id, decision.selector_decision_id, decision.decision_time, decision.evidence_hash],
+                    )
+                for switch in result.switches:
+                    self.conn.execute(
+                        """INSERT INTO meta_selector_switches
+                           (meta_run_id, decision_time, old_strategy, new_strategy, switching_cost,
+                            sells_first_json, buys_after_sells_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            result.meta_run_id, switch["decision_time"], switch["old_strategy"],
+                            switch["new_strategy"], switch["switching_cost"],
+                            json.dumps(switch["sells_first"], sort_keys=True),
+                            json.dumps(switch["buys_after_sells"], sort_keys=True),
+                        ],
+                    )
+                for attribution_type, value in result.attribution.items():
+                    self.conn.execute(
+                        "INSERT INTO meta_selector_attribution (meta_run_id, attribution_type, value) VALUES (?, ?, ?)",
+                        [result.meta_run_id, attribution_type, value],
+                    )
+        return str(result.meta_run_id)
