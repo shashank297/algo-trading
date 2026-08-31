@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from experiments.meta_selector_backtest import CASH, MetaReplayPolicy, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, FrozenMetaPolicy, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -118,6 +118,29 @@ def selector_decision(cards, *, now=None, incumbent=None, policy=None, cost=0.0,
 
 
 def obs(time, cards, returns, **kwargs):
+    asset_returns = kwargs.get("asset_returns", {})
+    prices = kwargs.get("prices", {})
+    historical_bars = kwargs.get("historical_bars")
+    if historical_bars is None:
+        bar_returns = dict(asset_returns)
+        if not bar_returns:
+            bar_returns = {kwargs.get("symbol", "ABC"): 0.0}
+        historical_bars = tuple(
+            {
+                "timestamp": time + timedelta(days=1),
+                "symbol": symbol,
+                "open": float(prices.get(symbol, 100.0)),
+                "close": float(prices.get(symbol, 100.0)) * (1.0 + float(value)),
+                "price": float(prices.get(symbol, 100.0)) * (1.0 + float(value)),
+                "volume": 10_000_000.0,
+                "lagged_adv20": 10_000_000.0,
+                "lagged_close": float(prices.get(symbol, 100.0)),
+                "lagged_traded_value": float(prices.get(symbol, 100.0)) * 10_000_000.0,
+                "sector": kwargs.get("sectors", {}).get(symbol, "UNKNOWN"),
+                "dataset_hash": kwargs.get("data_hash", "synthetic"),
+            }
+            for symbol, value in bar_returns.items()
+        )
     return MetaSelectorObservation(
         decision_time=time,
         symbol="ABC",
@@ -128,7 +151,7 @@ def obs(time, cards, returns, **kwargs):
         scorecards=tuple(cards),
         strategy_returns=returns,
         target_portfolios=kwargs.get("target_portfolios", {}),
-        asset_returns=kwargs.get("asset_returns", {}),
+        asset_returns=asset_returns,
         prices=kwargs.get("prices", {}),
         sectors=kwargs.get("sectors", {}),
         benchmark_return=kwargs.get("benchmark_return", 0.0),
@@ -136,6 +159,15 @@ def obs(time, cards, returns, **kwargs):
         operational_regime=kwargs.get("operational_regime"),
         known_at=kwargs.get("known_at"),
         available_at=kwargs.get("available_at"),
+        historical_bars=tuple(historical_bars),
+        prior_asset_returns=kwargs.get("prior_asset_returns", {symbol: 0.0 for symbol in asset_returns}),
+        label_start=kwargs.get("label_start"),
+        label_end=kwargs.get("label_end"),
+        evidence_start=kwargs.get("evidence_start"),
+        evidence_end=kwargs.get("evidence_end"),
+        data_hash=kwargs.get("data_hash", "synthetic"),
+        execution_data_available_at=kwargs.get("execution_data_available_at"),
+        meta_split=kwargs.get("meta_split", "FINAL_OOS"),
     )
 
 
@@ -148,6 +180,7 @@ def register_meta_trial(db: DuckDBManager, items, replay: MetaSelectorBacktest, 
         for card in item.scorecards
         if card.available_at <= item.decision_time
     })
+    cost_model_hash = MetaSelectorBacktest._cost_model_hash(replay.execution_adapter.cost_schedule)
     family = ExperimentFamilySpec(
         experiment_family_id=f"meta-family-{created_at.timestamp()}",
         hypothesis="meta selector",
@@ -179,7 +212,7 @@ def register_meta_trial(db: DuckDBManager, items, replay: MetaSelectorBacktest, 
             "meta_replay_policy_hash": replay.replay_policy.policy_hash,
             "meta_policy_version": replay.replay_policy.version,
             "data_hash": "synthetic",
-            "cost_model_hash": replay.cost_estimator.schedule.version,
+            "cost_model_hash": cost_model_hash,
             "purge_periods": 0,
             "embargo_periods": 0,
             "meta_split": "FINAL_OOS",
@@ -187,7 +220,7 @@ def register_meta_trial(db: DuckDBManager, items, replay: MetaSelectorBacktest, 
         },
         source_revision="test",
         data_hash="synthetic",
-        cost_model_hash=replay.cost_estimator.schedule.version,
+        cost_model_hash=cost_model_hash,
         created_at=created_at,
     )
     return db.create_research_trial(trial)
@@ -500,7 +533,7 @@ def test_t2_10_g_simple_ensemble_wins_reported_truthfully():
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
         [obs(now, [alpha, beta], {"alpha": 0.0, "beta": 0.04}, target_portfolios={"alpha": {"AAA": 1.0}, "beta": {"BBB": 1.0}}, asset_returns={"AAA": 0.0, "BBB": 0.04})]
     )
-    assert result.verdict == "ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED"
+    assert result.verdict == "PHASE 2.10 IMPLEMENTATION READY"
 
 
 def test_t2_10_g2_b5_adaptive_included_in_benchmark_ladder():
@@ -518,7 +551,7 @@ def test_t2_10_h_static_winner_can_beat_adaptive_without_forced_promotion():
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
         [obs(now, [alpha, beta], {"alpha": 0.05, "beta": 0.0}, target_portfolios={"alpha": {"AAA": 1.0}, "beta": {"BBB": 1.0}}, asset_returns={"AAA": 0.05, "BBB": 0.0})]
     )
-    assert result.verdict == "ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED"
+    assert result.verdict == "PHASE 2.10 IMPLEMENTATION READY"
 
 
 def test_t2_10_i_abstention_avoids_trading_when_no_evidence():
@@ -704,7 +737,7 @@ def test_t2_10_s4_sell_first_replay_orders_precede_buys():
             obs(now + timedelta(days=1), [inc, new], {"new": 0.0}, target_portfolios={"new": {"XYZ": 0.2}}, asset_returns={"ABC": 0.0, "XYZ": 0.0}),
         ]
     )
-    second_orders = [order for order in result.orders if order["requested_at"] == now + timedelta(days=1)]
+    second_orders = [order for order in result.orders if order["requested_at"] == now + timedelta(days=2)]
     assert [order["side"] for order in second_orders][:2] == ["SELL", "BUY"]
 
 
@@ -737,6 +770,57 @@ def test_t2_10_u_sell_first_risk_reduction_ordering():
 
 def test_t2_10_v_hash_determinism_same_inputs_same_result(tmp_path):
     test_t2_10_j_restart_replay_reproduces_uninterrupted_run(tmp_path)
+
+
+def test_t2_10_w_runner_freezes_and_consumes_one_immutable_policy():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    train = [obs(start, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="TRAIN", data_hash="dataset-a")]
+    validation = [obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="VALIDATION", data_hash="dataset-a")]
+    final = [obs(start + timedelta(days=2), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="FINAL_OOS", data_hash="dataset-a")]
+    db = DuckDBManager(":memory:")
+    runner = MetaResearchRunner(db)
+    selector = AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))
+    result = runner.run(
+        train,
+        validation,
+        final,
+        [("candidate-a", selector, MetaReplayPolicy())],
+        data_hash="dataset-a",
+        frozen_at=start - timedelta(days=1),
+    )
+    stored = db.load_frozen_meta_policy(result.frozen_policy.frozen_policy_id)
+    assert isinstance(result.frozen_policy, FrozenMetaPolicy)
+    assert stored["selected_trial_id"] == result.frozen_policy.selected_trial_id
+    assert result.final_oos_result.metrics["total_return"] >= 0
+    with pytest.raises(ValueError, match="frozen policy binding"):
+        MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="changed")), db=db).run(
+            final,
+            meta_split="FINAL_OOS",
+            registered_trial_id=result.frozen_policy.selected_trial_id,
+            frozen_policy_id=result.frozen_policy.frozen_policy_id,
+            data_hash="dataset-a",
+        )
+
+
+def test_t2_10_x_execution_requires_actual_strictly_future_bar():
+    now = datetime(2024, 4, 1, 16, tzinfo=UTC)
+    bars = (
+        {"timestamp": now - timedelta(hours=7), "symbol": "ABC", "open": 100.0, "close": 100.0, "volume": 1e7, "lagged_adv20": 1e7, "lagged_traded_value": 1e9, "dataset_hash": "bars"},
+        {"timestamp": now, "symbol": "ABC", "open": 100.0, "close": 100.0, "volume": 1e7, "lagged_adv20": 1e7, "lagged_traded_value": 1e9, "dataset_hash": "bars"},
+        {"timestamp": now + timedelta(days=1), "symbol": "ABC", "open": 100.0, "close": 101.0, "volume": 1e7, "lagged_adv20": 1e7, "lagged_traded_value": 1e9, "dataset_hash": "bars"},
+    )
+    item = obs(now, [card()], {"alpha": 0.01}, historical_bars=bars, asset_returns={"ABC": 0.01})
+    result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run([item])
+    assert result.orders[0]["execution_lineage"]["execution_timestamp"] == now + timedelta(days=1)
+    assert result.orders[0]["execution_lineage"]["selector_decision_time"] == now
+
+
+def test_t2_10_y_overlap_windows_are_rejected_across_splits():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    left = obs(start, [card()], {"alpha": 0.0}, asset_returns={"ABC": 0.0}, meta_split="TRAIN", label_start=start, label_end=start + timedelta(days=3), evidence_start=start, evidence_end=start + timedelta(days=2))
+    right = obs(start + timedelta(days=10), [card()], {"alpha": 0.0}, asset_returns={"ABC": 0.0}, meta_split="VALIDATION", label_start=start + timedelta(days=2), label_end=start + timedelta(days=4), evidence_start=start + timedelta(days=2), evidence_end=start + timedelta(days=4))
+    with pytest.raises(ValueError, match="windows overlap"):
+        MetaSelectorBacktest(AdaptiveStrategySelector()).run([left, right], purge_periods=1, embargo_periods=1)
 
 
 def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():

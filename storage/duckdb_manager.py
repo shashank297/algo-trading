@@ -3741,3 +3741,44 @@ class DuckDBManager:
         if not checkpoint:
             raise ValueError(f"Meta selector run {meta_run_id} has no checkpoint")
         return checkpoint
+
+    def persist_frozen_meta_policy(self, artifact: Any) -> str:
+        values = asdict(artifact)
+        columns = (
+            "frozen_policy_id", "selector_policy_version", "selector_policy_hash",
+            "scorecard_policy_hash", "meta_policy_version", "meta_policy_hash",
+            "candidate_trial_ids", "selected_trial_id", "data_hash", "universe_lineage",
+            "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
+            "frozen_at", "artifact_hash",
+        )
+        data = {
+            **values,
+            "candidate_trial_ids": json.dumps(values["candidate_trial_ids"], sort_keys=True),
+            "universe_lineage": json.dumps(values["universe_lineage"], sort_keys=True),
+        }
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT artifact_hash FROM frozen_meta_policies WHERE frozen_policy_id=?",
+                [values["frozen_policy_id"]],
+            ).fetchone()
+            if existing and existing[0] != values["artifact_hash"]:
+                raise ValueError("Conflicting immutable frozen meta policy")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO frozen_meta_policies ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [data[column] for column in columns],
+                )
+        return str(values["frozen_policy_id"])
+
+    def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM frozen_meta_policies WHERE frozen_policy_id=?",
+            [frozen_policy_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown frozen meta policy {frozen_policy_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        result["candidate_trial_ids"] = json.loads(str(result["candidate_trial_ids"]))
+        result["universe_lineage"] = json.loads(str(result["universe_lineage"]))
+        return result

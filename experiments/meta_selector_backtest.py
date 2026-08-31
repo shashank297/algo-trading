@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from typing import Any, Iterable, cast
@@ -13,6 +13,7 @@ import pandas as pd
 from data_platform.contracts import OrderSide
 from risk.engine import RiskEngine
 from risk.models import RiskAction, RiskPolicy, TradeProposal
+from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.backtest import (
     _annualized_return,
     _max_drawdown_duration,
@@ -81,6 +82,14 @@ class MetaSelectorObservation:
     available_at: datetime | None = None
     meta_split: str = "FINAL_OOS"
     future_trial_ids: tuple[str, ...] = ()
+    historical_bars: tuple[dict[str, Any], ...] = ()
+    prior_asset_returns: dict[str, float] = field(default_factory=dict)
+    label_start: datetime | None = None
+    label_end: datetime | None = None
+    evidence_start: datetime | None = None
+    evidence_end: datetime | None = None
+    data_hash: str = "synthetic"
+    execution_data_available_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -96,6 +105,7 @@ class MetaSelectorCheckpoint:
     market_prices: dict[str, float] = field(default_factory=dict)
     pending_orders: tuple[dict[str, Any], ...] = ()
     pending_fills: tuple[dict[str, Any], ...] = ()
+    peak_equity: float | None = None
 
     @property
     def checkpoint_hash(self) -> str:
@@ -112,6 +122,8 @@ class MetaSelectorCheckpoint:
         values["policy_versions"] = {str(key): str(value) for key, value in dict(values.get("policy_versions") or {}).items()}
         values["pending_orders"] = tuple(values.get("pending_orders") or ())
         values["pending_fills"] = tuple(values.get("pending_fills") or ())
+        if values.get("peak_equity") is not None:
+            values["peak_equity"] = float(values["peak_equity"])
         return cls(**values)
 
 
@@ -131,6 +143,169 @@ class MetaSelectorResult:
     orders: tuple[dict[str, Any], ...] = ()
     fills: tuple[dict[str, Any], ...] = ()
     risk_decisions: tuple[dict[str, Any], ...] = ()
+
+
+@dataclass(frozen=True)
+class FrozenMetaPolicy:
+    """Immutable policy artifact consumed by FINAL_OOS replay."""
+
+    frozen_policy_id: str
+    selector_policy_version: str
+    selector_policy_hash: str
+    scorecard_policy_hash: str
+    meta_policy_version: str
+    meta_policy_hash: str
+    candidate_trial_ids: tuple[str, ...]
+    selected_trial_id: str
+    data_hash: str
+    universe_lineage: tuple[str, ...]
+    cost_model_version: str
+    cost_model_hash: str
+    purge_periods: int
+    embargo_periods: int
+    frozen_at: datetime
+    artifact_hash: str
+
+    @classmethod
+    def create(
+        cls,
+        *,
+        selector_policy_version: str,
+        selector_policy_hash: str,
+        scorecard_policy_hash: str,
+        meta_policy_version: str,
+        meta_policy_hash: str,
+        candidate_trial_ids: Iterable[str],
+        selected_trial_id: str,
+        data_hash: str,
+        universe_lineage: Iterable[str],
+        cost_model_version: str,
+        cost_model_hash: str,
+        purge_periods: int,
+        embargo_periods: int,
+        frozen_at: datetime,
+    ) -> FrozenMetaPolicy:
+        if frozen_at.tzinfo is None:
+            raise ValueError("frozen_at must be timezone-aware")
+        candidate_ids = tuple(sorted(candidate_trial_ids))
+        universe_ids = tuple(sorted(universe_lineage))
+        values = {
+            "selector_policy_version": selector_policy_version, "selector_policy_hash": selector_policy_hash,
+            "scorecard_policy_hash": scorecard_policy_hash, "meta_policy_version": meta_policy_version,
+            "meta_policy_hash": meta_policy_hash, "candidate_trial_ids": candidate_ids,
+            "selected_trial_id": selected_trial_id, "data_hash": data_hash,
+            "universe_lineage": universe_ids, "cost_model_version": cost_model_version,
+            "cost_model_hash": cost_model_hash, "purge_periods": purge_periods,
+            "embargo_periods": embargo_periods, "frozen_at": frozen_at,
+        }
+        artifact_hash = _canonical_hash(values)
+        return cls(
+            frozen_policy_id=artifact_hash[:32],
+            selector_policy_version=selector_policy_version,
+            selector_policy_hash=selector_policy_hash,
+            scorecard_policy_hash=scorecard_policy_hash,
+            meta_policy_version=meta_policy_version,
+            meta_policy_hash=meta_policy_hash,
+            candidate_trial_ids=candidate_ids,
+            selected_trial_id=selected_trial_id,
+            data_hash=data_hash,
+            universe_lineage=universe_ids,
+            cost_model_version=cost_model_version,
+            cost_model_hash=cost_model_hash,
+            purge_periods=purge_periods,
+            embargo_periods=embargo_periods,
+            frozen_at=frozen_at,
+            artifact_hash=artifact_hash,
+        )
+
+
+@dataclass(frozen=True)
+class MetaResearchResult:
+    frozen_policy: FrozenMetaPolicy
+    train_results: dict[str, MetaSelectorResult]
+    validation_results: dict[str, MetaSelectorResult]
+    final_oos_result: MetaSelectorResult
+
+
+class MetaResearchRunner:
+    """Run and persist the TRAIN, VALIDATION, and FINAL_OOS lifecycle."""
+
+    def __init__(self, db: Any) -> None:
+        self.db = db
+
+    def run(
+        self,
+        train: Iterable[MetaSelectorObservation | dict[str, Any]],
+        validation: Iterable[MetaSelectorObservation | dict[str, Any]],
+        final_oos: Iterable[MetaSelectorObservation | dict[str, Any]],
+        candidates: Iterable[tuple[str, AdaptiveStrategySelector, MetaReplayPolicy]],
+        *,
+        data_hash: str,
+        purge_periods: int = 0,
+        embargo_periods: int = 0,
+        frozen_at: datetime | None = None,
+    ) -> MetaResearchResult:
+        if self.db is None:
+            raise ValueError("MetaResearchRunner requires a Phase 2.1 trial registry")
+        candidate_list = tuple(candidates)
+        if not candidate_list:
+            raise ValueError("at least one candidate policy is required")
+        normalizer = MetaSelectorBacktest(candidate_list[0][1], replay_policy=candidate_list[0][2], db=self.db)
+        train_items = tuple(normalizer._coerce(item) for item in train)
+        validation_items = tuple(normalizer._coerce(item) for item in validation)
+        final_items = tuple(normalizer._coerce(item) for item in final_oos)
+        if frozen_at is None or frozen_at.tzinfo is None:
+            raise ValueError("MetaResearchRunner requires an explicit timezone-aware frozen_at")
+        train_results: dict[str, MetaSelectorResult] = {}
+        validation_results: dict[str, MetaSelectorResult] = {}
+        trial_ids: dict[str, str] = {}
+        for candidate_id, selector, replay_policy in candidate_list:
+            trial_ids[candidate_id] = self._register_candidate(candidate_id, selector, replay_policy, data_hash, purge_periods, embargo_periods, frozen_at)
+            replay = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db)
+            train_results[candidate_id] = replay.run(train_items, meta_split="TRAIN", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
+            validation_results[candidate_id] = replay.run(validation_items, meta_split="VALIDATION", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
+        winner = min(candidate_list, key=lambda candidate: (-validation_results[candidate[0]].metrics["total_return"], candidate[0]))
+        winner_id, selector, replay_policy = winner
+        frozen = FrozenMetaPolicy.create(
+            selector_policy_version=selector.policy.version,
+            selector_policy_hash=selector.policy.policy_hash,
+            scorecard_policy_hash=MetaSelectorBacktest._canonical_visible_scorecard_policy_hash(tuple(train_items + validation_items)),
+            meta_policy_version=replay_policy.version,
+            meta_policy_hash=replay_policy.policy_hash,
+            candidate_trial_ids=trial_ids.values(),
+            selected_trial_id=trial_ids[winner_id],
+            data_hash=data_hash,
+            universe_lineage=sorted({card.strategy_name for item in train_items + validation_items for card in item.scorecards}),
+            cost_model_version=MetaSelectorBacktest(selector, replay_policy=replay_policy).execution_adapter.cost_schedule.version,
+            cost_model_hash=MetaSelectorBacktest._cost_model_hash(MetaSelectorBacktest(selector, replay_policy=replay_policy).execution_adapter.cost_schedule),
+            purge_periods=purge_periods,
+            embargo_periods=embargo_periods,
+            frozen_at=frozen_at,
+        )
+        self.db.persist_frozen_meta_policy(frozen)
+        final_result = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db).run(
+            final_items,
+            meta_split="FINAL_OOS",
+            registered_trial_id=frozen.selected_trial_id,
+            trial_created_at=frozen.frozen_at,
+            frozen_policy_id=frozen.frozen_policy_id,
+            data_hash=data_hash,
+            purge_periods=purge_periods,
+            embargo_periods=embargo_periods,
+        )
+        return MetaResearchResult(frozen, train_results, validation_results, final_result)
+
+    def _register_candidate(self, candidate_id: str, selector: AdaptiveStrategySelector, replay_policy: MetaReplayPolicy, data_hash: str, purge_periods: int, embargo_periods: int, created_at: datetime | None) -> str:
+        from experiments.trials import ExperimentFamilySpec, ResearchTrial
+        timestamp = created_at or datetime.now(timezone.utc)
+        family = ExperimentFamilySpec(
+            experiment_family_id=f"meta-selector-{candidate_id}", hypothesis="causal meta selector policy", strategy_names=["meta_selector"], strategy_versions=[replay_policy.version], universe_snapshot_id="META", timeframe="1d", feature_versions=[replay_policy.version], cost_model_version="authoritative", parameter_space={}, maximum_trials=100, selection_metric="total_return", walk_forward_design={"purge_periods": purge_periods, "embargo_periods": embargo_periods}, source_revision="phase2-10", created_at=timestamp,
+        )
+        self.db.register_experiment_family(family)
+        trial = ResearchTrial(
+            experiment_family_id=family.experiment_family_id, strategy_name="meta_selector", strategy_version=replay_policy.version, scope="META_SELECTOR", timeframe="1d", parameters={"candidate_id": candidate_id, "selector_policy_version": selector.policy.version, "selector_policy_hash": selector.policy.policy_hash, "meta_replay_policy_version": replay_policy.version, "meta_replay_policy_hash": replay_policy.policy_hash, "data_hash": data_hash, "purge_periods": purge_periods, "embargo_periods": embargo_periods}, source_revision="phase2-10", data_hash=data_hash, cost_model_hash=MetaSelectorBacktest._cost_model_hash(MetaSelectorBacktest(selector, replay_policy=replay_policy).execution_adapter.cost_schedule), created_at=timestamp,
+        )
+        return self.db.create_research_trial(trial)
 
 
 class HistoricalEvidenceResolver:
@@ -235,6 +410,8 @@ class MetaSelectorBacktest:
         data_hash: str = "synthetic",
         cost_model_hash: str | None = None,
         checkpoint: MetaSelectorCheckpoint | None = None,
+        frozen_policy_id: str | None = None,
+        _skip_final_oos_validation: bool = False,
     ) -> MetaSelectorResult:
         items = tuple(sorted((self._coerce(item) for item in observations), key=lambda item: item.decision_time))
         if initial_equity <= 0:
@@ -245,17 +422,23 @@ class MetaSelectorBacktest:
             items = tuple(self.resolver.observation_at(item.decision_time, template=item) for item in items)
         effective_policy_version = policy_version or self.replay_policy.version
         self._validate_causal_inputs(items)
-        self._validate_final_oos_trial_binding(
-            items,
-            meta_split,
-            registered_trial_id,
-            trial_created_at,
-            data_hash=data_hash,
-            cost_model_hash=cost_model_hash or self.cost_estimator.schedule.version,
-            purge_periods=purge_periods,
-            embargo_periods=embargo_periods,
-            policy_version=effective_policy_version,
-        )
+        if any(item.data_hash != data_hash for item in items):
+            raise ValueError("observation data_hash must match replay data_hash")
+        self._validate_future_trials(items)
+        effective_cost_model_hash = cost_model_hash or self._cost_model_hash(self._stressed_cost_schedule(cost_multiplier, items[0].decision_time if items else datetime.now(timezone.utc)))
+        if not _skip_final_oos_validation:
+            self._validate_final_oos_trial_binding(
+                items,
+                meta_split,
+                registered_trial_id,
+                trial_created_at,
+                data_hash=data_hash,
+                cost_model_hash=effective_cost_model_hash,
+                purge_periods=purge_periods,
+                embargo_periods=embargo_periods,
+                policy_version=effective_policy_version,
+                frozen_policy_id=frozen_policy_id,
+            )
         self._validate_purge_embargo(items, purge_periods, embargo_periods)
         cash = float(initial_equity if checkpoint is None else checkpoint.cash)
         quantities: dict[str, float] = dict(checkpoint.holdings) if checkpoint else {}
@@ -285,15 +468,17 @@ class MetaSelectorBacktest:
         slippage = 0.0
         realized_costs = 0.0
         previous_equity = cash + sum(quantity * last_prices.get(symbol, 100.0) for symbol, quantity in quantities.items())
+        peak_equity = float(checkpoint.peak_equity) if checkpoint and checkpoint.peak_equity is not None else previous_equity
         orders: list[dict[str, Any]] = []
         fills: list[dict[str, Any]] = []
         risk_rows: list[dict[str, Any]] = []
+        last_period_pnl = 0.0
 
         for index, item in enumerate(items):
             raw_regimes.append(item.raw_regime or item.market_regime)
             operational_regimes.append(item.operational_regime or item.market_regime)
             execution_item = items[min(index + delay_periods, len(items) - 1)]
-            day = self._execution_day(execution_item, last_prices)
+            day = self._execution_day(execution_item, item.decision_time, liquidity_multiplier=liquidity_multiplier)
             current_weights = self._weights_from_quantities(quantities, last_prices, previous_equity)
             visible_cards = tuple(card for card in item.scorecards if card.available_at <= item.decision_time)
             candidate_targets = self._candidate_targets(replace(item, scorecards=visible_cards))
@@ -325,11 +510,15 @@ class MetaSelectorBacktest:
                 target_weights=target_weights,
                 portfolio_value=max(previous_equity, 1e-12),
                 item=execution_item,
+                day=day,
+                prior_returns=tuple(returns) + tuple(item.prior_asset_returns.values()),
+                daily_pnl=last_period_pnl,
+                current_drawdown=max(0.0, 1.0 - previous_equity / max(peak_equity, 1e-12)),
             )
             risk_rows.extend(risk_batch)
             cash, generated = self.execution_adapter.execute_historical_rebalance(
                 run_id=f"meta-{effective_policy_version}",
-                date=pd.Timestamp(execution_item.decision_time),
+                date=pd.Timestamp(day["timestamp"].iloc[0]),
                 day=day,
                 targets=self._targets_frame(gated_targets, execution_item.decision_time),
                 cash=cash,
@@ -341,21 +530,21 @@ class MetaSelectorBacktest:
                 entry_execution_cost_pools=entry_execution_cost_pools,
                 last_prices=last_prices,
                 mode="event-driven",
+                cost_schedule=self._stressed_cost_schedule(cost_multiplier, execution_item.decision_time),
             )
             self._determinize_execution_ids(generated, item.decision_time)
+            self._attach_execution_lineage(generated, item, execution_item, day)
             orders.extend(generated["orders"])
             fills.extend(generated["fills"])
             for risk_row in risk_batch:
                 risk_row["order_ids"] = tuple(order["order_id"] for order in generated["orders"] if order["symbol"] == risk_row["symbol"])
                 risk_row["fill_ids"] = tuple(fill["fill_id"] for fill in generated["fills"] if fill["symbol"] == risk_row["symbol"])
                 risk_row["executed_notional"] = float(sum(fill["quantity"] * fill["price"] for fill in generated["fills"] if fill["symbol"] == risk_row["symbol"]))
-            extra_cost = max(cost_multiplier - 1.0, 0.0) * float(sum(row.get("total_cost", 0.0) for row in generated["costs"]))
-            cash -= extra_cost
             for symbol, row in day.iterrows():
                 last_prices[str(symbol)] = float(row["close"])
             market_value = sum(quantity * last_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
             ending_equity = cash + market_value
-            period_cost = float(sum(row.get("total_cost", 0.0) for row in generated["costs"])) + extra_cost
+            period_cost = float(sum(row.get("total_cost", 0.0) for row in generated["costs"]))
             period_slippage = float(sum(order.get("slippage_bps", 0.0) for order in generated["orders"]))
             period_turnover = abs(float(generated.get("rebalance", {}).get("buy_turnover", 0.0))) + abs(float(generated.get("rebalance", {}).get("sell_turnover", 0.0)))
             cumulative_costs += period_cost
@@ -402,9 +591,12 @@ class MetaSelectorBacktest:
                     "slippage": float(period_slippage),
                 }
             )
+            period_pnl = ending_equity - previous_equity
             previous_equity = ending_equity
+            last_period_pnl = period_pnl
+            peak_equity = max(peak_equity, ending_equity)
 
-        self._attach_drawdowns(equity_rows, initial_equity)
+        self._attach_drawdowns(equity_rows, initial_equity, peak_equity=max(peak_equity, initial_equity))
         checkpoint_out = MetaSelectorCheckpoint(
             cash=cash,
             holdings=dict(quantities),
@@ -421,6 +613,7 @@ class MetaSelectorBacktest:
             market_prices=dict(last_prices),
             pending_orders=tuple(checkpoint.pending_orders if checkpoint else ()),
             pending_fills=tuple(checkpoint.pending_fills if checkpoint else ()),
+            peak_equity=peak_equity,
         )
         metrics = self._metrics(
             equity_rows,
@@ -437,21 +630,24 @@ class MetaSelectorBacktest:
             skipped_opportunities,
             risk_avoided,
         )
+        metrics["decision_count"] = float(len(decisions))
+        metrics["trade_count"] = float(len(fills))
+        metrics["evidence_coverage"] = float(sum(any(card.available_at <= item.decision_time for card in item.scorecards) for item in items) / max(len(items), 1))
         baselines = self._baselines(items, initial_equity, metrics)
         stress_results = (
             {
                 "1.0x_cost": {"total_return": metrics["total_return"]},
-                "1.5x_cost": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, cost_multiplier=1.5, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash).metrics["total_return"]},
-                "2.0x_cost": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, cost_multiplier=2.0, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash).metrics["total_return"]},
-                "switch_cost_stress": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, cost_multiplier=2.0, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash).metrics["total_return"]},
-                "delayed_execution": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, delay_periods=1, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash).metrics["total_return"]} if len(items) > 1 else {"total_return": metrics["total_return"]},
-                "reduced_liquidity": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, liquidity_multiplier=0.5, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash).metrics["total_return"]},
+                "1.5x_cost": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, cost_multiplier=1.5, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash, _skip_final_oos_validation=True).metrics["total_return"]},
+                "2.0x_cost": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, cost_multiplier=2.0, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash, _skip_final_oos_validation=True).metrics["total_return"]},
+                "switch_cost_stress": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, cost_multiplier=2.0, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash, _skip_final_oos_validation=True).metrics["total_return"]},
+                "delayed_execution": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, delay_periods=1, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash, _skip_final_oos_validation=True).metrics["total_return"]} if len(items) > 1 else {"total_return": metrics["total_return"]},
+                "reduced_liquidity": {"total_return": self.run(items, initial_equity=initial_equity, meta_split=meta_split, liquidity_multiplier=0.5, include_stress=False, registered_trial_id=registered_trial_id, trial_created_at=trial_created_at, data_hash=data_hash, cost_model_hash=cost_model_hash, _skip_final_oos_validation=True).metrics["total_return"]},
             }
             if include_stress
             else {"1.0x_cost": {"total_return": metrics["total_return"]}}
         )
         baselines["B5_adaptive"] = {"total_return": metrics["total_return"], "selection": "adaptive_selector"}
-        verdict = self._verdict(metrics, baselines, len(items), stress_results)
+        verdict = self._verdict(metrics, baselines, len(items), stress_results, meta_split)
         attribution = {
             "stock_selection": metrics["total_return"] - float(baselines["B0_benchmark"]["total_return"]),
             "strategy_selection": metrics["total_return"] - float(baselines["B3_equal_ensemble"]["total_return"]),
@@ -469,7 +665,7 @@ class MetaSelectorBacktest:
             "meta_split": meta_split,
             "registered_trial_id": registered_trial_id,
             "data_hash": data_hash,
-            "cost_model_hash": cost_model_hash or self.cost_estimator.schedule.version,
+            "cost_model_hash": effective_cost_model_hash,
             "purge_periods": purge_periods,
             "embargo_periods": embargo_periods,
             "decisions": [decision.evidence_hash for decision in decisions],
@@ -505,6 +701,8 @@ class MetaSelectorBacktest:
         values["asset_returns"] = dict(values.get("asset_returns", {}))
         values["prices"] = dict(values.get("prices", {}))
         values["sectors"] = dict(values.get("sectors", {}))
+        values["historical_bars"] = tuple(values.get("historical_bars", ()))
+        values["prior_asset_returns"] = dict(values.get("prior_asset_returns", {}))
         return MetaSelectorObservation(**values)
 
     @staticmethod
@@ -521,6 +719,20 @@ class MetaSelectorBacktest:
                     continue
                 if getattr(card, "available_at").tzinfo is None:
                     raise ValueError("scorecard available_at must be timezone-aware")
+            if item.execution_data_available_at is not None and item.execution_data_available_at > item.decision_time:
+                raise ValueError("execution data availability cannot be after selector decision")
+
+    def _validate_future_trials(self, items: tuple[MetaSelectorObservation, ...]) -> None:
+        if self.db is None:
+            return
+        for item in items:
+            for trial_id in item.future_trial_ids:
+                trial = self.db.get_research_trial(trial_id)
+                if trial is None:
+                    continue
+                created_at = cast(datetime, trial["created_at"])
+                if created_at <= item.decision_time:
+                    raise ValueError("historical replay cannot consume a trial available at decision time")
 
     def _validate_final_oos_trial_binding(
         self,
@@ -534,13 +746,14 @@ class MetaSelectorBacktest:
         purge_periods: int,
         embargo_periods: int,
         policy_version: str,
+        frozen_policy_id: str | None = None,
     ) -> None:
         if meta_split != "FINAL_OOS":
             return
         final_items = [item for item in items if item.meta_split == "FINAL_OOS"]
         if not final_items:
             return
-        if registered_trial_id is None or trial_created_at is None:
+        if registered_trial_id is None or (trial_created_at is None and frozen_policy_id is None):
             raise ValueError("FINAL_OOS requires pre-registered meta-selector trial")
         if self.db is None:
             raise ValueError("FINAL_OOS requires Phase 2.1 trial registry access")
@@ -548,6 +761,27 @@ class MetaSelectorBacktest:
         if trial is None:
             raise ValueError("FINAL_OOS requires a real Phase 2.1 research trial")
         trial_created_at = cast(datetime, trial["created_at"])
+        first_final = min(item.decision_time for item in final_items)
+        if frozen_policy_id is not None:
+            artifact = self.db.load_frozen_meta_policy(frozen_policy_id)
+            expected_artifact = {
+                "selected_trial_id": registered_trial_id,
+                "selector_policy_version": self.selector.policy.version,
+                "selector_policy_hash": self.selector.policy.policy_hash,
+                "meta_policy_version": self.replay_policy.version,
+                "meta_policy_hash": self.replay_policy.policy_hash,
+                "data_hash": data_hash,
+                "cost_model_hash": cost_model_hash,
+                "purge_periods": purge_periods,
+                "embargo_periods": embargo_periods,
+            }
+            for key, value in expected_artifact.items():
+                if artifact.get(key) != value:
+                    raise ValueError(f"FINAL_OOS frozen policy binding mismatch: {key}")
+            frozen_timestamp = pd.Timestamp(artifact["frozen_at"]).to_pydatetime()
+            if frozen_timestamp >= first_final or trial_created_at >= first_final:
+                raise ValueError("frozen meta policy must be registered before FINAL_OOS begins")
+            return
         parameters = dict(trial.get("parameters") or {})
         scorecard_policy_hash = _canonical_hash(
             sorted({card.scorecard_policy_hash for item in final_items for card in item.scorecards if card.available_at <= item.decision_time})
@@ -576,7 +810,6 @@ class MetaSelectorBacktest:
                 raise ValueError(f"FINAL_OOS trial binding mismatch: {key}")
         if trial_created_at.tzinfo is None:
             raise ValueError("trial_created_at must be timezone-aware")
-        first_final = min(item.decision_time for item in final_items)
         if trial_created_at >= first_final:
             raise ValueError("meta-selector trial must be registered before FINAL_OOS begins")
 
@@ -596,6 +829,16 @@ class MetaSelectorBacktest:
                 gap_days = (right.decision_time - left.decision_time).days
                 if gap_days < purge_periods + embargo_periods:
                     raise ValueError("purge/embargo gap is not enforced between meta splits")
+                left_windows = (left.label_start, left.label_end, left.evidence_start, left.evidence_end)
+                right_windows = (right.label_start, right.label_end, right.evidence_start, right.evidence_end)
+                if any(value is None for value in (*left_windows, *right_windows)):
+                    raise ValueError("explicit label and evidence windows are required for split purge/embargo")
+                left_label_end = cast(datetime, left.label_end)
+                right_label_start = cast(datetime, right.label_start)
+                left_evidence_end = cast(datetime, left.evidence_end)
+                right_evidence_start = cast(datetime, right.evidence_start)
+                if left_label_end > right_label_start or left_evidence_end > right_evidence_start:
+                    raise ValueError("purge/embargo windows overlap across meta splits")
 
     @staticmethod
     def _canonical_visible_scorecard_policy_hash(items: tuple[MetaSelectorObservation, ...]) -> str:
@@ -651,12 +894,17 @@ class MetaSelectorBacktest:
         target_weights: dict[str, float],
         portfolio_value: float,
         item: MetaSelectorObservation,
+        day: pd.DataFrame,
+        prior_returns: tuple[float, ...],
+        daily_pnl: float,
+        current_drawdown: float,
     ) -> tuple[dict[str, float], list[dict[str, Any]]]:
         adjusted = dict(current_weights)
         rows: list[dict[str, Any]] = []
         symbols = sorted(set(current_weights) | set(target_weights))
         symbols.sort(key=lambda symbol: float(target_weights.get(symbol, 0.0)) - float(current_weights.get(symbol, 0.0)))
         daily_turnover_crore = 0.0
+        current_gross_exposure = sum(abs(value) * portfolio_value for value in adjusted.values())
         for symbol in symbols:
             current_weight = float(adjusted.get(symbol, 0.0))
             target_weight = float(target_weights.get(symbol, 0.0))
@@ -672,13 +920,13 @@ class MetaSelectorBacktest:
                 capital=portfolio_value,
                 current_position_notional=current_weight * portfolio_value,
                 order_side=side,
-                current_gross_exposure=sum(abs(value) for value in adjusted.values()),
-                current_sector_exposure=sum(abs(value) for key, value in adjusted.items() if item.sectors.get(key, "UNKNOWN") == item.sectors.get(symbol, "UNKNOWN")),
-                daily_pnl=0.0,
-                current_drawdown=0.0,
+                current_gross_exposure=current_gross_exposure,
+                current_sector_exposure=sum(abs(value) * portfolio_value for key, value in adjusted.items() if item.sectors.get(key, "UNKNOWN") == item.sectors.get(symbol, "UNKNOWN")),
+                daily_pnl=daily_pnl,
+                current_drawdown=current_drawdown,
                 open_position_count=sum(1 for value in adjusted.values() if abs(value) > 1e-12),
                 daily_turnover_crore=daily_turnover_crore,
-                estimated_portfolio_var_pct=0.0,
+                estimated_portfolio_var_pct=(float(pd.Series(prior_returns, dtype=float).std(ddof=0) * 2.33) if prior_returns else None),
             )
             decision = self.risk_engine.evaluate(proposal)
             approved_notional = float(decision.approved_notional)
@@ -688,7 +936,8 @@ class MetaSelectorBacktest:
                 signed = approved_notional / max(portfolio_value, 1e-12)
                 executable_weight = current_weight + signed if side == OrderSide.BUY else current_weight - signed
             adjusted[symbol] = max(executable_weight, 0.0)
-            daily_turnover_crore += approved_notional / 10_000_000.0
+            liquidity_row = day.loc[symbol] if symbol in day.index else {}
+            daily_turnover_crore = float(liquidity_row.get("lagged_traded_value", 0.0) or 0.0) / 10_000_000.0
             rows.append(
                 {
                     "timestamp": item.decision_time,
@@ -716,27 +965,40 @@ class MetaSelectorBacktest:
         )
 
     @staticmethod
-    def _execution_day(item: MetaSelectorObservation, last_prices: dict[str, float]) -> pd.DataFrame:
-        symbols = sorted(set(item.asset_returns) | set(item.prices) | set(last_prices) | {item.symbol})
-        rows = []
-        for symbol in symbols:
-            open_price = float(item.prices.get(symbol, last_prices.get(symbol, 100.0)))
-            close_price = open_price * (1.0 + float(item.asset_returns.get(symbol, 0.0)))
-            rows.append(
-                {
-                    "timestamp": pd.Timestamp(item.decision_time),
-                    "symbol": symbol,
-                    "open": open_price,
-                    "close": close_price,
-                    "price": close_price,
-                    "volume": 10_000_000.0,
-                    "lagged_adv20": 10_000_000.0,
-                    "lagged_close": open_price,
-                    "lagged_traded_value": open_price * 10_000_000.0,
-                    "sector": item.sectors.get(symbol, "UNKNOWN"),
-                }
-            )
+    def _execution_day(item: MetaSelectorObservation, decision_time: datetime, *, liquidity_multiplier: float = 1.0) -> pd.DataFrame:
+        if not item.historical_bars:
+            raise ValueError("meta replay requires authoritative historical execution bars")
+        if item.execution_data_available_at is not None and item.execution_data_available_at > decision_time:
+            raise ValueError("execution data is not point-in-time available at selector decision")
+        rows = [dict(row) for row in item.historical_bars if pd.Timestamp(row["timestamp"]).to_pydatetime() > decision_time]
+        if not rows:
+            raise ValueError("no historical execution bar strictly after selector decision")
+        if any("dataset_hash" not in row and "data_hash" not in row for row in rows):
+            raise ValueError("execution bars require historical dataset lineage")
+        for row in rows:
+            known_at = row.get("known_at")
+            if known_at is not None and pd.Timestamp(known_at).to_pydatetime() > decision_time:
+                raise ValueError("historical execution bar was not known at selector decision")
+        for row in rows:
+            for field_name in ("volume", "lagged_adv20", "lagged_traded_value"):
+                if field_name in row and row[field_name] is not None:
+                    row[field_name] = float(row[field_name]) * liquidity_multiplier
         return pd.DataFrame(rows).set_index("symbol", drop=False)
+
+    @staticmethod
+    def _cost_model_hash(schedule: IndianDeliveryCostSchedule) -> str:
+        return _canonical_hash(asdict(schedule))
+
+    def _stressed_cost_schedule(self, multiplier: float, decision_time: datetime) -> IndianDeliveryCostSchedule:
+        base = self.execution_adapter.cost_schedule
+        if multiplier == 1.0:
+            return base
+        values = asdict(base)
+        values["version"] = f"{base.version}-stress-{multiplier:g}x"
+        for key in ("brokerage_rate_bps", "stt_buy_bps", "stt_sell_bps", "exchange_transaction_bps", "sebi_bps", "ipft_bps", "stamp_duty_buy_bps", "spread_bps", "slippage_bps", "impact_bps_at_full_participation"):
+            values[key] = float(values[key]) * multiplier
+        values["effective_from"] = base.effective_from
+        return IndianDeliveryCostSchedule(**values)
 
     @staticmethod
     def _weights_from_quantities(
@@ -769,12 +1031,35 @@ class MetaSelectorBacktest:
             cost["fill_id"] = fill_map.get(str(cost.get("fill_id")), str(cost.get("fill_id")))
 
     @staticmethod
+    def _attach_execution_lineage(
+        generated: dict[str, Any],
+        decision_item: MetaSelectorObservation,
+        execution_item: MetaSelectorObservation,
+        day: pd.DataFrame,
+    ) -> None:
+        execution_timestamp = pd.Timestamp(day["timestamp"].iloc[0]).to_pydatetime()
+        dataset_hashes = sorted({str(row.get("dataset_hash", row.get("data_hash", execution_item.data_hash))) for row in day.to_dict("records")})
+        records = day.to_dict("records")
+        lineage = {
+            "selector_decision_time": decision_item.decision_time,
+            "execution_timestamp": execution_timestamp,
+            "symbol": None,
+            "historical_dataset_hash": _canonical_hash(dataset_hashes),
+            "historical_bar_hash": _canonical_hash(records),
+            "data_hash": execution_item.data_hash,
+            "execution_data_available_at": execution_item.execution_data_available_at,
+            "execution_data_known_at": max((row.get("known_at") for row in records if row.get("known_at") is not None), default=None),
+        }
+        for record in (*generated.get("orders", []), *generated.get("fills", [])):
+            record["execution_lineage"] = {**lineage, "symbol": record.get("symbol")}
+
+    @staticmethod
     def _target_return(target_weights: dict[str, float], asset_returns: dict[str, float]) -> float:
         return sum(float(weight) * float(asset_returns.get(symbol, 0.0)) for symbol, weight in target_weights.items())
 
     @staticmethod
-    def _attach_drawdowns(rows: list[dict[str, Any]], initial_equity: float) -> None:
-        peak = initial_equity
+    def _attach_drawdowns(rows: list[dict[str, Any]], initial_equity: float, *, peak_equity: float | None = None) -> None:
+        peak = max(initial_equity, peak_equity or initial_equity)
         for row in rows:
             peak = max(peak, float(row["equity"]))
             row["drawdown"] = float(row["equity"] / peak - 1.0)
@@ -917,11 +1202,16 @@ class MetaSelectorBacktest:
         baselines: dict[str, dict[str, float | str]],
         observation_count: int,
         stress_results: dict[str, dict[str, float]],
+        meta_split: str,
     ) -> str:
+        if meta_split != "FINAL_OOS":
+            return "PHASE 2.10 IMPLEMENTATION READY"
         simple_best = max(
             float(baselines[name]["total_return"])
             for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
         )
+        if metrics.get("decision_count", 0.0) < 1 or metrics.get("trade_count", 0.0) < 1 or metrics.get("evidence_coverage", 0.0) < 1.0:
+            return "ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED"
         if metrics["total_return"] <= simple_best:
             return "ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED"
         if observation_count < self.replay_policy.min_final_oos_observations:
