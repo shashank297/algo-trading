@@ -3658,6 +3658,7 @@ class DuckDBManager:
             "status", "verdict", "metrics_json", "baselines_json", "stress_results_json",
             "attribution_json", "checkpoint_json", "checkpoint_hash", "orders_json", "fills_json",
             "risk_decisions_json", "evidence_hash", "available_at",
+            "final_oos_execution_hash",
         )
         run_data = {
             "meta_run_id": result.meta_run_id,
@@ -3681,6 +3682,7 @@ class DuckDBManager:
             "risk_decisions_json": json.dumps(result.risk_decisions, sort_keys=True, default=str),
             "evidence_hash": result.evidence_hash,
             "available_at": timestamp,
+            "final_oos_execution_hash": getattr(result, "final_oos_execution_hash", result.evidence_hash),
         }
         with self._write_lock:
             existing = self.conn.execute(
@@ -3750,6 +3752,7 @@ class DuckDBManager:
             "candidate_trial_ids", "selected_trial_id", "data_hash", "universe_lineage",
             "b2_strategy",
             "selection_rule", "selection_result",
+            "selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload",
             "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
             "frozen_at", "artifact_hash",
         )
@@ -3757,6 +3760,9 @@ class DuckDBManager:
             **values,
             "candidate_trial_ids": json.dumps(values["candidate_trial_ids"], sort_keys=True),
             "universe_lineage": json.dumps(values["universe_lineage"], sort_keys=True),
+            "selector_policy_payload": json.dumps(values["selector_policy_payload"], sort_keys=True),
+            "meta_policy_payload": json.dumps(values["meta_policy_payload"], sort_keys=True),
+            "scorecard_policy_payload": json.dumps(values["scorecard_policy_payload"], sort_keys=True),
         }
         with self._write_lock:
             existing = self.conn.execute(
@@ -3783,4 +3789,48 @@ class DuckDBManager:
         result = dict(zip(columns, row))
         result["candidate_trial_ids"] = json.loads(str(result["candidate_trial_ids"]))
         result["universe_lineage"] = json.loads(str(result["universe_lineage"]))
+        for field in ("selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload"):
+            result[field] = json.loads(str(result[field] or "{}"))
         return result
+
+    def persist_final_oos_provenance_certificate(self, certificate: Any) -> str:
+        values = asdict(certificate)
+        json_fields = ("dataset_ids", "dataset_content_hashes", "evidence_hashes")
+        for field in json_fields:
+            values[field] = json.dumps(values[field], sort_keys=True)
+        columns = tuple(values)
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT certificate_hash FROM final_oos_provenance_certificates WHERE certificate_id=?",
+                [certificate.certificate_id],
+            ).fetchone()
+            if existing is not None and existing[0] != certificate.certificate_hash:
+                raise ValueError("Conflicting immutable FINAL_OOS provenance certificate")
+            if existing is None:
+                self.conn.execute(
+                    f"INSERT INTO final_oos_provenance_certificates ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [values[column] for column in columns],
+                )
+        return str(certificate.certificate_id)
+
+    def load_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM final_oos_provenance_certificates WHERE certificate_id=?", [certificate_id]
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown FINAL_OOS provenance certificate {certificate_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        for field in ("dataset_ids", "dataset_content_hashes", "evidence_hashes"):
+            result[field] = json.loads(str(result[field]))
+        return result
+
+    def list_research_trials_at(self, cutoff: datetime, *, family_id: str | None = None) -> list[dict[str, Any]]:
+        if pd.Timestamp(cutoff).tzinfo is None:
+            raise ValueError("cutoff must be timezone-aware")
+        trials = self.list_research_trials(family_id=family_id)
+        return [
+            trial for trial in trials
+            if pd.Timestamp(trial["created_at"]).to_pydatetime() < cutoff
+            and trial.get("status") in {"SUCCEEDED", "PLANNED", "RUNNING"}
+        ]

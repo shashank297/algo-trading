@@ -902,6 +902,101 @@ def test_t2_10_zc_resolver_requires_per_candle_availability_and_identity():
     assert rows[0]["known_at"] == decision + timedelta(minutes=1)
 
 
+def test_t2_10_zd_certificate_materializes_after_final_oos_and_is_persisted():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    def make(split: str, offset: int) -> MetaSelectorObservation:
+        timestamp = start + timedelta(days=offset)
+        return obs(timestamp, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a", label_start=timestamp, label_end=timestamp, evidence_start=timestamp, evidence_end=timestamp)
+    db = DuckDBManager(":memory:")
+    result = MetaResearchRunner(db).run(
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+        [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
+        data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
+    )
+    row = db.conn.execute("SELECT certificate_id, final_oos_end, materialized_at, execution_hash FROM final_oos_provenance_certificates").fetchone()
+    assert row is not None
+    assert row[2] > row[1]
+    assert row[3] == result.final_oos_result.final_oos_execution_hash
+
+
+def test_t2_10_ze_stored_policy_payload_hash_mismatch_fails_final_loading():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    def make(split: str, offset: int) -> MetaSelectorObservation:
+        timestamp = start + timedelta(days=offset)
+        return obs(timestamp, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a", label_start=timestamp, label_end=timestamp, evidence_start=timestamp, evidence_end=timestamp)
+    db = DuckDBManager(":memory:")
+    result = MetaResearchRunner(db).run(
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+        [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
+        data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
+    )
+    db.conn.execute("UPDATE frozen_meta_policies SET selector_policy_payload='{}' WHERE frozen_policy_id=?", [result.frozen_policy.frozen_policy_id])
+    with pytest.raises(ValueError, match="stored selector policy schema"):
+        MetaResearchRunner(db).run_final_oos(result.frozen_policy.frozen_policy_id, [])
+
+
+def test_t2_10_zf_trial_cutoff_excludes_future_registry_rows():
+    db = DuckDBManager(":memory:")
+    cutoff = datetime(2024, 4, 1, tzinfo=UTC)
+    family = ExperimentFamilySpec(
+        experiment_family_id="future-family",
+        hypothesis="future trial cutoff",
+        strategy_names=["meta_selector"],
+        strategy_versions=["v1"],
+        universe_snapshot_id="META",
+        timeframe="1d",
+        feature_versions=["v1"],
+        cost_model_version="cost-v1",
+        parameter_space={},
+        maximum_trials=10,
+        selection_metric="total_return",
+        walk_forward_design={},
+        source_revision="test",
+        created_at=cutoff - timedelta(days=1),
+    )
+    db.register_experiment_family(family)
+    future_trial = ResearchTrial(
+        experiment_family_id=family.experiment_family_id,
+        strategy_name="meta_selector",
+        strategy_version="v1",
+        scope="META_SELECTOR",
+        timeframe="1d",
+        parameters={"candidate_id": "future"},
+        source_revision="test",
+        data_hash="dataset",
+        cost_model_hash="cost-hash",
+        created_at=cutoff + timedelta(days=1),
+    )
+    db.create_research_trial(future_trial)
+    assert db.list_research_trials_at(cutoff) == []
+
+
+def test_t2_10_zg_conditional_evidence_cutoff_excludes_appended_future_row():
+    db = DuckDBManager(":memory:")
+    cutoff = datetime(2024, 4, 1, tzinfo=UTC)
+    future = cutoff + timedelta(days=1)
+    db.conn.execute(
+        """
+        INSERT INTO strategy_conditional_evidence (
+            evidence_id, aggregation_level, strategy_name, strategy_version, run_id,
+            timeframe, universe, observation_count, trade_count, fold_count,
+            first_observation, last_observation, net_return, gross_return, total_cost,
+            evidence_status, raw_conditional_metric, global_metric, effective_sample_size,
+            shrinkage_weight, shrunk_metric, sample_policy_version, sample_policy_hash,
+            lineage_json, evidence_hash, available_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            "future-evidence", "GLOBAL", "alpha", "v1", "future-run", "1d", "META",
+            40, 40, 3, cutoff, cutoff, 0.1, 0.1, 0.0, "ELIGIBLE", 0.1, 0.1,
+            40.0, 1.0, 0.1, "v1", "policy-hash", "{}", "evidence-hash", future,
+        ],
+    )
+    resolver = HistoricalEvidenceResolver(db)
+    assert resolver.conditional_evidence_at(cutoff) == []
+    assert len(resolver.conditional_evidence_at(future)) == 1
+
+
 def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():
     split = split_meta_walk_forward(
         datetime(2020, 1, 1, tzinfo=UTC),
