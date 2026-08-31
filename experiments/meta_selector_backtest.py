@@ -110,6 +110,65 @@ class MetaSelectorObservation:
 
 
 @dataclass(frozen=True)
+class FinalDatasetReference:
+    """Trusted identifiers used to reconstruct FINAL_OOS observations."""
+
+    dataset_id: str
+    symbol: str
+    exchange: str
+    timeframe: str
+    decision_times: tuple[datetime, ...]
+    universe_snapshot_id: str
+    regime_snapshot_ids: tuple[str, ...] = ()
+    asset_state_snapshot_ids: tuple[str, ...] = ()
+    risk_snapshot_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.decision_times or any(timestamp.tzinfo is None for timestamp in self.decision_times):
+            raise ValueError("FINAL dataset reference requires timezone-aware decision times")
+        if self.timeframe != "1m":
+            raise ValueError("FINAL dataset reference requires canonical 1m data")
+
+
+@dataclass(frozen=True)
+class CausalRiskSnapshot:
+    snapshot_id: str
+    as_of: datetime
+    exposure: float
+    sector_exposure: dict[str, float]
+    daily_pnl: float
+    drawdown: float
+    var_inputs: tuple[float, ...]
+    var_result: float
+    open_positions: dict[str, float]
+    instrument_liquidity: dict[str, float]
+    rolling_returns: tuple[float, ...]
+    rolling_volatility: float
+    data_hash: str
+    snapshot_hash: str
+
+    @classmethod
+    def create(cls, *, snapshot_id: str, as_of: datetime, exposure: float,
+               sector_exposure: dict[str, float], daily_pnl: float, drawdown: float,
+               var_inputs: Iterable[float], var_result: float,
+               open_positions: dict[str, float], instrument_liquidity: dict[str, float],
+               rolling_returns: Iterable[float], rolling_volatility: float,
+               data_hash: str) -> "CausalRiskSnapshot":
+        if as_of.tzinfo is None:
+            raise ValueError("risk snapshot as_of must be timezone-aware")
+        values: dict[str, Any] = {
+            "snapshot_id": snapshot_id, "as_of": as_of, "exposure": exposure,
+            "sector_exposure": dict(sorted(sector_exposure.items())), "daily_pnl": daily_pnl,
+            "drawdown": drawdown, "var_inputs": tuple(var_inputs), "var_result": var_result,
+            "open_positions": dict(sorted(open_positions.items())),
+            "instrument_liquidity": dict(sorted(instrument_liquidity.items())),
+            "rolling_returns": tuple(rolling_returns), "rolling_volatility": rolling_volatility,
+            "data_hash": data_hash,
+        }
+        return cls(snapshot_hash=_canonical_hash(values), **values)
+
+
+@dataclass(frozen=True)
 class MetaSelectorCheckpoint:
     cash: float
     holdings: dict[str, float]
@@ -357,8 +416,14 @@ class MetaResearchRunner:
         for candidate_id, selector, replay_policy in candidate_list:
             trial_ids[candidate_id] = self._register_candidate(candidate_id, selector, replay_policy, data_hash, purge_periods, embargo_periods, registration_at, scorecard_policy_hash, b2_strategy, universe_lineage)
             replay = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db)
-            train_results[candidate_id] = replay.run(train_items, meta_split="TRAIN", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
-            validation_results[candidate_id] = replay.run(validation_items, meta_split="VALIDATION", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
+            self.db.transition_research_trial(trial_ids[candidate_id], "RUNNING")
+            try:
+                train_results[candidate_id] = replay.run(train_items, meta_split="TRAIN", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
+                validation_results[candidate_id] = replay.run(validation_items, meta_split="VALIDATION", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
+                self.db.transition_research_trial(trial_ids[candidate_id], "SUCCEEDED", metrics=validation_results[candidate_id].metrics)
+            except Exception as exc:
+                self.db.transition_research_trial(trial_ids[candidate_id], "FAILED", error_message=str(exc))
+                raise
         winner = min(candidate_list, key=lambda candidate: (-validation_results[candidate[0]].metrics["total_return"], candidate[0]))
         winner_id, selector, replay_policy = winner
         frozen = FrozenMetaPolicy.create(
@@ -390,7 +455,10 @@ class MetaResearchRunner:
         for candidate_id, result in validation_results.items():
             candidate_selector, candidate_policy = candidate_by_id[candidate_id]
             self.db.persist_meta_selector_result(result, policy_version=candidate_policy.version, selector_policy_version=candidate_selector.policy.version, selector_policy_hash=candidate_selector.policy.policy_hash, meta_split="VALIDATION", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=max(item.decision_time for item in validation_items) + pd.Timedelta(microseconds=1).to_pytimedelta())
-        final_result = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db).run(
+        final_resolver = HistoricalEvidenceResolver(self.db) if any(item.execution_dataset_id for item in final_items) else None
+        final_result = MetaSelectorBacktest(
+            selector, replay_policy=replay_policy, resolver=final_resolver, db=self.db,
+        ).run(
             final_items,
             meta_split="FINAL_OOS",
             registered_trial_id=frozen.selected_trial_id,
@@ -426,9 +494,30 @@ class MetaResearchRunner:
         return MetaResearchResult(frozen, train_results, validation_results, final_result)
 
     def run_final_oos(
-        self, frozen_policy_id: str, final_dataset_reference: Iterable[MetaSelectorObservation | dict[str, Any]],
+        self, frozen_policy_id: str, final_dataset_reference: FinalDatasetReference,
     ) -> MetaSelectorResult:
         artifact = self.db.load_frozen_meta_policy(frozen_policy_id)
+        artifact_check = FrozenMetaPolicy.create(
+            selector_policy_version=str(artifact["selector_policy_version"]),
+            selector_policy_hash=str(artifact["selector_policy_hash"]),
+            scorecard_policy_hash=str(artifact["scorecard_policy_hash"]),
+            meta_policy_version=str(artifact["meta_policy_version"]),
+            meta_policy_hash=str(artifact["meta_policy_hash"]),
+            candidate_trial_ids=artifact["candidate_trial_ids"],
+            selected_trial_id=str(artifact["selected_trial_id"]),
+            b2_strategy=artifact.get("b2_strategy"), data_hash=str(artifact["data_hash"]),
+            universe_lineage=artifact["universe_lineage"],
+            cost_model_version=str(artifact["cost_model_version"]),
+            cost_model_hash=str(artifact["cost_model_hash"]),
+            purge_periods=int(artifact["purge_periods"]), embargo_periods=int(artifact["embargo_periods"]),
+            frozen_at=pd.Timestamp(artifact["frozen_at"]).to_pydatetime(),
+            selection_rule=str(artifact["selection_rule"]), selection_result=artifact.get("selection_result"),
+            selector_policy_payload=artifact.get("selector_policy_payload") or {},
+            meta_policy_payload=artifact.get("meta_policy_payload") or {},
+            scorecard_policy_payload=artifact.get("scorecard_policy_payload") or {},
+        )
+        if artifact_check.artifact_hash != artifact["artifact_hash"]:
+            raise ValueError("frozen policy artifact hash mismatch")
         selector_payload = dict(artifact.get("selector_policy_payload") or {})
         meta_payload = dict(artifact.get("meta_policy_payload") or {})
         if selector_payload.pop("schema_version", None) != "selector-policy-v1":
@@ -444,10 +533,16 @@ class MetaResearchRunner:
         trial = self.db.get_research_trial(str(artifact["selected_trial_id"]))
         if trial is None:
             raise ValueError("frozen policy selected trial is unavailable")
+        if trial.get("status") != "SUCCEEDED":
+            raise ValueError("frozen policy selected trial is not SUCCEEDED")
+        if trial.get("parameters", {}).get("candidate_id") != artifact.get("selection_result"):
+            raise ValueError("frozen policy selected trial candidate binding mismatch")
+        resolver = HistoricalEvidenceResolver(self.db)
+        items = resolver.final_observations(final_dataset_reference)
         replay = MetaSelectorBacktest(
-            AdaptiveStrategySelector(selector_policy), replay_policy=replay_policy, db=self.db,
+            AdaptiveStrategySelector(selector_policy), replay_policy=replay_policy,
+            resolver=resolver, db=self.db,
         )
-        items = tuple(replay._coerce(item) for item in final_dataset_reference)
         result = replay.run(
             items,
             meta_split="FINAL_OOS",
@@ -460,6 +555,17 @@ class MetaResearchRunner:
         )
         if not items:
             raise ValueError("FINAL_OOS requires observations")
+        execution_materialized_at = max(
+            [item.decision_time for item in items]
+            + [pd.Timestamp(row["timestamp"]).to_pydatetime() for item in items for row in item.historical_bars]
+        ) + pd.Timedelta(microseconds=1).to_pytimedelta()
+        self.db.persist_meta_selector_result(
+            result, policy_version=replay_policy.version,
+            selector_policy_version=selector_policy.version,
+            selector_policy_hash=selector_policy.policy_hash,
+            meta_split="FINAL_OOS", purge_periods=int(artifact["purge_periods"]),
+            embargo_periods=int(artifact["embargo_periods"]), available_at=execution_materialized_at,
+        )
         certificate = FinalOOSProvenanceCertificate.create(
             frozen_policy_id=frozen_policy_id,
             frozen_policy_hash=str(artifact["artifact_hash"]),
@@ -474,13 +580,31 @@ class MetaResearchRunner:
             execution_hash=result.final_oos_execution_hash,
             final_oos_start=min(item.decision_time for item in items),
             final_oos_end=max(item.decision_time for item in items),
-            materialized_at=max(item.decision_time for item in items) + pd.Timedelta(microseconds=1).to_pytimedelta(),
+            materialized_at=execution_materialized_at,
             cost_model_version=str(artifact["cost_model_version"]),
             cost_model_hash=str(artifact["cost_model_hash"]),
             purge_periods=int(artifact["purge_periods"]),
             embargo_periods=int(artifact["embargo_periods"]),
         )
         self.db.persist_final_oos_provenance_certificate(certificate)
+        persisted_certificate = self.db.validate_final_oos_provenance_certificate(certificate.certificate_id)
+        acceptance_payload = {
+            "meta_run_id": result.meta_run_id,
+            "certificate_id": certificate.certificate_id,
+            "certificate_hash": persisted_certificate["certificate_hash"],
+            "execution_hash": result.final_oos_execution_hash,
+            "verdict": result.verdict,
+        }
+        self.db.persist_phase2_10_empirical_acceptance(
+            acceptance_id=_canonical_hash(acceptance_payload)[:32],
+            meta_run_id=result.meta_run_id,
+            certificate_id=certificate.certificate_id,
+            certificate_hash=str(persisted_certificate["certificate_hash"]),
+            execution_hash=result.final_oos_execution_hash,
+            verdict=result.verdict,
+            accepted_at=execution_materialized_at + pd.Timedelta(microseconds=1).to_pytimedelta(),
+            acceptance_hash=_canonical_hash(acceptance_payload),
+        )
         return result
 
     def _derive_empirical_provenance(
@@ -506,7 +630,7 @@ class MetaResearchRunner:
         )
         self.db.register_experiment_family(family)
         trial = ResearchTrial(
-            experiment_family_id=family.experiment_family_id, strategy_name="meta_selector", strategy_version=replay_policy.version, scope="META_SELECTOR", timeframe="1d", parameters={"candidate_id": candidate_id, "selector_policy_version": selector.policy.version, "selector_policy_hash": selector.policy.policy_hash, "scorecard_policy_hash": scorecard_policy_hash, "meta_replay_policy_version": replay_policy.version, "meta_replay_policy_hash": replay_policy.policy_hash, "data_hash": data_hash, "purge_periods": purge_periods, "embargo_periods": embargo_periods, "b2_strategy": b2_strategy, "strategy_universe": universe_lineage, "cost_model_version": schedule.version, "meta_split": "FINAL_OOS"}, source_revision="phase2-10", data_hash=data_hash, cost_model_hash=cost_model_hash, cost_model_version=schedule.version, universe_snapshot_id="META", created_at=timestamp,
+            experiment_family_id=family.experiment_family_id, strategy_name="meta_selector", strategy_version=replay_policy.version, scope="META_SELECTOR", timeframe="1d", parameters={"candidate_id": candidate_id, "selector_policy_version": selector.policy.version, "selector_policy_hash": selector.policy.policy_hash, "scorecard_policy_hash": scorecard_policy_hash, "meta_replay_policy_version": replay_policy.version, "meta_replay_policy_hash": replay_policy.policy_hash, "data_hash": data_hash, "purge_periods": purge_periods, "embargo_periods": embargo_periods, "b2_strategy": b2_strategy, "strategy_universe": universe_lineage, "cost_model_version": schedule.version, "meta_split": "FINAL_OOS"}, source_revision="phase2-10", data_hash=data_hash, cost_model_hash=cost_model_hash, cost_model_version=schedule.version, frame_certification_id="meta-selector-certified", universe_snapshot_id="META", created_at=timestamp,
         )
         return self.db.create_research_trial(trial)
 
@@ -516,6 +640,34 @@ class HistoricalEvidenceResolver:
 
     def __init__(self, db: Any) -> None:
         self.db = db
+
+    def final_observations(self, reference: FinalDatasetReference) -> tuple[MetaSelectorObservation, ...]:
+        """Construct FINAL observations from immutable identifiers only."""
+        if not isinstance(reference, FinalDatasetReference):
+            raise ValueError("FINAL_OOS requires a FinalDatasetReference")
+        if len(reference.decision_times) != len(reference.regime_snapshot_ids) or len(reference.decision_times) != len(reference.asset_state_snapshot_ids) or len(reference.decision_times) != len(reference.risk_snapshot_ids):
+            raise ValueError("FINAL dataset reference snapshot identifiers must align with decision times")
+        observations: list[MetaSelectorObservation] = []
+        for decision_time, regime_id, asset_id, risk_id in zip(reference.decision_times, reference.regime_snapshot_ids, reference.asset_state_snapshot_ids, reference.risk_snapshot_ids):
+            regime = self.db.get_market_regime_snapshot(regime_id)
+            asset = self.db.get_asset_state_snapshot(asset_id)
+            risk = self.db.load_phase2_10_causal_risk_snapshot(risk_id)
+            if regime is None or asset is None:
+                raise ValueError("FINAL PIT regime or asset-state snapshot is unavailable")
+            if pd.Timestamp(regime.get("decision_time")).to_pydatetime() > decision_time or pd.Timestamp(asset.get("decision_time")).to_pydatetime() > decision_time:
+                raise ValueError("FINAL PIT selector snapshot is after the decision cutoff")
+            if pd.Timestamp(risk["as_of"]).to_pydatetime() > decision_time:
+                raise ValueError("FINAL risk snapshot is after the decision cutoff")
+            template = MetaSelectorObservation(
+                decision_time=decision_time, symbol=reference.symbol, horizon="1d",
+                market_regime=regime.get("raw_regime"), regime_confidence=float(regime.get("confidence", 1.0) or 1.0),
+                asset_cluster=asset.get("behavior_cluster"), scorecards=(), strategy_returns={},
+                meta_split="FINAL_OOS", data_hash=str(reference.dataset_id),
+                execution_dataset_id=reference.dataset_id, execution_timeframe=reference.timeframe,
+                execution_exchange=reference.exchange, risk_state_as_of=pd.Timestamp(risk["as_of"]).to_pydatetime(),
+            )
+            observations.append(self.observation_at(decision_time, template=template))
+        return tuple(observations)
 
     def scorecards_at(self, decision_time: datetime, *, horizon: str | None = None) -> list[StrategyScorecard]:
         if decision_time.tzinfo is None:

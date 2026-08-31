@@ -3825,6 +3825,81 @@ class DuckDBManager:
             result[field] = json.loads(str(result[field]))
         return result
 
+    def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+        certificate = self.load_final_oos_provenance_certificate(certificate_id)
+        payload = {
+            key: certificate[key]
+            for key in (
+                "frozen_policy_id", "frozen_policy_hash", "selected_trial_id",
+                "selector_policy_hash", "meta_policy_hash", "scorecard_policy_hash",
+                "dataset_ids", "dataset_content_hashes", "evidence_hashes", "resolver_hash",
+                "execution_hash", "final_oos_start", "final_oos_end", "materialized_at",
+                "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
+            )
+        }
+        expected_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
+        if expected_hash != certificate["certificate_hash"]:
+            raise ValueError("FINAL_OOS provenance certificate hash mismatch")
+        result = self.conn.execute(
+            "SELECT final_oos_execution_hash FROM meta_selector_runs WHERE meta_run_id IN (SELECT meta_run_id FROM meta_selector_runs WHERE final_oos_execution_hash = ?)",
+            [certificate["execution_hash"]],
+        ).fetchone()
+        if result is None:
+            raise ValueError("FINAL_OOS provenance certificate has no persisted execution result")
+        if certificate["materialized_at"] <= certificate["final_oos_end"]:
+            raise ValueError("FINAL_OOS provenance certificate materialized before completion")
+        return certificate
+
+    def persist_phase2_10_causal_risk_snapshot(self, snapshot: Any) -> str:
+        values = asdict(snapshot)
+        for field in ("sector_exposure", "var_inputs", "open_positions", "instrument_liquidity", "rolling_returns"):
+            values[field] = json.dumps(values[field], sort_keys=True, default=str)
+        columns = tuple(values)
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT snapshot_hash FROM phase2_10_causal_risk_snapshots WHERE snapshot_id=?",
+                [values["snapshot_id"]],
+            ).fetchone()
+            if existing is not None and existing[0] != values["snapshot_hash"]:
+                raise ValueError("Conflicting immutable causal risk snapshot")
+            if existing is None:
+                self.conn.execute(
+                    f"INSERT INTO phase2_10_causal_risk_snapshots ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [values[column] for column in columns],
+                )
+        return str(values["snapshot_id"])
+
+    def load_phase2_10_causal_risk_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM phase2_10_causal_risk_snapshots WHERE snapshot_id=?", [snapshot_id]
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown causal risk snapshot {snapshot_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        for field in ("sector_exposure", "var_inputs", "open_positions", "instrument_liquidity", "rolling_returns"):
+            result[field] = json.loads(str(result[field]))
+        return result
+
+    def persist_phase2_10_empirical_acceptance(self, *, acceptance_id: str, meta_run_id: str,
+                                                certificate_id: str, certificate_hash: str,
+                                                execution_hash: str, verdict: str,
+                                                accepted_at: datetime, acceptance_hash: str) -> str:
+        values = (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash)
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT acceptance_hash FROM phase2_10_empirical_acceptance WHERE acceptance_id=?", [acceptance_id]
+            ).fetchone()
+            if existing is not None and existing[0] != acceptance_hash:
+                raise ValueError("Conflicting immutable empirical acceptance")
+            if existing is None:
+                self.conn.execute(
+                    "INSERT INTO phase2_10_empirical_acceptance VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values
+                )
+        return acceptance_id
+
     def list_research_trials_at(self, cutoff: datetime, *, family_id: str | None = None) -> list[dict[str, Any]]:
         if pd.Timestamp(cutoff).tzinfo is None:
             raise ValueError("cutoff must be timezone-aware")
@@ -3832,5 +3907,5 @@ class DuckDBManager:
         return [
             trial for trial in trials
             if pd.Timestamp(trial["created_at"]).to_pydatetime() < cutoff
-            and trial.get("status") in {"SUCCEEDED", "PLANNED", "RUNNING"}
+            and trial.get("status") == "SUCCEEDED"
         ]

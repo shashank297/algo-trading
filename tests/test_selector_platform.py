@@ -931,7 +931,7 @@ def test_t2_10_ze_stored_policy_payload_hash_mismatch_fails_final_loading():
         data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
     )
     db.conn.execute("UPDATE frozen_meta_policies SET selector_policy_payload='{}' WHERE frozen_policy_id=?", [result.frozen_policy.frozen_policy_id])
-    with pytest.raises(ValueError, match="stored selector policy schema"):
+    with pytest.raises(ValueError, match="frozen policy artifact hash mismatch"):
         MetaResearchRunner(db).run_final_oos(result.frozen_policy.frozen_policy_id, [])
 
 
