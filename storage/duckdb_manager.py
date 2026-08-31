@@ -3748,6 +3748,7 @@ class DuckDBManager:
             "frozen_policy_id", "selector_policy_version", "selector_policy_hash",
             "scorecard_policy_hash", "meta_policy_version", "meta_policy_hash",
             "candidate_trial_ids", "selected_trial_id", "data_hash", "universe_lineage",
+            "b2_strategy",
             "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
             "frozen_at", "artifact_hash",
         )

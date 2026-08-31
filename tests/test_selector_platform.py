@@ -167,6 +167,7 @@ def obs(time, cards, returns, **kwargs):
         evidence_end=kwargs.get("evidence_end"),
         data_hash=kwargs.get("data_hash", "synthetic"),
         execution_data_available_at=kwargs.get("execution_data_available_at"),
+        prior_returns_available_at=kwargs.get("prior_returns_available_at", time),
         meta_split=kwargs.get("meta_split", "FINAL_OOS"),
     )
 
@@ -786,7 +787,7 @@ def test_t2_10_w_runner_freezes_and_consumes_one_immutable_policy():
         final,
         [("candidate-a", selector, MetaReplayPolicy())],
         data_hash="dataset-a",
-        frozen_at=start - timedelta(days=1),
+        frozen_at=start + timedelta(days=1, hours=12),
     )
     stored = db.load_frozen_meta_policy(result.frozen_policy.frozen_policy_id)
     assert isinstance(result.frozen_policy, FrozenMetaPolicy)
@@ -821,6 +822,38 @@ def test_t2_10_y_overlap_windows_are_rejected_across_splits():
     right = obs(start + timedelta(days=10), [card()], {"alpha": 0.0}, asset_returns={"ABC": 0.0}, meta_split="VALIDATION", label_start=start + timedelta(days=2), label_end=start + timedelta(days=4), evidence_start=start + timedelta(days=2), evidence_end=start + timedelta(days=4))
     with pytest.raises(ValueError, match="windows overlap"):
         MetaSelectorBacktest(AdaptiveStrategySelector()).run([left, right], purge_periods=1, embargo_periods=1)
+
+
+def test_t2_10_z_earliest_bar_is_selected_for_each_symbol():
+    now = datetime(2024, 4, 1, 16, tzinfo=UTC)
+    bars = tuple(
+        {
+            "timestamp": timestamp,
+            "symbol": symbol,
+            "open": 100.0,
+            "close": 100.0,
+            "volume": 10_000_000.0,
+            "lagged_adv20": 10_000_000.0,
+            "lagged_traded_value": 1_000_000_000.0,
+            "dataset_hash": "bars",
+        }
+        for symbol, timestamp in (("ABC", now + timedelta(days=2)), ("ABC", now + timedelta(days=1)), ("XYZ", now + timedelta(days=2)), ("XYZ", now + timedelta(days=1)))
+    )
+    day = MetaSelectorBacktest._execution_day(obs(now, [], {}, historical_bars=bars), now)
+    assert set(day["timestamp"]) == {now + timedelta(days=1)}
+
+
+def test_t2_10_za_lifecycle_rejects_freeze_before_validation():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    def make(split: str, offset: int) -> MetaSelectorObservation:
+        return obs(start + timedelta(days=offset), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a")
+    db = DuckDBManager(":memory:")
+    with pytest.raises(ValueError, match="lifecycle timestamps"):
+        MetaResearchRunner(db).run(
+            [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+            [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
+            data_hash="dataset-a", frozen_at=start + timedelta(hours=1),
+        )
 
 
 def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():
