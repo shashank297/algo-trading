@@ -14,6 +14,7 @@ from data_platform.contracts import OrderSide
 from risk.engine import RiskEngine
 from risk.models import RiskAction, RiskPolicy, TradeProposal
 from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.calendars import build_nse_calendar
 from trading_stack.backtest import (
     _annualized_return,
     _max_drawdown_duration,
@@ -47,6 +48,11 @@ class MetaReplayPolicy:
     max_switch_rate: float = 1.0
     max_drawdown: float = 0.25
     min_net_edge: float = 0.0
+    min_final_oos_duration_days: float = 0.0
+    min_independent_trades: int = 1
+    require_robustness_certification: bool = False
+    require_selector_stability: bool = False
+    require_causal_verification: bool = False
 
     def __post_init__(self) -> None:
         if self.abstain_behavior not in ABSTAIN_BEHAVIORS:
@@ -92,6 +98,7 @@ class MetaSelectorObservation:
     execution_data_available_at: datetime | None = None
     execution_dataset_id: str | None = None
     execution_timeframe: str = "1m"
+    execution_exchange: str = "NSE"
     risk_state_as_of: datetime | None = None
     prior_returns_available_at: datetime | None = None
 
@@ -284,6 +291,9 @@ class MetaResearchRunner:
             materialized_at = final_end + pd.Timedelta(microseconds=1).to_pytimedelta()
         if materialized_at.tzinfo is None or materialized_at <= final_end:
             raise ValueError("materialized_at must be timezone-aware and after FINAL_OOS")
+        for item in train_items + validation_items + final_items:
+            if any(getattr(item, field_name) is None for field_name in ("label_start", "label_end", "evidence_start", "evidence_end")):
+                raise ValueError("MetaResearchRunner requires explicit label and evidence windows")
         MetaSelectorBacktest._validate_purge_embargo(
             train_items + validation_items + final_items, purge_periods, embargo_periods,
         )
@@ -337,9 +347,23 @@ class MetaResearchRunner:
             data_hash=data_hash,
             purge_periods=purge_periods,
             embargo_periods=embargo_periods,
+            empirical_provenance=self._derive_empirical_provenance(final_items, frozen.selected_trial_id, frozen.frozen_policy_id, data_hash),
         )
         self.db.persist_meta_selector_result(final_result, policy_version=replay_policy.version, selector_policy_version=selector.policy.version, selector_policy_hash=selector.policy.policy_hash, meta_split="FINAL_OOS", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=materialized_at)
         return MetaResearchResult(frozen, train_results, validation_results, final_result)
+
+    def _derive_empirical_provenance(
+        self, items: tuple[MetaSelectorObservation, ...], trial_id: str, frozen_policy_id: str, data_hash: str,
+    ) -> dict[str, bool]:
+        trial = self.db.get_research_trial(trial_id)
+        artifact = self.db.load_frozen_meta_policy(frozen_policy_id)
+        return {
+            "non_synthetic_dataset": data_hash != "synthetic" and all(item.execution_dataset_id is not None for item in items),
+            "registered_trial": trial is not None and trial.get("experiment_family_id") == "meta-selector-phase2-10",
+            "frozen_policy": artifact.get("selected_trial_id") == trial_id,
+            "causal_inputs": all(item.risk_state_as_of is not None for item in items),
+            "isolated_final_oos": all(item.meta_split == "FINAL_OOS" for item in items),
+        }
 
     def _register_candidate(self, candidate_id: str, selector: AdaptiveStrategySelector, replay_policy: MetaReplayPolicy, data_hash: str, purge_periods: int, embargo_periods: int, created_at: datetime | None, scorecard_policy_hash: str, b2_strategy: str | None, universe_lineage: list[str]) -> str:
         from experiments.trials import ExperimentFamilySpec, ResearchTrial
@@ -380,6 +404,7 @@ class HistoricalEvidenceResolver:
                 dataset_id=template.execution_dataset_id,
                 timeframe=template.execution_timeframe,
                 symbol=template.symbol,
+                exchange=template.execution_exchange,
             )
             return replace(template, scorecards=cards, historical_bars=tuple(bars))
         return replace(template, scorecards=cards)
@@ -389,23 +414,27 @@ class HistoricalEvidenceResolver:
             raise ValueError("decision_time must be timezone-aware")
         if timeframe != "1m":
             raise ValueError("only canonical 1m execution data is supported")
-        frame = self.db.get_canonical_1m_bars(source_dataset_id=dataset_id, symbol=symbol, exchange=exchange)
+        if symbol is None or exchange is None:
+            raise ValueError("execution resolver requires symbol and exchange identity")
+        source = self.db.load_certified_1m_source(
+            source_dataset_id=dataset_id, symbol=symbol, exchange=exchange,
+        )
+        bars = source["bars"].copy()
+        calendar = build_nse_calendar() if exchange == "NSE" else None
+        if calendar is not None:
+            validation = calendar.validate_bars(pd.to_datetime(bars["timestamp"], utc=True), timeframe)
+            if not validation.valid:
+                raise ValueError("execution bars are outside the authoritative exchange calendar")
         resolved: list[dict[str, Any]] = []
-        for row in frame.to_dict(orient="records"):
-            row_symbol = str(row.get("symbol") or "")
-            row_exchange = str(row.get("exchange") or "")
-            timestamp = pd.Timestamp(row["timestamp"]).to_pydatetime()
-            known_at = self.db.get_historical_candle_availability(
-                dataset_id, row_symbol, row_exchange, timeframe, timestamp,
-            )
-            if known_at is None:
-                continue
-            row["dataset_hash"] = dataset_id
-            row["known_at"] = known_at
+        for row in bars.to_dict(orient="records"):
+            row["dataset_id"] = dataset_id
+            row["dataset_hash"] = source["content_hash"]
+            row["known_at"] = row.get("available_at")
             row["timeframe"] = timeframe
+            row["exchange"] = exchange
+            if row["known_at"] is None:
+                raise ValueError("execution bar lacks immutable candle availability")
             resolved.append(row)
-        if not resolved:
-            raise ValueError("no execution bars have immutable candle availability evidence")
         return resolved
 
     @staticmethod
@@ -714,6 +743,7 @@ class MetaSelectorBacktest:
         )
         metrics["decision_count"] = float(len(decisions))
         metrics["trade_count"] = float(len(fills))
+        metrics["final_oos_duration_days"] = float((items[-1].decision_time - items[0].decision_time).total_seconds() / 86400.0) if len(items) > 1 else 0.0
         metrics["evidence_coverage"] = float(sum(any(card.available_at <= item.decision_time for card in item.scorecards) for item in items) / max(len(items), 1))
         baselines = self._baselines(items, initial_equity, metrics, frozen_b2_strategy=frozen_b2_strategy)
         def stress_result(scenario_id: str, **kwargs: Any) -> dict[str, Any]:
@@ -892,6 +922,10 @@ class MetaSelectorBacktest:
                 if artifact.get(key) != value:
                     raise ValueError(f"FINAL_OOS frozen policy binding mismatch: {key}")
             trial_parameters = dict(trial.get("parameters") or {})
+            if artifact.get("selection_result") != trial_parameters.get("candidate_id"):
+                raise ValueError("FINAL_OOS frozen policy binding mismatch: selection_result")
+            if artifact.get("selection_rule") != "max_validation_total_return_then_candidate_id":
+                raise ValueError("FINAL_OOS frozen policy binding mismatch: selection_rule")
             if registered_trial_id not in set(artifact.get("candidate_trial_ids") or ()):
                 raise ValueError("FINAL_OOS selected trial is not part of frozen candidate set")
             if trial.get("experiment_family_id") != "meta-selector-phase2-10":
@@ -1369,6 +1403,23 @@ class MetaSelectorBacktest:
         if meta_split != "FINAL_OOS":
             return "PHASE 2.10 IMPLEMENTATION READY"
         not_justified = "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
+        required_provenance = {
+            "non_synthetic_dataset", "registered_trial", "frozen_policy", "causal_inputs", "isolated_final_oos",
+        }
+        if not isinstance(empirical_provenance, dict) or not required_provenance.issubset(empirical_provenance):
+            return "PHASE 2.10 IMPLEMENTATION READY"
+        if not all(bool(empirical_provenance[key]) for key in required_provenance):
+            return "PHASE 2.10 IMPLEMENTATION READY"
+        if metrics.get("final_oos_duration_days", 0.0) < self.replay_policy.min_final_oos_duration_days:
+            return not_justified
+        if metrics.get("trade_count", 0.0) < self.replay_policy.min_independent_trades:
+            return not_justified
+        if self.replay_policy.require_robustness_certification and not empirical_provenance.get("robustness_certified", False):
+            return not_justified
+        if self.replay_policy.require_selector_stability and not empirical_provenance.get("selector_stable", False):
+            return not_justified
+        if self.replay_policy.require_causal_verification and not empirical_provenance.get("causal_verification", False):
+            return not_justified
         simple_best = max(
             float(baselines[name]["total_return"])
             for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")

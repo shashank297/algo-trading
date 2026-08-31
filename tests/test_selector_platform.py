@@ -775,9 +775,9 @@ def test_t2_10_v_hash_determinism_same_inputs_same_result(tmp_path):
 
 def test_t2_10_w_runner_freezes_and_consumes_one_immutable_policy():
     start = datetime(2024, 4, 1, tzinfo=UTC)
-    train = [obs(start, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="TRAIN", data_hash="dataset-a")]
-    validation = [obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="VALIDATION", data_hash="dataset-a")]
-    final = [obs(start + timedelta(days=2), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="FINAL_OOS", data_hash="dataset-a")]
+    train = [obs(start, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="TRAIN", data_hash="dataset-a", label_start=start, label_end=start, evidence_start=start, evidence_end=start)]
+    validation = [obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="VALIDATION", data_hash="dataset-a", label_start=start + timedelta(days=1), label_end=start + timedelta(days=1), evidence_start=start + timedelta(days=1), evidence_end=start + timedelta(days=1))]
+    final = [obs(start + timedelta(days=2), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="FINAL_OOS", data_hash="dataset-a", label_start=start + timedelta(days=2), label_end=start + timedelta(days=2), evidence_start=start + timedelta(days=2), evidence_end=start + timedelta(days=2))]
     db = DuckDBManager(":memory:")
     runner = MetaResearchRunner(db)
     selector = AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))
@@ -862,6 +862,8 @@ def test_t2_10_zb_two_candidates_keep_family_and_result_lineage():
         return obs(
             start + timedelta(days=offset), [card()], {"alpha": 0.01},
             asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a",
+            label_start=start + timedelta(days=offset), label_end=start + timedelta(days=offset),
+            evidence_start=start + timedelta(days=offset), evidence_end=start + timedelta(days=offset),
         )
     db = DuckDBManager(":memory:")
     candidates = [
@@ -882,25 +884,21 @@ def test_t2_10_zb_two_candidates_keep_family_and_result_lineage():
 
 
 def test_t2_10_zc_resolver_requires_per_candle_availability_and_identity():
-    decision = datetime(2024, 4, 1, 16, tzinfo=UTC)
+    decision = datetime(2024, 4, 1, 4, tzinfo=UTC)
 
     class StubDb:
-        def get_canonical_1m_bars(self, **kwargs):
+        def load_certified_1m_source(self, **kwargs):
             import pandas as pd
-            return pd.DataFrame([
-                {"symbol": "ABC", "exchange": "NSE", "timeframe": "1m", "timestamp": decision + timedelta(minutes=1), "close": 101.0},
-                {"symbol": "ABC", "exchange": "NSE", "timeframe": "1m", "timestamp": decision + timedelta(minutes=2), "close": 102.0},
-            ])
-
-        def get_historical_candle_availability(self, dataset_id, symbol, exchange, timeframe, timestamp):
-            if timestamp == decision + timedelta(minutes=1):
-                return decision + timedelta(minutes=1)
-            return None
+            return {"content_hash": "bars-content", "bars": pd.DataFrame([
+                {"symbol": "ABC", "exchange": "NSE", "timeframe": "1m", "timestamp": decision + timedelta(minutes=1), "available_at": decision + timedelta(minutes=1), "close": 101.0},
+                {"symbol": "ABC", "exchange": "NSE", "timeframe": "1m", "timestamp": decision + timedelta(minutes=2), "available_at": decision + timedelta(minutes=2), "close": 102.0},
+            ]), "adjustment": "UNADJUSTED"}
 
     rows = HistoricalEvidenceResolver(StubDb()).execution_bars_at(
         decision, dataset_id="bars-1", symbol="ABC", exchange="NSE", timeframe="1m",
     )
-    assert len(rows) == 1
+    assert len(rows) == 2
+    assert rows[0]["dataset_hash"] == "bars-content"
     assert rows[0]["known_at"] == decision + timedelta(minutes=1)
 
 
