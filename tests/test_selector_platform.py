@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from experiments.meta_selector_backtest import CASH, FrozenMetaPolicy, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -854,6 +854,54 @@ def test_t2_10_za_lifecycle_rejects_freeze_before_validation():
             [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
             data_hash="dataset-a", frozen_at=start + timedelta(hours=1),
         )
+
+
+def test_t2_10_zb_two_candidates_keep_family_and_result_lineage():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    def make(split: str, offset: int) -> MetaSelectorObservation:
+        return obs(
+            start + timedelta(days=offset), [card()], {"alpha": 0.01},
+            asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a",
+        )
+    db = DuckDBManager(":memory:")
+    candidates = [
+        ("candidate-a", AdaptiveStrategySelector(SelectorPolicy(version="selector-a")), MetaReplayPolicy(version="meta-a")),
+        ("candidate-b", AdaptiveStrategySelector(SelectorPolicy(version="selector-b")), MetaReplayPolicy(version="meta-b")),
+    ]
+    result = MetaResearchRunner(db).run(
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+        candidates, data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
+    )
+    assert len(db.list_experiment_families()) == 1
+    rows = db.conn.execute(
+        "SELECT meta_split, policy_version, selector_policy_version FROM meta_selector_runs ORDER BY meta_split, meta_run_id"
+    ).fetchall()
+    assert {row[1] for row in rows if row[0] == "TRAIN"} == {"meta-a", "meta-b"}
+    assert {row[2] for row in rows if row[0] == "VALIDATION"} == {"selector-a", "selector-b"}
+    assert result.frozen_policy.selection_result in {"candidate-a", "candidate-b"}
+
+
+def test_t2_10_zc_resolver_requires_per_candle_availability_and_identity():
+    decision = datetime(2024, 4, 1, 16, tzinfo=UTC)
+
+    class StubDb:
+        def get_canonical_1m_bars(self, **kwargs):
+            import pandas as pd
+            return pd.DataFrame([
+                {"symbol": "ABC", "exchange": "NSE", "timeframe": "1m", "timestamp": decision + timedelta(minutes=1), "close": 101.0},
+                {"symbol": "ABC", "exchange": "NSE", "timeframe": "1m", "timestamp": decision + timedelta(minutes=2), "close": 102.0},
+            ])
+
+        def get_historical_candle_availability(self, dataset_id, symbol, exchange, timeframe, timestamp):
+            if timestamp == decision + timedelta(minutes=1):
+                return decision + timedelta(minutes=1)
+            return None
+
+    rows = HistoricalEvidenceResolver(StubDb()).execution_bars_at(
+        decision, dataset_id="bars-1", symbol="ABC", exchange="NSE", timeframe="1m",
+    )
+    assert len(rows) == 1
+    assert rows[0]["known_at"] == decision + timedelta(minutes=1)
 
 
 def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():

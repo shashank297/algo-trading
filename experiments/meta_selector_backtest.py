@@ -170,6 +170,8 @@ class FrozenMetaPolicy:
     embargo_periods: int
     frozen_at: datetime
     artifact_hash: str
+    selection_rule: str = "max_validation_total_return_then_candidate_id"
+    selection_result: str | None = None
 
     @classmethod
     def create(
@@ -190,6 +192,8 @@ class FrozenMetaPolicy:
         purge_periods: int,
         embargo_periods: int,
         frozen_at: datetime,
+        selection_rule: str = "max_validation_total_return_then_candidate_id",
+        selection_result: str | None = None,
     ) -> FrozenMetaPolicy:
         if frozen_at.tzinfo is None:
             raise ValueError("frozen_at must be timezone-aware")
@@ -204,6 +208,7 @@ class FrozenMetaPolicy:
             "universe_lineage": universe_ids, "cost_model_version": cost_model_version,
             "cost_model_hash": cost_model_hash, "purge_periods": purge_periods,
             "embargo_periods": embargo_periods, "frozen_at": frozen_at,
+            "selection_rule": selection_rule, "selection_result": selection_result,
         }
         artifact_hash = _canonical_hash(values)
         return cls(
@@ -224,6 +229,8 @@ class FrozenMetaPolicy:
             embargo_periods=embargo_periods,
             frozen_at=frozen_at,
             artifact_hash=artifact_hash,
+            selection_rule=selection_rule,
+            selection_result=selection_result,
         )
 
 
@@ -252,6 +259,7 @@ class MetaResearchRunner:
         purge_periods: int = 0,
         embargo_periods: int = 0,
         frozen_at: datetime | None = None,
+        materialized_at: datetime | None = None,
     ) -> MetaResearchResult:
         if self.db is None:
             raise ValueError("MetaResearchRunner requires a Phase 2.1 trial registry")
@@ -269,8 +277,16 @@ class MetaResearchRunner:
         train_start = min(item.decision_time for item in train_items)
         validation_end = max(item.decision_time for item in validation_items)
         final_start = min(item.decision_time for item in final_items)
+        final_end = max(item.decision_time for item in final_items)
         if frozen_at <= validation_end or frozen_at >= final_start or frozen_at <= train_start:
             raise ValueError("lifecycle timestamps must satisfy TRAIN < VALIDATION < frozen_at < FINAL_OOS")
+        if materialized_at is None:
+            materialized_at = final_end + pd.Timedelta(microseconds=1).to_pytimedelta()
+        if materialized_at.tzinfo is None or materialized_at <= final_end:
+            raise ValueError("materialized_at must be timezone-aware and after FINAL_OOS")
+        MetaSelectorBacktest._validate_purge_embargo(
+            train_items + validation_items + final_items, purge_periods, embargo_periods,
+        )
         registration_at = train_start - pd.Timedelta(microseconds=1).to_pytimedelta()
         b2_strategy = MetaSelectorBacktest._static_train_winner(train_items)
         scorecard_policy_hash = MetaSelectorBacktest._canonical_visible_scorecard_policy_hash(tuple(train_items + validation_items))
@@ -301,12 +317,16 @@ class MetaResearchRunner:
             purge_periods=purge_periods,
             embargo_periods=embargo_periods,
             frozen_at=frozen_at,
+            selection_result=winner_id,
         )
         self.db.persist_frozen_meta_policy(frozen)
-        for result in train_results.values():
-            self.db.persist_meta_selector_result(result, policy_version=replay_policy.version, selector_policy_version=selector.policy.version, selector_policy_hash=selector.policy.policy_hash, meta_split="TRAIN", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=frozen_at)
-        for result in validation_results.values():
-            self.db.persist_meta_selector_result(result, policy_version=replay_policy.version, selector_policy_version=selector.policy.version, selector_policy_hash=selector.policy.policy_hash, meta_split="VALIDATION", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=frozen_at)
+        candidate_by_id = {candidate_id: (candidate_selector, candidate_policy) for candidate_id, candidate_selector, candidate_policy in candidate_list}
+        for candidate_id, result in train_results.items():
+            candidate_selector, candidate_policy = candidate_by_id[candidate_id]
+            self.db.persist_meta_selector_result(result, policy_version=candidate_policy.version, selector_policy_version=candidate_selector.policy.version, selector_policy_hash=candidate_selector.policy.policy_hash, meta_split="TRAIN", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=max(item.decision_time for item in train_items) + pd.Timedelta(microseconds=1).to_pytimedelta())
+        for candidate_id, result in validation_results.items():
+            candidate_selector, candidate_policy = candidate_by_id[candidate_id]
+            self.db.persist_meta_selector_result(result, policy_version=candidate_policy.version, selector_policy_version=candidate_selector.policy.version, selector_policy_hash=candidate_selector.policy.policy_hash, meta_split="VALIDATION", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=max(item.decision_time for item in validation_items) + pd.Timedelta(microseconds=1).to_pytimedelta())
         final_result = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db).run(
             final_items,
             meta_split="FINAL_OOS",
@@ -318,7 +338,7 @@ class MetaResearchRunner:
             purge_periods=purge_periods,
             embargo_periods=embargo_periods,
         )
-        self.db.persist_meta_selector_result(final_result, policy_version=replay_policy.version, selector_policy_version=selector.policy.version, selector_policy_hash=selector.policy.policy_hash, meta_split="FINAL_OOS", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=frozen_at)
+        self.db.persist_meta_selector_result(final_result, policy_version=replay_policy.version, selector_policy_version=selector.policy.version, selector_policy_hash=selector.policy.policy_hash, meta_split="FINAL_OOS", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=materialized_at)
         return MetaResearchResult(frozen, train_results, validation_results, final_result)
 
     def _register_candidate(self, candidate_id: str, selector: AdaptiveStrategySelector, replay_policy: MetaReplayPolicy, data_hash: str, purge_periods: int, embargo_periods: int, created_at: datetime | None, scorecard_policy_hash: str, b2_strategy: str | None, universe_lineage: list[str]) -> str:
@@ -327,7 +347,7 @@ class MetaResearchRunner:
         schedule = MetaSelectorBacktest(selector, replay_policy=replay_policy).execution_adapter.cost_schedule
         cost_model_hash = MetaSelectorBacktest._cost_model_hash(schedule)
         family = ExperimentFamilySpec(
-            experiment_family_id="meta-selector-phase2-10", hypothesis="causal meta selector policy", strategy_names=["meta_selector"], strategy_versions=[replay_policy.version], universe_snapshot_id="META", timeframe="1d", feature_versions=[replay_policy.version], cost_model_version=schedule.version, parameter_space={}, maximum_trials=100, selection_metric="total_return", walk_forward_design={"purge_periods": purge_periods, "embargo_periods": embargo_periods}, source_revision="phase2-10", created_at=timestamp,
+            experiment_family_id="meta-selector-phase2-10", hypothesis="causal meta selector policy", strategy_names=["meta_selector"], strategy_versions=["meta-selector-candidate"], universe_snapshot_id="META", timeframe="1d", feature_versions=["meta-selector-candidate"], cost_model_version=schedule.version, parameter_space={}, maximum_trials=100, selection_metric="total_return", walk_forward_design={"purge_periods": purge_periods, "embargo_periods": embargo_periods}, source_revision="phase2-10", created_at=timestamp,
         )
         self.db.register_experiment_family(family)
         trial = ResearchTrial(
@@ -359,23 +379,34 @@ class HistoricalEvidenceResolver:
                 decision_time,
                 dataset_id=template.execution_dataset_id,
                 timeframe=template.execution_timeframe,
+                symbol=template.symbol,
             )
             return replace(template, scorecards=cards, historical_bars=tuple(bars))
         return replace(template, scorecards=cards)
 
-    def execution_bars_at(self, decision_time: datetime, *, dataset_id: str, timeframe: str) -> list[dict[str, Any]]:
+    def execution_bars_at(self, decision_time: datetime, *, dataset_id: str, timeframe: str, symbol: str | None = None, exchange: str | None = None) -> list[dict[str, Any]]:
         if decision_time.tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        frame = self.db.get_canonical_1m_bars(source_dataset_id=dataset_id)
-        dataset_available_at = self.db.get_market_dataset_availability(dataset_id)
-        if dataset_available_at is not None and dataset_available_at > decision_time:
-            raise ValueError("execution dataset is not point-in-time available")
-        rows = frame.to_dict(orient="records")
-        for row in rows:
+        if timeframe != "1m":
+            raise ValueError("only canonical 1m execution data is supported")
+        frame = self.db.get_canonical_1m_bars(source_dataset_id=dataset_id, symbol=symbol, exchange=exchange)
+        resolved: list[dict[str, Any]] = []
+        for row in frame.to_dict(orient="records"):
+            row_symbol = str(row.get("symbol") or "")
+            row_exchange = str(row.get("exchange") or "")
+            timestamp = pd.Timestamp(row["timestamp"]).to_pydatetime()
+            known_at = self.db.get_historical_candle_availability(
+                dataset_id, row_symbol, row_exchange, timeframe, timestamp,
+            )
+            if known_at is None:
+                continue
             row["dataset_hash"] = dataset_id
-            row["known_at"] = dataset_available_at or row.get("candle_available_at") or row["timestamp"]
+            row["known_at"] = known_at
             row["timeframe"] = timeframe
-        return rows
+            resolved.append(row)
+        if not resolved:
+            raise ValueError("no execution bars have immutable candle availability evidence")
+        return resolved
 
     @staticmethod
     def _scorecard_from_row(row: dict[str, Any]) -> StrategyScorecard:
@@ -461,7 +492,7 @@ class MetaSelectorBacktest:
         checkpoint: MetaSelectorCheckpoint | None = None,
         frozen_policy_id: str | None = None,
         frozen_b2_strategy: str | None = None,
-        empirical_provenance: bool = False,
+        empirical_provenance: dict[str, Any] | None = None,
         _skip_final_oos_validation: bool = False,
     ) -> MetaSelectorResult:
         items = tuple(sorted((self._coerce(item) for item in observations), key=lambda item: item.decision_time))
@@ -702,6 +733,12 @@ class MetaSelectorBacktest:
                 "execution_hash": scenario.evidence_hash,
                 "fill_count": float(len(scenario.fills)),
                 "execution_cost": scenario.metrics["total_execution_cost"],
+                "orders": scenario.orders,
+                "fills": scenario.fills,
+                "risk_decisions": scenario.risk_decisions,
+                "attribution": scenario.attribution,
+                "execution_lineage": [order.get("execution_lineage") for order in scenario.orders],
+                "result_hash": scenario.evidence_hash,
             }
 
         stress_results = {
@@ -935,6 +972,8 @@ class MetaSelectorBacktest:
                 if (right.decision_time - left.decision_time).days < purge_periods + embargo_periods:
                     raise ValueError("purge/embargo gap is not enforced between meta splits")
                 windows = (left.label_start, left.label_end, left.evidence_start, left.evidence_end, right.label_start, right.label_end, right.evidence_start, right.evidence_end)
+                if all(value is None for value in windows):
+                    continue
                 if any(value is None for value in windows):
                     raise ValueError("explicit label and evidence windows are required for split purge/embargo")
                 if cast(datetime, left.label_end) > cast(datetime, right.label_start) or cast(datetime, left.evidence_end) > cast(datetime, right.evidence_start):
@@ -1080,8 +1119,6 @@ class MetaSelectorBacktest:
     def _execution_day(item: MetaSelectorObservation, decision_time: datetime, *, liquidity_multiplier: float = 1.0) -> pd.DataFrame:
         if not item.historical_bars:
             raise ValueError("meta replay requires authoritative historical execution bars")
-        if item.execution_data_available_at is not None and item.execution_data_available_at > decision_time:
-            raise ValueError("execution data is not point-in-time available at selector decision")
         rows = [dict(row) for row in item.historical_bars if pd.Timestamp(row["timestamp"]).to_pydatetime() > decision_time]
         if not rows:
             raise ValueError("no historical execution bar strictly after selector decision")
@@ -1097,8 +1134,9 @@ class MetaSelectorBacktest:
         rows = selected
         for row in rows:
             known_at = row.get("known_at")
-            if known_at is not None and pd.Timestamp(known_at).to_pydatetime() > decision_time:
-                raise ValueError("historical execution bar was not known at selector decision")
+            execution_timestamp = pd.Timestamp(row["timestamp"]).to_pydatetime()
+            if known_at is not None and pd.Timestamp(known_at).to_pydatetime() > execution_timestamp:
+                raise ValueError("historical execution bar was not available by execution time")
         for row in rows:
             for field_name in ("volume", "lagged_adv20", "lagged_traded_value"):
                 if field_name in row and row[field_name] is not None:
@@ -1326,18 +1364,23 @@ class MetaSelectorBacktest:
         stress_results: dict[str, dict[str, Any]],
         meta_split: str,
         *,
-        empirical_provenance: bool = False,
+        empirical_provenance: dict[str, Any] | None = None,
     ) -> str:
         if meta_split != "FINAL_OOS":
             return "PHASE 2.10 IMPLEMENTATION READY"
-        not_justified = "PHASE 2.10 COMPLETE - ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
+        not_justified = "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
         simple_best = max(
             float(baselines[name]["total_return"])
             for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
         )
         if metrics.get("decision_count", 0.0) < 1 or metrics.get("trade_count", 0.0) < 1 or metrics.get("evidence_coverage", 0.0) < 1.0:
             return not_justified
-        if not empirical_provenance:
+        required_provenance = {
+            "non_synthetic_dataset", "registered_trial", "frozen_policy", "causal_inputs", "isolated_final_oos",
+        }
+        if not isinstance(empirical_provenance, dict) or not required_provenance.issubset(empirical_provenance):
+            return "PHASE 2.10 IMPLEMENTATION READY"
+        if not all(bool(empirical_provenance[key]) for key in required_provenance):
             return "PHASE 2.10 IMPLEMENTATION READY"
         if metrics["total_return"] <= simple_best:
             return not_justified

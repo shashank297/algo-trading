@@ -3672,7 +3672,7 @@ class DuckDBManager:
             "verdict": result.verdict,
             "metrics_json": json.dumps(result.metrics, sort_keys=True),
             "baselines_json": json.dumps(result.baselines, sort_keys=True),
-            "stress_results_json": json.dumps(result.stress_results, sort_keys=True),
+            "stress_results_json": json.dumps(result.stress_results, sort_keys=True, default=str),
             "attribution_json": json.dumps(result.attribution, sort_keys=True),
             "checkpoint_json": json.dumps(asdict(result.checkpoint), sort_keys=True, default=str),
             "checkpoint_hash": result.checkpoint.checkpoint_hash,
@@ -3749,6 +3749,7 @@ class DuckDBManager:
             "scorecard_policy_hash", "meta_policy_version", "meta_policy_hash",
             "candidate_trial_ids", "selected_trial_id", "data_hash", "universe_lineage",
             "b2_strategy",
+            "selection_rule", "selection_result",
             "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
             "frozen_at", "artifact_hash",
         )
