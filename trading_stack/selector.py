@@ -45,6 +45,7 @@ class SelectorPolicy:
     ensemble_max_correlation: float = 0.75
     max_ensemble_size: int = 3
     allow_ensemble: bool = True
+    missing_correlation_policy: str = "select_only"
 
     @property
     def policy_hash(self) -> str:
@@ -181,21 +182,19 @@ class AdaptiveStrategySelector:
         if decision_time.tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
         cards = tuple(sorted(scorecards, key=lambda item: (-item.overall_score, item.strategy_name, item.strategy_version)))
+        visible_cards = tuple(card for card in cards if card.available_at <= decision_time)
         stale_ids = set(stale_scorecard_ids)
-        future = tuple(card for card in cards if card.available_at > decision_time)
         candidates = tuple(
             card
-            for card in cards
-            if card.available_at <= decision_time
-            and card.eligibility_status == ELIGIBLE
+            for card in visible_cards
+            if card.eligibility_status == ELIGIBLE
             and card.scorecard_id not in stale_ids
         )
         rejected = [
             f"{card.strategy_name}:{card.strategy_version}:INELIGIBLE"
-            for card in cards
-            if card.available_at <= decision_time and card.eligibility_status != ELIGIBLE
+            for card in visible_cards
+            if card.eligibility_status != ELIGIBLE
         ]
-        rejected.extend(f"{card.strategy_name}:{card.strategy_version}:FUTURE_SCORECARD_EXCLUDED" for card in future)
         rejected.extend(f"{card_id}:STALE_EVIDENCE" for card_id in sorted(stale_ids))
         reasons: list[str] = []
         decision = ABSTAIN
@@ -263,7 +262,7 @@ class AdaptiveStrategySelector:
             "market_regime": market_regime,
             "regime_confidence": regime_confidence,
             "asset_cluster": asset_cluster,
-            "cards": [(card.scorecard_id, card.evidence_hash, card.available_at.isoformat()) for card in cards],
+            "cards": [(card.scorecard_id, card.evidence_hash, card.available_at.isoformat()) for card in visible_cards],
             "incumbent": incumbent_strategy,
             "switching_cost": switching_cost,
             "policy_hash": self.policy.policy_hash,
@@ -284,7 +283,7 @@ class AdaptiveStrategySelector:
             decision=decision,
             selected_strategies=selected,
             weights=weights,
-            candidate_scorecards=tuple(card.scorecard_id for card in cards),
+            candidate_scorecards=tuple(card.scorecard_id for card in visible_cards),
             current_incumbent_strategy=incumbent_strategy,
             expected_benefit_estimate=float(expected_benefit),
             uncertainty=float(_bounded(uncertainty)),
@@ -298,8 +297,8 @@ class AdaptiveStrategySelector:
             evidence_hash=digest,
             available_at=decision_time,
             evidence_ids={
-                "scorecard_ids": tuple(card.scorecard_id for card in cards),
-                "conditional_evidence_ids": tuple(card.conditional_evidence_id for card in cards),
+                "scorecard_ids": tuple(card.scorecard_id for card in visible_cards),
+                "conditional_evidence_ids": tuple(card.conditional_evidence_id for card in visible_cards),
                 "evidence_cutoff_hash": evidence_cutoff_hash,
             },
         )
@@ -313,7 +312,13 @@ class AdaptiveStrategySelector:
         for card in candidates[1:]:
             if len(independent) >= self.policy.max_ensemble_size:
                 break
-            if all(self._correlation(card.strategy_name, other.strategy_name, correlations) < self.policy.ensemble_max_correlation for other in independent):
+            pairwise = [
+                self._correlation(card.strategy_name, other.strategy_name, correlations)
+                for other in independent
+            ]
+            if any(value is None for value in pairwise):
+                continue
+            if all(value < self.policy.ensemble_max_correlation for value in pairwise if value is not None):
                 independent.append(card)
         if self.policy.allow_ensemble and len(independent) > 1:
             total = sum(max(card.overall_score, 0.0) for card in independent)
@@ -329,9 +334,11 @@ class AdaptiveStrategySelector:
     @staticmethod
     def _correlation(
         left: str, right: str, correlations: dict[tuple[str, str], float] | None
-    ) -> float:
+    ) -> float | None:
         if left == right:
             return 1.0
         table = correlations or {}
         key = (min(left, right), max(left, right))
-        return abs(float(table.get(key, 0.0)))
+        if key not in table:
+            return None
+        return abs(float(table[key]))

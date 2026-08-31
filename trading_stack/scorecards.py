@@ -78,16 +78,16 @@ class ScorecardPolicy:
 
 @dataclass(frozen=True)
 class ScorecardInputs:
-    lineage_certified: bool = True
-    dq_certified: bool = True
-    causality_certified: bool = True
-    pit_certified: bool = True
-    oos_certified: bool = True
-    cost_stress_pass: bool = True
-    parameter_robustness_pass: bool = True
-    capacity_pass: bool = True
-    paper_evidence_pass: bool = True
-    zero_reconciliation_drift: bool = True
+    lineage_certified: bool | None = None
+    dq_certified: bool | None = None
+    causality_certified: bool | None = None
+    pit_certified: bool | None = None
+    oos_certified: bool | None = None
+    cost_stress_pass: bool | None = None
+    parameter_robustness_pass: bool | None = None
+    capacity_pass: bool | None = None
+    paper_evidence_pass: bool | None = True
+    zero_reconciliation_drift: bool | None = None
     fold_consistency: float | None = None
     parameter_robustness_score: float | None = None
     cost_robustness_score: float | None = None
@@ -200,7 +200,9 @@ class ScorecardBuilder:
             capacity_pass=capacity_pass,
             correlation_penalty=correlation_penalty,
         )
-        available = available_at or evidence.available_at
+        if available_at is None:
+            raise ValueError("scorecard available_at must be supplied by research orchestration")
+        available = available_at
         if available.tzinfo is None:
             raise ValueError("scorecard available_at must be timezone-aware")
         if evidence.available_at > available:
@@ -217,12 +219,12 @@ class ScorecardBuilder:
         parameter_score = _bounded(
             score_inputs.parameter_robustness_score
             if score_inputs.parameter_robustness_score is not None
-            else float(score_inputs.parameter_robustness_pass)
+            else float(score_inputs.parameter_robustness_pass is True)
         )
         cost_score = _bounded(
             score_inputs.cost_robustness_score
             if score_inputs.cost_robustness_score is not None
-            else float(score_inputs.cost_stress_pass)
+            else float(score_inputs.cost_stress_pass is True)
         )
         conditional_boost = (
             _bounded((evidence.shrunk_metric + 0.05) / 0.10)
@@ -371,26 +373,35 @@ class ScorecardBuilder:
         self, evidence: StrategyConditionalEvidence, inputs: ScorecardInputs, available_at: datetime
     ) -> list[str]:
         checks = (
-            ("LINEAGE_NOT_CERTIFIED", self.policy.require_lineage_certified, inputs.lineage_certified),
-            ("DQ_NOT_CERTIFIED", self.policy.require_dq_certified, inputs.dq_certified),
-            ("CAUSALITY_NOT_CERTIFIED", self.policy.require_causality_certified, inputs.causality_certified),
-            ("PIT_NOT_CERTIFIED", self.policy.require_pit_certified, inputs.pit_certified),
-            ("OOS_NOT_CERTIFIED", self.policy.require_oos_certified, inputs.oos_certified),
-            ("COST_STRESS_FAILED", self.policy.require_cost_stress_pass, inputs.cost_stress_pass),
+            ("LINEAGE_EVIDENCE_MISSING", "LINEAGE_FAILED", self.policy.require_lineage_certified, inputs.lineage_certified),
+            ("DQ_EVIDENCE_MISSING", "DQ_FAILED", self.policy.require_dq_certified, inputs.dq_certified),
+            ("CAUSALITY_EVIDENCE_MISSING", "CAUSALITY_FAILED", self.policy.require_causality_certified, inputs.causality_certified),
+            ("PIT_EVIDENCE_MISSING", "PIT_FAILED", self.policy.require_pit_certified, inputs.pit_certified),
+            ("OOS_EVIDENCE_MISSING", "OOS_FAILED", self.policy.require_oos_certified, inputs.oos_certified),
+            ("COST_STRESS_EVIDENCE_MISSING", "COST_STRESS_FAILED", self.policy.require_cost_stress_pass, inputs.cost_stress_pass),
             (
+                "PARAMETER_ROBUSTNESS_EVIDENCE_MISSING",
                 "PARAMETER_ROBUSTNESS_FAILED",
                 self.policy.require_parameter_robustness_pass,
                 inputs.parameter_robustness_pass,
             ),
-            ("CAPACITY_FAILED", self.policy.require_capacity_pass, inputs.capacity_pass),
-            ("PAPER_EVIDENCE_REQUIRED", self.policy.require_paper_evidence, inputs.paper_evidence_pass),
+            ("CAPACITY_EVIDENCE_MISSING", "CAPACITY_FAILED", self.policy.require_capacity_pass, inputs.capacity_pass),
+            ("PAPER_EVIDENCE_MISSING", "PAPER_EVIDENCE_FAILED", self.policy.require_paper_evidence, inputs.paper_evidence_pass),
             (
+                "RECONCILIATION_EVIDENCE_MISSING",
                 "RECONCILIATION_DRIFT",
                 self.policy.require_zero_reconciliation_drift,
                 inputs.zero_reconciliation_drift,
             ),
         )
-        failures = [reason for reason, required, passed in checks if required and not passed]
+        failures = []
+        for missing_reason, failed_reason, required, passed in checks:
+            if not required:
+                continue
+            if passed is None:
+                failures.append(missing_reason)
+            elif passed is False:
+                failures.append(failed_reason)
         if evidence.evidence_status != "SUFFICIENT":
             failures.append("INSUFFICIENT_EVIDENCE")
         if evidence.observation_count < self.policy.minimum_oos_observations:

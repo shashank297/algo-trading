@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 import uuid
+from dataclasses import asdict
 from datetime import date, datetime, timezone
 
 
@@ -3655,7 +3656,7 @@ class DuckDBManager:
             "meta_run_id", "policy_version", "selector_policy_version", "selector_policy_hash",
             "scorecard_policy_version", "meta_split", "purge_periods", "embargo_periods",
             "status", "verdict", "metrics_json", "baselines_json", "stress_results_json",
-            "attribution_json", "evidence_hash", "available_at",
+            "attribution_json", "checkpoint_json", "checkpoint_hash", "evidence_hash", "available_at",
         )
         run_data = {
             "meta_run_id": result.meta_run_id,
@@ -3672,6 +3673,8 @@ class DuckDBManager:
             "baselines_json": json.dumps(result.baselines, sort_keys=True),
             "stress_results_json": json.dumps(result.stress_results, sort_keys=True),
             "attribution_json": json.dumps(result.attribution, sort_keys=True),
+            "checkpoint_json": json.dumps(asdict(result.checkpoint), sort_keys=True, default=str),
+            "checkpoint_hash": result.checkpoint.checkpoint_hash,
             "evidence_hash": result.evidence_hash,
             "available_at": timestamp,
         }

@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
-from experiments.meta_selector_backtest import MetaSelectorBacktest, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, MetaReplayPolicy, MetaSelectorBacktest, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.conditional_evidence import ConditionalEvidenceBuilder, ConditionalEvidencePolicy
@@ -13,6 +14,22 @@ from trading_stack.scorecards import INELIGIBLE, ScorecardBuilder, ScorecardInpu
 from trading_stack.selector import ABSTAIN, ENSEMBLE, SELECT, AdaptiveStrategySelector, SelectorPolicy, SwitchCostEstimator
 
 UTC = timezone.utc
+
+
+def certified_inputs(**overrides):
+    values: dict[str, Any] = {
+        "lineage_certified": True,
+        "dq_certified": True,
+        "causality_certified": True,
+        "pit_certified": True,
+        "oos_certified": True,
+        "cost_stress_pass": True,
+        "parameter_robustness_pass": True,
+        "capacity_pass": True,
+        "zero_reconciliation_drift": True,
+    }
+    values.update(overrides)
+    return ScorecardInputs(**values)
 
 
 def evidence(
@@ -66,17 +83,19 @@ def card(
     inputs: ScorecardInputs | None = None,
     drawdown_loss_at: int | None = None,
 ) -> StrategyScorecard:
+    evidence_record = evidence(
+        name=name,
+        version=version,
+        n=n,
+        net_return=net_return,
+        available=available,
+        drawdown_loss_at=drawdown_loss_at,
+    )
     return ScorecardBuilder(policy).build(
-        evidence=evidence(
-            name=name,
-            version=version,
-            n=n,
-            net_return=net_return,
-            available=available,
-            drawdown_loss_at=drawdown_loss_at,
-        ),
+        evidence=evidence_record,
         horizon="1d",
-        inputs=inputs,
+        inputs=inputs or certified_inputs(),
+        available_at=evidence_record.available_at + timedelta(days=1),
     )
 
 
@@ -106,6 +125,7 @@ def obs(time, cards, returns, **kwargs):
         scorecards=tuple(cards),
         strategy_returns=returns,
         target_portfolios=kwargs.get("target_portfolios", {}),
+        asset_returns=kwargs.get("asset_returns", {}),
         benchmark_return=kwargs.get("benchmark_return", 0.0),
         raw_regime=kwargs.get("raw_regime"),
         operational_regime=kwargs.get("operational_regime"),
@@ -115,10 +135,10 @@ def obs(time, cards, returns, **kwargs):
 
 
 def test_t2_8_01_high_sharpe_dq_failure_ineligible():
-    result = card(inputs=ScorecardInputs(dq_certified=False))
+    result = card(inputs=certified_inputs(dq_certified=False))
     assert result.eligibility_status == INELIGIBLE
     assert result.overall_score == 0
-    assert "DQ_NOT_CERTIFIED" in result.rejection_reasons
+    assert "DQ_FAILED" in result.rejection_reasons
 
 
 def test_t2_8_02_high_return_excessive_drawdown_rejected():
@@ -128,12 +148,12 @@ def test_t2_8_02_high_return_excessive_drawdown_rejected():
 
 
 def test_t2_8_03_cost_stress_failure_ineligible_when_mandatory():
-    result = card(inputs=ScorecardInputs(cost_stress_pass=False))
+    result = card(inputs=certified_inputs(cost_stress_pass=False))
     assert "COST_STRESS_FAILED" in result.rejection_reasons
 
 
 def test_t2_8_04_parameter_instability_ineligible_when_mandatory():
-    result = card(inputs=ScorecardInputs(parameter_robustness_pass=False))
+    result = card(inputs=certified_inputs(parameter_robustness_pass=False))
     assert "PARAMETER_ROBUSTNESS_FAILED" in result.rejection_reasons
 
 
@@ -144,7 +164,7 @@ def test_t2_8_05_small_conditional_sample_cannot_exaggerate_compatibility():
 
 
 def test_t2_8_06_correlation_penalty_applied_correctly():
-    result = card(inputs=ScorecardInputs(correlation=0.5))
+    result = card(inputs=certified_inputs(correlation=0.5))
     assert result.correlation_penalty > 0
 
 
@@ -165,11 +185,11 @@ def test_t2_8_09_future_scorecard_unavailable_to_historical_query():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     decision = selector_decision([card(available=now + timedelta(days=1))], now=now)
     assert decision.decision == ABSTAIN
-    assert any("FUTURE_SCORECARD_EXCLUDED" in reason for reason in decision.rejection_reasons)
+    assert decision.candidate_scorecards == ()
 
 
 def test_t2_8_10_mandatory_gate_cannot_be_bypassed_by_score():
-    bad = card(net_return=0.10, inputs=ScorecardInputs(lineage_certified=False))
+    bad = card(net_return=0.10, inputs=certified_inputs(lineage_certified=False))
     decision = selector_decision([bad])
     assert bad.overall_score == 0
     assert decision.decision == ABSTAIN
@@ -195,9 +215,23 @@ def test_t2_8_13_changed_material_evidence_changes_scorecard_hash():
 
 
 def test_t2_8_14_missing_mandatory_evidence_fails_closed():
-    result = card(n=3)
+    evidence_record = evidence()
+    result = ScorecardBuilder().build(evidence=evidence_record, horizon="1d", available_at=evidence_record.available_at + timedelta(days=1))
     assert result.eligibility_status == INELIGIBLE
-    assert "INSUFFICIENT_EVIDENCE" in result.rejection_reasons
+    assert "DQ_EVIDENCE_MISSING" in result.rejection_reasons
+
+
+def test_t2_8_14b_scorecard_available_at_is_explicit_and_not_backdated():
+    evidence_record = evidence()
+    with pytest.raises(ValueError, match="available_at must be supplied"):
+        ScorecardBuilder().build(evidence=evidence_record, horizon="1d", inputs=certified_inputs())
+    with pytest.raises(ValueError, match="cannot predate"):
+        ScorecardBuilder().build(
+            evidence=evidence_record,
+            horizon="1d",
+            inputs=certified_inputs(),
+            available_at=evidence_record.available_at - timedelta(seconds=1),
+        )
 
 
 def test_t2_8_15_restart_requery_returns_identical_immutable_scorecard():
@@ -216,7 +250,7 @@ def test_t2_9_01_clear_eligible_winner_selects_when_ensemble_disabled():
 
 
 def test_t2_9_02_no_eligible_strategies_abstains():
-    decision = selector_decision([card(inputs=ScorecardInputs(dq_certified=False))])
+    decision = selector_decision([card(inputs=certified_inputs(dq_certified=False))])
     assert decision.decision == ABSTAIN
 
 
@@ -255,7 +289,7 @@ def test_t2_9_07_switching_cost_removes_apparent_advantage_no_switch():
 
 
 def test_t2_9_08_degraded_incumbent_replaced_or_abstains():
-    bad_inc = card(name="inc", inputs=ScorecardInputs(dq_certified=False))
+    bad_inc = card(name="inc", inputs=certified_inputs(dq_certified=False))
     challenger = card(name="new")
     decision = selector_decision([bad_inc, challenger], incumbent="inc", policy=SelectorPolicy(allow_ensemble=False))
     assert decision.selected_strategies == ("new",)
@@ -272,6 +306,14 @@ def test_t2_9_09_correlated_ensemble_candidates_filtered():
     assert decision.decision == ENSEMBLE
     assert "beta" not in decision.selected_strategies
     assert "gamma" in decision.selected_strategies
+
+
+def test_t2_9_09b_missing_correlation_blocks_ensemble_not_select():
+    alpha = replace(card(name="alpha"), overall_score=0.8)
+    beta = replace(card(name="beta"), overall_score=0.7)
+    decision = selector_decision([alpha, beta])
+    assert decision.decision == SELECT
+    assert decision.selected_strategies == ("alpha",)
 
 
 def test_t2_9_10_future_scorecard_evidence_cannot_be_consumed():
@@ -294,7 +336,7 @@ def test_t2_9_12_identical_inputs_deterministic_selector_hash():
 
 
 def test_t2_9_13_no_selection_from_ineligible_scorecard():
-    bad = card(inputs=ScorecardInputs(oos_certified=False))
+    bad = card(inputs=certified_inputs(oos_certified=False))
     assert selector_decision([bad]).decision == ABSTAIN
 
 
@@ -325,17 +367,20 @@ def test_t2_9_16_policy_change_creates_new_selector_result():
     assert left.evidence_hash != right.evidence_hash
 
 
-def test_t2_10_a_future_strategy_evidence_rejected():
+def test_t2_10_a_future_strategy_evidence_invisible_to_replay():
     now = datetime(2024, 4, 1, tzinfo=UTC)
-    with pytest.raises(ValueError, match="Future scorecard"):
-        MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card(available=now + timedelta(days=1))], {})])
+    base = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [], {"future": 0.99})])
+    changed = MetaSelectorBacktest(AdaptiveStrategySelector()).run(
+        [obs(now, [card(name="future", available=now + timedelta(days=1))], {"future": 0.99})]
+    )
+    assert base.evidence_hash == changed.evidence_hash
 
 
 def test_t2_10_b_future_scorecard_does_not_change_earlier_selector_decision():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     base = selector_decision([card(available=now - timedelta(days=1))], now=now)
     with_future = selector_decision([card(available=now - timedelta(days=1)), card(name="future", available=now + timedelta(days=1))], now=now)
-    assert base.selected_strategies == with_future.selected_strategies
+    assert base == with_future
 
 
 def test_t2_10_c_future_regime_data_rejected_by_known_at():
@@ -356,8 +401,8 @@ def test_t2_10_e_switch_cost_increase_reflected_in_net_return():
     new = replace(card(name="new"), overall_score=0.9)
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
         [
-            obs(now, [inc], {"inc": 0.0}, target_portfolios={"inc": {"ABC": 1.0}}),
-            obs(now + timedelta(days=1), [inc, new], {"new": 0.02}, target_portfolios={"new": {"XYZ": 1.0}}),
+            obs(now, [inc], {"inc": 0.0}, target_portfolios={"inc": {"ABC": 1.0}}, asset_returns={"ABC": 0.0}),
+            obs(now + timedelta(days=1), [inc, new], {"new": 0.02}, target_portfolios={"new": {"XYZ": 1.0}}, asset_returns={"XYZ": 0.02}),
         ]
     )
     assert result.metrics["switching_cost_drag"] > 0
@@ -368,7 +413,7 @@ def test_t2_10_f_whipsaw_operational_hysteresis_suppresses_switches():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     alpha = card(name="alpha")
     observations = [
-        obs(now + timedelta(days=i), [alpha], {"alpha": 0.001}, raw_regime="BULL" if i % 2 else "BEAR", operational_regime="BULL")
+        obs(now + timedelta(days=i), [alpha], {"alpha": 0.001}, asset_returns={"ABC": 0.001}, raw_regime="BULL" if i % 2 else "BEAR", operational_regime="BULL")
         for i in range(6)
     ]
     result = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations)
@@ -379,16 +424,25 @@ def test_t2_10_g_simple_ensemble_wins_reported_truthfully():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     alpha, beta = card(name="alpha"), card(name="beta")
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
-        [obs(now, [alpha, beta], {"alpha": 0.0, "beta": 0.04})]
+        [obs(now, [alpha, beta], {"alpha": 0.0, "beta": 0.04}, target_portfolios={"alpha": {"AAA": 1.0}, "beta": {"BBB": 1.0}}, asset_returns={"AAA": 0.0, "BBB": 0.04})]
     )
     assert result.verdict == "ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED"
+
+
+def test_t2_10_g2_b5_adaptive_included_in_benchmark_ladder():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
+        [obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})]
+    )
+    assert "B5_adaptive" in result.baselines
+    assert result.baselines["B5_adaptive"]["total_return"] == result.metrics["total_return"]
 
 
 def test_t2_10_h_static_winner_can_beat_adaptive_without_forced_promotion():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     alpha, beta = card(name="alpha"), replace(card(name="beta"), overall_score=0.9)
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
-        [obs(now, [alpha, beta], {"alpha": 0.05, "beta": 0.0})]
+        [obs(now, [alpha, beta], {"alpha": 0.05, "beta": 0.0}, target_portfolios={"alpha": {"AAA": 1.0}, "beta": {"BBB": 1.0}}, asset_returns={"AAA": 0.05, "BBB": 0.0})]
     )
     assert result.verdict == "ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED"
 
@@ -401,31 +455,70 @@ def test_t2_10_i_abstention_avoids_trading_when_no_evidence():
     assert result.metrics["turnover"] == 0
 
 
+def test_t2_10_i2_abstain_cash_policy_liquidates_existing_risk():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    alpha = card()
+    replay = MetaSelectorBacktest(
+        AdaptiveStrategySelector(),
+        replay_policy=MetaReplayPolicy(abstain_behavior=CASH),
+    )
+    result = replay.run(
+        [
+            obs(now, [alpha], {"alpha": 0.0}, asset_returns={"ABC": 0.0}),
+            obs(now + timedelta(days=1), [], {}, asset_returns={"ABC": -0.20}),
+        ]
+    )
+    assert result.decisions[-1].decision == ABSTAIN
+    assert result.equity_curve[-1]["holdings"] == {}
+
+
 def test_t2_10_j_restart_replay_reproduces_uninterrupted_run():
     now = datetime(2024, 4, 1, tzinfo=UTC)
-    observations = [obs(now + timedelta(days=i), [card()], {"alpha": 0.01}) for i in range(3)]
-    left = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations)
-    right = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations)
-    assert left.evidence_hash == right.evidence_hash
+    observations = [obs(now + timedelta(days=i), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}) for i in range(5)]
+    uninterrupted = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations)
+    first_leg = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations[:2])
+    resumed = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations, checkpoint=first_leg.checkpoint)
+    assert uninterrupted.equity_curve[2:] == resumed.equity_curve
+    assert uninterrupted.decisions[2:] == resumed.decisions
+    assert uninterrupted.switches[1:] == resumed.switches
+    assert uninterrupted.checkpoint.holdings == resumed.checkpoint.holdings
+    assert uninterrupted.checkpoint.cash == pytest.approx(resumed.checkpoint.cash)
 
 
 def test_t2_10_k_future_trial_does_not_change_earlier_replay():
     now = datetime(2024, 4, 1, tzinfo=UTC)
-    base = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card()], {"alpha": 0.01})])
-    changed = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card()], {"alpha": 0.01})])
+    base = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})])
+    changed = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, future_trial_ids=("future",))])
     assert base.evidence_hash == changed.evidence_hash
+
+
+def test_t2_10_k2_final_oos_requires_pre_registered_trial():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector())
+    final = [obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="FINAL_OOS")]
+    with pytest.raises(ValueError, match="pre-registered"):
+        replay.run(final, meta_split="FINAL_OOS")
+    with pytest.raises(ValueError, match="before FINAL_OOS"):
+        replay.run(final, meta_split="FINAL_OOS", registered_trial_id="trial", trial_created_at=now)
+    result = replay.run(
+        final,
+        meta_split="FINAL_OOS",
+        registered_trial_id="trial",
+        trial_created_at=now - timedelta(days=1),
+    )
+    assert result.metrics["total_return"] > 0
 
 
 def test_t2_10_l_policy_version_changes_hash():
     now = datetime(2024, 4, 1, tzinfo=UTC)
-    left = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="a"))).run([obs(now, [card()], {"alpha": 0.01})])
-    right = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="b"))).run([obs(now, [card()], {"alpha": 0.01})])
+    left = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="a"))).run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})])
+    right = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="b"))).run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})])
     assert left.evidence_hash != right.evidence_hash
 
 
 def test_t2_10_m_ineligible_high_sharpe_never_selected():
-    bad = card(net_return=0.2, inputs=ScorecardInputs(dq_certified=False))
-    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(datetime(2024, 4, 1, tzinfo=UTC), [bad], {"alpha": 0.2})])
+    bad = card(net_return=0.2, inputs=certified_inputs(dq_certified=False))
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(datetime(2024, 4, 1, tzinfo=UTC), [bad], {"alpha": 0.2}, asset_returns={"ABC": 0.2})])
     assert result.decisions[0].decision == ABSTAIN
 
 
@@ -447,8 +540,8 @@ def test_t2_10_q_cost_stress_reflects_higher_costs():
     new = replace(card(name="new"), overall_score=0.9)
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
         [
-            obs(now, [inc], {"inc": 0.0}, target_portfolios={"inc": {"ABC": 1.0}}),
-            obs(now + timedelta(days=1), [inc, new], {"new": 0.03}, target_portfolios={"new": {"XYZ": 1.0}}),
+            obs(now, [inc], {"inc": 0.0}, target_portfolios={"inc": {"ABC": 1.0}}, asset_returns={"ABC": 0.0}),
+            obs(now + timedelta(days=1), [inc, new], {"new": 0.03}, target_portfolios={"new": {"XYZ": 1.0}}, asset_returns={"XYZ": 0.03}),
         ]
     )
     assert result.stress_results["2.0x_cost"]["total_return"] < result.stress_results["1.5x_cost"]["total_return"]
@@ -457,7 +550,7 @@ def test_t2_10_q_cost_stress_reflects_higher_costs():
 def test_t2_10_r_reduced_liquidity_affects_execution():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
-        [obs(now, [card()], {"alpha": 0.03}, target_portfolios={"alpha": {"ABC": 1.0}})]
+        [obs(now, [card()], {"alpha": 0.03}, target_portfolios={"alpha": {"ABC": 1.0}}, asset_returns={"ABC": 0.03})]
     )
     assert result.stress_results["reduced_liquidity"]["total_return"] <= result.metrics["total_return"]
 
@@ -465,11 +558,19 @@ def test_t2_10_r_reduced_liquidity_affects_execution():
 def test_t2_10_s_delayed_execution_affects_realized_result():
     now = datetime(2024, 4, 1, tzinfo=UTC)
     observations = [
-        obs(now, [card()], {"alpha": 0.05}),
-        obs(now + timedelta(days=1), [card()], {"alpha": -0.02}),
+        obs(now, [card()], {"alpha": 0.05}, asset_returns={"ABC": 0.05}),
+        obs(now + timedelta(days=1), [card()], {"alpha": -0.02}, asset_returns={"ABC": -0.02}),
     ]
     result = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations)
     assert result.stress_results["delayed_execution"]["total_return"] != result.metrics["total_return"]
+
+
+def test_t2_10_s2_strategy_return_series_not_used_as_b5_execution_shortcut():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run(
+        [obs(now, [card()], {"alpha": 0.50}, asset_returns={"ABC": 0.0})]
+    )
+    assert result.metrics["total_return"] < 0.01
 
 
 def test_t2_10_t_portfolio_continuity_uses_deltas_not_reset():
