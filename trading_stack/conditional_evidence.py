@@ -98,7 +98,6 @@ class ConditionalEvidenceBuilder:
         returns = pd.Series(net_returns, dtype=float)
         equity = (1.0 + returns).cumprod()
         drawdown = equity / equity.cummax() - 1.0
-        costs = [float(x.get("cost", 0.0)) for x in rows]
         cost_ratio = sum(
             float(x.get("cost", 0.0)) / abs(float(x.get("equity", 0.0)))
             for x in rows
