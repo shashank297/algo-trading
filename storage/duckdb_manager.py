@@ -3533,3 +3533,16 @@ class DuckDBManager:
             params,
         ).fetchdf().to_dict(orient="records")
 
+
+    def list_phase2_7_conditional_evidence_at(
+        self, decision_time: datetime, *, strategy_name: str | None = None
+    ) -> list[dict[str, Any]]:
+        """Return only Phase 2.7 evidence available at an explicit historical cutoff."""
+        if pd.Timestamp(decision_time).tzinfo is None:
+            raise ValueError("decision_time must be timezone-aware")
+        query = "SELECT * FROM strategy_conditional_evidence WHERE available_at <= ?"
+        params: list[Any] = [decision_time]
+        if strategy_name is not None:
+            query += " AND strategy_name = ?"
+            params.append(strategy_name)
+        return self.conn.execute(query + " ORDER BY available_at, evidence_id", params).fetchdf().to_dict("records")

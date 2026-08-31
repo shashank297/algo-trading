@@ -1,0 +1,56 @@
+-- Phase 2.7 only: immutable causal joins and aggregate OOS conditional evidence.
+CREATE TABLE IF NOT EXISTS strategy_conditional_observations (
+    observation_id VARCHAR PRIMARY KEY,
+    run_id VARCHAR NOT NULL,
+    fold_id VARCHAR NOT NULL,
+    observation_time TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR NOT NULL,
+    strategy_name VARCHAR NOT NULL,
+    strategy_version VARCHAR NOT NULL,
+    market_regime VARCHAR,
+    regime_transition_id VARCHAR,
+    regime_policy_hash VARCHAR,
+    asset_cluster VARCHAR,
+    asset_state_id VARCHAR,
+    asset_policy_hash VARCHAR,
+    net_return DOUBLE NOT NULL,
+    gross_return DOUBLE NOT NULL,
+    attributable_cost DOUBLE NOT NULL,
+    trade_count BIGINT NOT NULL,
+    context_status VARCHAR NOT NULL,
+    lineage_json JSON NOT NULL,
+    evidence_hash VARCHAR NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_conditional_observation_run ON strategy_conditional_observations(run_id, fold_id, observation_time);
+
+CREATE TABLE IF NOT EXISTS strategy_conditional_evidence (
+    evidence_id VARCHAR PRIMARY KEY,
+    aggregation_level VARCHAR NOT NULL,
+    strategy_name VARCHAR NOT NULL,
+    strategy_version VARCHAR NOT NULL,
+    run_id VARCHAR NOT NULL,
+    trial_id VARCHAR,
+    market_regime VARCHAR,
+    asset_cluster VARCHAR,
+    timeframe VARCHAR NOT NULL,
+    universe VARCHAR NOT NULL,
+    observation_count BIGINT NOT NULL,
+    trade_count BIGINT NOT NULL,
+    fold_count BIGINT NOT NULL,
+    first_observation TIMESTAMPTZ NOT NULL,
+    last_observation TIMESTAMPTZ NOT NULL,
+    net_return DOUBLE NOT NULL,
+    gross_return DOUBLE NOT NULL,
+    total_cost DOUBLE NOT NULL,
+    sharpe DOUBLE, sortino DOUBLE, calmar DOUBLE, max_drawdown DOUBLE,
+    profit_factor DOUBLE, win_rate DOUBLE, expectancy DOUBLE, turnover DOUBLE, cost_ratio DOUBLE,
+    evidence_status VARCHAR NOT NULL,
+    raw_conditional_metric DOUBLE NOT NULL, global_metric DOUBLE NOT NULL,
+    effective_sample_size DOUBLE NOT NULL, shrinkage_weight DOUBLE NOT NULL, shrunk_metric DOUBLE NOT NULL,
+    sample_policy_version VARCHAR NOT NULL, sample_policy_hash VARCHAR NOT NULL,
+    cost_model_version VARCHAR, lineage_json JSON NOT NULL,
+    evidence_hash VARCHAR NOT NULL, available_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_conditional_evidence_cutoff_v2 ON strategy_conditional_evidence(strategy_name, strategy_version, available_at);
