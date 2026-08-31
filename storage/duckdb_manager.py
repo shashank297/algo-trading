@@ -3563,11 +3563,14 @@ class DuckDBManager:
         """Return only Phase 2.7 evidence available at an explicit historical cutoff."""
         if pd.Timestamp(decision_time).tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        knowledge = knowledge_cutoff or decision_time
-        if pd.Timestamp(knowledge).tzinfo is None:
+        knowledge = knowledge_cutoff
+        if knowledge is not None and pd.Timestamp(knowledge).tzinfo is None:
             raise ValueError("knowledge_cutoff must be timezone-aware")
-        query = "SELECT * FROM strategy_conditional_evidence WHERE available_at <= ? AND (recorded_at IS NULL OR recorded_at <= ?)"
-        params: list[Any] = [decision_time, knowledge]
+        query = "SELECT * FROM strategy_conditional_evidence WHERE available_at <= ?"
+        params: list[Any] = [decision_time]
+        if knowledge is not None:
+            query += " AND recorded_at <= ?"
+            params.append(knowledge)
         if strategy_name is not None:
             query += " AND strategy_name = ?"
             params.append(strategy_name)
@@ -3599,13 +3602,14 @@ class DuckDBManager:
             "drawdown_penalty", "turnover_penalty", "correlation_penalty", "capacity_penalty",
             "uncertainty_penalty", "overall_score", "available_at", "scorecard_version",
             "scorecard_policy_version", "scorecard_policy_hash", "evidence_hash",
-            "evidence_ids_json", "explanation_json",
+            "evidence_ids_json", "explanation_json", "recorded_at",
         )
         data.update(
             {
                 "rejection_reasons_json": json.dumps(data.pop("rejection_reasons"), sort_keys=True),
                 "evidence_ids_json": json.dumps(data.pop("evidence_ids"), sort_keys=True),
                 "explanation_json": json.dumps(data.pop("explanation"), sort_keys=True, default=str),
+                "recorded_at": datetime.now(timezone.utc),
             }
         )
         with self._write_lock:
@@ -3627,11 +3631,14 @@ class DuckDBManager:
     ) -> list[dict[str, Any]]:
         if pd.Timestamp(decision_time).tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        knowledge = knowledge_cutoff or decision_time
-        if pd.Timestamp(knowledge).tzinfo is None:
+        knowledge = knowledge_cutoff
+        if knowledge is not None and pd.Timestamp(knowledge).tzinfo is None:
             raise ValueError("knowledge_cutoff must be timezone-aware")
-        query = "SELECT * FROM strategy_scorecards WHERE available_at <= ? AND (recorded_at IS NULL OR recorded_at <= ?)"
-        params: list[Any] = [decision_time, knowledge]
+        query = "SELECT * FROM strategy_scorecards WHERE available_at <= ?"
+        params: list[Any] = [decision_time]
+        if knowledge is not None:
+            query += " AND recorded_at <= ?"
+            params.append(knowledge)
         if horizon:
             query += " AND horizon = ?"
             params.append(horizon)
@@ -3798,6 +3805,7 @@ class DuckDBManager:
             "selection_rule", "selection_result",
             "selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload",
             "acceptance_policy_version", "acceptance_policy_hash",
+            "experiment_family_id", "universe_snapshot_id",
             "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
             "frozen_at", "artifact_hash",
         )
@@ -3840,7 +3848,12 @@ class DuckDBManager:
 
     def persist_final_oos_provenance_certificate(self, certificate: Any) -> str:
         values = asdict(certificate)
-        json_fields = ("dataset_ids", "dataset_content_hashes", "evidence_hashes")
+        json_fields = (
+            "dataset_ids", "dataset_content_hashes", "evidence_hashes",
+            "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
+            "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
+            "outcome_series_ids", "execution_bar_hashes", "dataset_bindings",
+        )
         for field in json_fields:
             values[field] = json.dumps(values[field], sort_keys=True)
         columns = tuple(values)
@@ -3866,8 +3879,13 @@ class DuckDBManager:
             raise ValueError(f"Unknown FINAL_OOS provenance certificate {certificate_id}")
         columns = [item[0] for item in self.conn.description]
         result = dict(zip(columns, row))
-        for field in ("dataset_ids", "dataset_content_hashes", "evidence_hashes"):
-            result[field] = json.loads(str(result[field]))
+        for field in (
+            "dataset_ids", "dataset_content_hashes", "evidence_hashes",
+            "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
+            "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
+            "outcome_series_ids", "execution_bar_hashes", "dataset_bindings",
+        ):
+            result[field] = json.loads(str(result[field] or "[]"))
         return result
 
     def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
@@ -3876,11 +3894,15 @@ class DuckDBManager:
             key: certificate[key]
             for key in (
                 "meta_run_id", "frozen_policy_id", "frozen_policy_hash", "selected_trial_id",
+                "experiment_family_id",
                 "selector_policy_hash", "meta_policy_hash", "scorecard_policy_hash",
                 "dataset_ids", "dataset_content_hashes", "evidence_hashes", "resolver_hash",
                 "execution_hash", "final_oos_start", "final_oos_end", "materialized_at",
                 "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
-                "acceptance_policy_version", "acceptance_policy_hash",
+                "acceptance_policy_version", "acceptance_policy_hash", "universe_snapshot_id",
+                "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
+                "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
+                "outcome_series_ids", "execution_bar_hashes", "dataset_bindings",
             )
         }
         for field in ("final_oos_start", "final_oos_end", "materialized_at"):
@@ -3914,12 +3936,19 @@ class DuckDBManager:
             "scorecard_policy_payload": artifact.get("scorecard_policy_payload") or {},
             "acceptance_policy_version": artifact.get("acceptance_policy_version"),
             "acceptance_policy_hash": artifact.get("acceptance_policy_hash"),
+            "experiment_family_id": artifact.get("experiment_family_id"),
+            "universe_snapshot_id": artifact.get("universe_snapshot_id"),
         }
         expected_artifact_hash = hashlib.sha256(json.dumps(artifact_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
         if expected_artifact_hash != artifact.get("artifact_hash"):
             raise ValueError("FINAL_OOS frozen artifact hash mismatch")
         if artifact.get("artifact_hash") != certificate["frozen_policy_hash"]:
             raise ValueError("FINAL_OOS certificate frozen artifact binding mismatch")
+        if artifact.get("experiment_family_id") != certificate["experiment_family_id"] or artifact.get("universe_snapshot_id") != certificate["universe_snapshot_id"]:
+            raise ValueError("FINAL_OOS certificate frozen universe/family binding mismatch")
+        for field_name in ("selector_policy_hash", "meta_policy_hash", "scorecard_policy_hash"):
+            if str(artifact.get(field_name)) != str(certificate[field_name]):
+                raise ValueError(f"FINAL_OOS certificate {field_name} binding mismatch")
         if artifact.get("selected_trial_id") != certificate["selected_trial_id"]:
             raise ValueError("FINAL_OOS certificate selected trial binding mismatch")
         if str(artifact.get("acceptance_policy_version")) != str(certificate["acceptance_policy_version"]):
@@ -3931,6 +3960,80 @@ class DuckDBManager:
             raise ValueError("FINAL_OOS certificate trial binding mismatch")
         if str(certificate["selected_trial_id"]) not in set(artifact.get("candidate_trial_ids") or ()):
             raise ValueError("FINAL_OOS certificate candidate binding mismatch")
+        if artifact.get("selection_result") != (trial.get("parameters") or {}).get("candidate_id"):
+            raise ValueError("FINAL_OOS certificate winner binding mismatch")
+        if not certificate.get("universe_snapshot_id"):
+            raise ValueError("FINAL_OOS certificate is missing universe snapshot binding")
+        family = self.get_experiment_family(str(certificate["experiment_family_id"]))
+        if family is None or family.get("universe_snapshot_id") != certificate["universe_snapshot_id"]:
+            raise ValueError("FINAL_OOS certificate universe binding mismatch")
+        historical_trials = (
+            [trial]
+            if not certificate.get("dataset_ids")
+            else self.list_research_trials_at(
+                pd.Timestamp(certificate["final_oos_start"]).to_pydatetime(),
+                family_id=str(certificate["experiment_family_id"]),
+            )
+        )
+        if not any(row.get("trial_id") == certificate["selected_trial_id"] for row in historical_trials):
+            raise ValueError("FINAL_OOS certificate trial was not SUCCEEDED before FINAL_OOS")
+        if certificate.get("dataset_ids"):
+            dataset_rows = self.conn.execute(
+                "SELECT dataset_id, COALESCE(transformation_hash, raw_hash) FROM market_datasets WHERE dataset_id IN (" + ",".join("?" for _ in certificate["dataset_ids"]) + ")",
+                list(certificate["dataset_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in dataset_rows} != {str(value) for value in certificate["dataset_ids"]}:
+                raise ValueError("FINAL_OOS certificate dataset ID binding mismatch")
+            if {str(row[1]) for row in dataset_rows} != {str(value) for value in certificate["dataset_content_hashes"]}:
+                raise ValueError("FINAL_OOS certificate dataset content-hash binding mismatch")
+            bindings = {(str(pair[0]), str(pair[1])) for pair in certificate.get("dataset_bindings", []) if len(pair) == 2}
+            actual_bindings = {(str(row[0]), str(row[1])) for row in dataset_rows}
+            if actual_bindings != bindings:
+                raise ValueError("FINAL_OOS certificate dataset ID/content-hash pair binding mismatch")
+        if certificate.get("risk_snapshot_ids"):
+            placeholders = ",".join("?" for _ in certificate["risk_snapshot_ids"])
+            risk_rows = self.conn.execute(
+                f"SELECT snapshot_id, snapshot_hash FROM phase2_10_causal_risk_snapshots WHERE snapshot_id IN ({placeholders})",
+                list(certificate["risk_snapshot_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in risk_rows} != {str(value) for value in certificate["risk_snapshot_ids"]} or {str(row[1]) for row in risk_rows} != {str(value) for value in certificate["risk_snapshot_hashes"]}:
+                raise ValueError("FINAL_OOS certificate risk snapshot binding mismatch")
+        for table, column, field_name in (
+            ("market_regime_snapshots", "regime_id", "regime_snapshot_ids"),
+            ("asset_state_snapshots", "asset_state_id", "asset_state_snapshot_ids"),
+        ):
+            identifiers = certificate.get(field_name) or []
+            if identifiers:
+                placeholders = ",".join("?" for _ in identifiers)
+                rows = self.conn.execute(
+                    f"SELECT {column} FROM {table} WHERE {column} IN ({placeholders})",
+                    list(identifiers),
+                ).fetchall()
+                if {str(row[0]) for row in rows} != {str(value) for value in identifiers}:
+                    raise ValueError(f"FINAL_OOS certificate {field_name} binding mismatch")
+        if certificate.get("dataset_certification_ids"):
+            placeholders = ",".join("?" for _ in certificate["dataset_certification_ids"])
+            certification_rows = self.conn.execute(
+                f"SELECT certification_id FROM data_quality_certifications WHERE certification_id IN ({placeholders}) AND status='CERTIFIED' AND issue_count=0",
+                list(certificate["dataset_certification_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in certification_rows} != {str(value) for value in certificate["dataset_certification_ids"]}:
+                raise ValueError("FINAL_OOS certificate dataset-certification binding mismatch")
+        if certificate.get("evidence_ids"):
+            known_ids: set[str] = set()
+            for table, column in (
+                ("strategy_conditional_evidence", "evidence_id"),
+                ("strategy_scorecards", "scorecard_id"),
+                ("research_trials_log", "trial_id"),
+                ("data_quality_certifications", "certification_id"),
+                ("strategy_robustness_evaluations", "robustness_id"),
+            ):
+                try:
+                    known_ids.update(str(row[0]) for row in self.conn.execute(f"SELECT {column} FROM {table}").fetchall())
+                except Exception:
+                    continue
+            if not set(map(str, certificate["evidence_ids"])).issubset(known_ids):
+                raise ValueError("FINAL_OOS certificate evidence ID binding mismatch")
         if certificate["materialized_at"] <= certificate["final_oos_end"]:
             raise ValueError("FINAL_OOS provenance certificate materialized before completion")
         result = self.conn.execute(
@@ -3940,13 +4043,29 @@ class DuckDBManager:
         if result is None:
             raise ValueError("FINAL_OOS provenance certificate has no persisted execution result")
         result_row = self.conn.execute(
-            "SELECT meta_split, available_at, verdict FROM meta_selector_runs WHERE meta_run_id=?",
+            "SELECT meta_split, available_at, verdict, orders_json FROM meta_selector_runs WHERE meta_run_id=?",
             [certificate["meta_run_id"]],
         ).fetchone()
         if result_row is None or result_row[0] != "FINAL_OOS" or result_row[2] != "PHASE 2.10 IMPLEMENTATION READY":
             raise ValueError("FINAL_OOS certificate result is not an immutable pre-verdict result")
         if result_row[1] is not None and certificate["materialized_at"] <= result_row[1]:
             raise ValueError("FINAL_OOS certificate materialized before result persistence")
+        if certificate.get("execution_bar_hashes"):
+            orders = json.loads(str(result_row[3] or "[]"))
+            actual_bar_hashes = {
+                str(order.get("execution_lineage", {}).get("historical_bar_hash"))
+                for order in orders if order.get("execution_lineage", {}).get("historical_bar_hash")
+            }
+            if actual_bar_hashes != {str(value) for value in certificate["execution_bar_hashes"]}:
+                raise ValueError("FINAL_OOS certificate execution-bar binding mismatch")
+        if certificate.get("outcome_series_ids"):
+            placeholders = ",".join("?" for _ in certificate["outcome_series_ids"])
+            series_rows = self.conn.execute(
+                f"SELECT DISTINCT series_id FROM phase2_10_outcome_series WHERE series_id IN ({placeholders})",
+                list(certificate["outcome_series_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in series_rows} != {str(value) for value in certificate["outcome_series_ids"]}:
+                raise ValueError("FINAL_OOS certificate outcome-series binding mismatch")
         return certificate
 
     def load_meta_selector_result_record(self, meta_run_id: str) -> dict[str, Any]:
@@ -4011,6 +4130,13 @@ class DuckDBManager:
                                                 accepted_at: datetime, acceptance_hash: str,
                                                 acceptance_policy_version: str = "phase2-10-acceptance-v1",
                                                 acceptance_policy_hash: str = "") -> str:
+        if verdict not in {
+            "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED",
+            "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE",
+        }:
+            raise ValueError("empirical acceptance records may contain only contractual COMPLETE verdicts")
+        if not acceptance_policy_version or not acceptance_policy_hash:
+            raise ValueError("empirical acceptance requires an immutable acceptance policy binding")
         values = (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash, acceptance_policy_version, acceptance_policy_hash)
         with self._write_lock:
             existing = self.conn.execute(

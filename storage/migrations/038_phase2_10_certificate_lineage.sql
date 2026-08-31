@@ -1,0 +1,14 @@
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS universe_snapshot_id VARCHAR DEFAULT '';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS regime_snapshot_ids JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS asset_state_snapshot_ids JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS risk_snapshot_ids JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS risk_snapshot_hashes JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS dataset_certification_ids JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS evidence_ids JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS outcome_series_ids JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS execution_bar_hashes JSON DEFAULT '[]';
+ALTER TABLE final_oos_provenance_certificates ADD COLUMN IF NOT EXISTS dataset_bindings JSON DEFAULT '[]';
+ALTER TABLE phase2_10_empirical_acceptance ADD COLUMN IF NOT EXISTS acceptance_policy_version VARCHAR DEFAULT 'phase2-10-acceptance-v1';
+ALTER TABLE phase2_10_empirical_acceptance ADD COLUMN IF NOT EXISTS acceptance_policy_hash VARCHAR DEFAULT '';
+ALTER TABLE frozen_meta_policies ADD COLUMN IF NOT EXISTS experiment_family_id VARCHAR DEFAULT 'meta-selector-phase2-10';
+ALTER TABLE frozen_meta_policies ADD COLUMN IF NOT EXISTS universe_snapshot_id VARCHAR DEFAULT '';

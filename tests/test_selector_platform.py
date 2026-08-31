@@ -4,9 +4,10 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, cast
 
+import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -1043,6 +1044,85 @@ def test_t2_10_zi_acceptance_policy_substitution_fails_certificate_validation():
     db.conn.execute("UPDATE final_oos_provenance_certificates SET acceptance_policy_hash='hash-b' WHERE certificate_id=?", [certificate.certificate_id])
     with pytest.raises(ValueError, match="certificate hash mismatch"):
         db.validate_final_oos_provenance_certificate(certificate.certificate_id)
+
+
+def test_t2_10_zj_final_risk_state_updates_sequentially_after_sell():
+    decision_time = datetime(2024, 4, 1, tzinfo=UTC)
+    snapshot = CausalRiskSnapshot.create(
+        snapshot_id="risk-batch-start",
+        as_of=decision_time,
+        exposure=50_000.0,
+        sector_exposure={"TECH": 50_000.0},
+        daily_pnl=0.0,
+        drawdown=0.0,
+        var_inputs=(0.01, 0.01),
+        var_result=0.01,
+        open_positions={"ABC": 50_000.0},
+        instrument_liquidity={"ABC": 100_000_000.0, "XYZ": 100_000_000.0},
+        rolling_returns=(0.01, 0.0),
+        rolling_volatility=0.01,
+        data_hash="risk-data",
+    )
+    item = replace(
+        obs(
+            decision_time, [card()], {"alpha": 0.01},
+            meta_split="FINAL_OOS", data_hash="execution-data",
+            sectors={"ABC": "TECH", "XYZ": "FIN"},
+        ),
+        execution_dataset_id="certified-dataset",
+        risk_snapshot_id=snapshot.snapshot_id,
+        risk_snapshot_hash=snapshot.snapshot_hash,
+        risk_snapshot=cast(dict[str, Any], snapshot.__dict__),
+        risk_state_as_of=snapshot.as_of,
+        risk_batch_id="risk-batch",
+        batch_start_snapshot_id=snapshot.snapshot_id,
+    )
+    day = pd.DataFrame(
+        [
+            {"symbol": "ABC", "timestamp": decision_time + timedelta(minutes=1), "close": 100.0},
+            {"symbol": "XYZ", "timestamp": decision_time + timedelta(minutes=1), "close": 100.0},
+        ]
+    ).set_index("symbol", drop=False)
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector())
+    _, rows = replay._risk_gate_targets(
+        current_weights={"ABC": 0.5}, target_weights={"ABC": 0.0, "XYZ": 0.5},
+        portfolio_value=100_000.0, item=item, day=day, prior_returns=(),
+        daily_pnl=0.0, current_drawdown=0.0,
+    )
+    assert [row["symbol"] for row in rows] == ["ABC", "XYZ"]
+    assert rows[0]["risk_batch_id"] == rows[1]["risk_batch_id"] == "risk-batch"
+    assert rows[0]["prior_state_hash"] != rows[1]["prior_state_hash"]
+    assert rows[1]["current_gross_exposure"] == pytest.approx(20_000.0)
+
+
+def test_t2_10_zk_final_risk_state_missing_field_fails_closed():
+    decision_time = datetime(2024, 4, 1, tzinfo=UTC)
+    snapshot = CausalRiskSnapshot.create(
+        snapshot_id="risk-incomplete", as_of=decision_time, exposure=0.0,
+        sector_exposure={}, daily_pnl=0.0, drawdown=0.0, var_inputs=(0.01,),
+        var_result=0.01, open_positions={}, instrument_liquidity={"ABC": 100_000_000.0},
+        rolling_returns=(0.01,), rolling_volatility=0.01, data_hash="risk-data",
+    )
+    item = replace(
+        obs(decision_time, [card()], {"alpha": 0.01}, meta_split="FINAL_OOS", data_hash="execution-data"),
+        execution_dataset_id="certified-dataset", risk_snapshot_id=snapshot.snapshot_id,
+        risk_snapshot_hash=snapshot.snapshot_hash, risk_snapshot={"snapshot_id": snapshot.snapshot_id},
+        risk_batch_id="risk-batch", batch_start_snapshot_id=snapshot.snapshot_id,
+    )
+    day = pd.DataFrame([{"symbol": "ABC", "timestamp": decision_time + timedelta(minutes=1), "close": 100.0}]).set_index("symbol", drop=False)
+    with pytest.raises(ValueError, match="risk snapshot is incomplete"):
+        MetaSelectorBacktest(AdaptiveStrategySelector())._risk_gate_targets(
+            current_weights={}, target_weights={"ABC": 0.1}, portfolio_value=100_000.0,
+            item=item, day=day, prior_returns=(), daily_pnl=0.0, current_drawdown=0.0,
+        )
+
+
+def test_t2_10_zl_cross_split_without_windows_fails_closed_even_with_zero_buffers():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    left = obs(start, [card()], {"alpha": 0.01}, meta_split="TRAIN")
+    right = obs(start + timedelta(days=10), [card()], {"alpha": 0.01}, meta_split="VALIDATION")
+    with pytest.raises(ValueError, match="explicit label and evidence windows"):
+        MetaSelectorBacktest._validate_purge_embargo((left, right), 0, 0)
 
 
 def test_t2_10_zj_causal_risk_snapshot_tampering_fails_closed():
