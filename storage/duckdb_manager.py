@@ -1445,6 +1445,14 @@ class DuckDBManager:
                             trial.created_at,
                         ],
                     )
+                    event_time = pd.Timestamp(trial.created_at).to_pydatetime()
+                    event_status = trial.status.value if hasattr(trial.status, "value") else str(trial.status)
+                    event_payload = {"trial_id": target_trial_id, "status": event_status, "effective_at": event_time, "recorded_at": event_time}
+                    event_hash = hashlib.sha256(json.dumps(event_payload, sort_keys=True, default=str).encode()).hexdigest()
+                    self.conn.execute(
+                        "INSERT INTO research_trial_lifecycle_events (event_id, trial_id, status, effective_at, recorded_at, event_hash, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [event_hash[:32], target_trial_id, event_status, event_time, event_time, event_hash, json.dumps(event_payload, sort_keys=True, default=str)],
+                    )
                 return target_trial_id
             except (RuntimeError, ValueError):
                 raise
@@ -1497,6 +1505,8 @@ class DuckDBManager:
         metrics: dict[str, Any] | None = None,
         error_message: str | None = None,
         invalidation_reason: str | None = None,
+        effective_at: datetime | None = None,
+        recorded_at: datetime | None = None,
     ) -> None:
         """Append lifecycle evidence without deleting or replacing the trial."""
         row = self.conn.execute(
@@ -1516,6 +1526,10 @@ class DuckDBManager:
         if current_status in {"SUCCEEDED", "FAILED", "INVALIDATED", "CANCELLED"} and status != "INVALIDATED":
             raise ValueError(f"Invalid immutable research-trial transition from {current_status} to {status}.")
         now = datetime.now(timezone.utc)
+        effective = effective_at or now
+        recorded = recorded_at or now
+        if effective.tzinfo is None or recorded.tzinfo is None:
+            raise ValueError("lifecycle event timestamps must be timezone-aware")
         self.conn.execute(
             """
             UPDATE research_trials_log
@@ -1543,6 +1557,12 @@ class DuckDBManager:
                 now,
                 trial_id,
             ],
+        )
+        event_payload = {"trial_id": trial_id, "status": status, "effective_at": effective, "recorded_at": recorded, "metrics": metrics, "error_message": error_message, "invalidation_reason": invalidation_reason}
+        event_hash = hashlib.sha256(json.dumps(event_payload, sort_keys=True, default=str).encode()).hexdigest()
+        self.conn.execute(
+            "INSERT INTO research_trial_lifecycle_events (event_id, trial_id, status, effective_at, recorded_at, event_hash, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [event_hash[:32], trial_id, status, effective, recorded, event_hash, json.dumps(event_payload, sort_keys=True, default=str)],
         )
 
     def mark_trial_selected(self, trial_id: str, selected: bool = True) -> None:
@@ -3753,6 +3773,7 @@ class DuckDBManager:
             "b2_strategy",
             "selection_rule", "selection_result",
             "selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload",
+            "acceptance_policy_version", "acceptance_policy_hash",
             "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
             "frozen_at", "artifact_hash",
         )
@@ -3830,7 +3851,7 @@ class DuckDBManager:
         payload = {
             key: certificate[key]
             for key in (
-                "frozen_policy_id", "frozen_policy_hash", "selected_trial_id",
+                "meta_run_id", "frozen_policy_id", "frozen_policy_hash", "selected_trial_id",
                 "selector_policy_hash", "meta_policy_hash", "scorecard_policy_hash",
                 "dataset_ids", "dataset_content_hashes", "evidence_hashes", "resolver_hash",
                 "execution_hash", "final_oos_start", "final_oos_end", "materialized_at",
@@ -3843,8 +3864,8 @@ class DuckDBManager:
         if expected_hash != certificate["certificate_hash"]:
             raise ValueError("FINAL_OOS provenance certificate hash mismatch")
         result = self.conn.execute(
-            "SELECT final_oos_execution_hash FROM meta_selector_runs WHERE meta_run_id IN (SELECT meta_run_id FROM meta_selector_runs WHERE final_oos_execution_hash = ?)",
-            [certificate["execution_hash"]],
+            "SELECT final_oos_execution_hash FROM meta_selector_runs WHERE meta_run_id = ? AND final_oos_execution_hash = ?",
+            [certificate["meta_run_id"], certificate["execution_hash"]],
         ).fetchone()
         if result is None:
             raise ValueError("FINAL_OOS provenance certificate has no persisted execution result")
@@ -3881,13 +3902,28 @@ class DuckDBManager:
         result = dict(zip(columns, row))
         for field in ("sector_exposure", "var_inputs", "open_positions", "instrument_liquidity", "rolling_returns"):
             result[field] = json.loads(str(result[field]))
+        payload = {
+            "snapshot_id": result["snapshot_id"], "as_of": result["as_of"],
+            "exposure": result["exposure"], "sector_exposure": dict(sorted(result["sector_exposure"].items())),
+            "daily_pnl": result["daily_pnl"], "drawdown": result["drawdown"],
+            "var_inputs": tuple(result["var_inputs"]), "var_result": result["var_result"],
+            "open_positions": dict(sorted(result["open_positions"].items())),
+            "instrument_liquidity": dict(sorted(result["instrument_liquidity"].items())),
+            "rolling_returns": tuple(result["rolling_returns"]),
+            "rolling_volatility": result["rolling_volatility"], "data_hash": result["data_hash"],
+        }
+        expected_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+        if expected_hash != result["snapshot_hash"]:
+            raise ValueError("Causal risk snapshot hash mismatch")
         return result
 
     def persist_phase2_10_empirical_acceptance(self, *, acceptance_id: str, meta_run_id: str,
                                                 certificate_id: str, certificate_hash: str,
                                                 execution_hash: str, verdict: str,
-                                                accepted_at: datetime, acceptance_hash: str) -> str:
-        values = (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash)
+                                                accepted_at: datetime, acceptance_hash: str,
+                                                acceptance_policy_version: str = "phase2-10-acceptance-v1",
+                                                acceptance_policy_hash: str = "") -> str:
+        values = (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash, acceptance_policy_version, acceptance_policy_hash)
         with self._write_lock:
             existing = self.conn.execute(
                 "SELECT acceptance_hash FROM phase2_10_empirical_acceptance WHERE acceptance_id=?", [acceptance_id]
@@ -3896,16 +3932,31 @@ class DuckDBManager:
                 raise ValueError("Conflicting immutable empirical acceptance")
             if existing is None:
                 self.conn.execute(
-                    "INSERT INTO phase2_10_empirical_acceptance VALUES (?, ?, ?, ?, ?, ?, ?, ?)", values
+                    "INSERT INTO phase2_10_empirical_acceptance (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash, acceptance_policy_version, acceptance_policy_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values
                 )
         return acceptance_id
 
     def list_research_trials_at(self, cutoff: datetime, *, family_id: str | None = None) -> list[dict[str, Any]]:
-        if pd.Timestamp(cutoff).tzinfo is None:
-            raise ValueError("cutoff must be timezone-aware")
+        return self.list_research_trials_at_bitemporal(cutoff, knowledge_cutoff=cutoff, family_id=family_id)
+
+    def list_research_trials_at_bitemporal(
+        self, effective_cutoff: datetime, *, knowledge_cutoff: datetime,
+        family_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if pd.Timestamp(effective_cutoff).tzinfo is None or pd.Timestamp(knowledge_cutoff).tzinfo is None:
+            raise ValueError("cutoffs must be timezone-aware")
         trials = self.list_research_trials(family_id=family_id)
-        return [
-            trial for trial in trials
-            if pd.Timestamp(trial["created_at"]).to_pydatetime() < cutoff
-            and trial.get("status") == "SUCCEEDED"
-        ]
+        result: list[dict[str, Any]] = []
+        for trial in trials:
+            events = self.conn.execute(
+                "SELECT status, effective_at, recorded_at, event_id FROM research_trial_lifecycle_events WHERE trial_id=? AND effective_at < ? AND recorded_at <= ? ORDER BY effective_at DESC, recorded_at DESC, event_id DESC",
+                [trial["trial_id"], effective_cutoff, knowledge_cutoff],
+            ).fetchall()
+            if events and str(events[0][0]) == "SUCCEEDED":
+                candidate = dict(trial)
+                candidate["status"] = "SUCCEEDED"
+                candidate["status_effective_at"] = events[0][1]
+                candidate["status_recorded_at"] = events[0][2]
+                candidate["status_event_id"] = events[0][3]
+                result.append(candidate)
+        return result

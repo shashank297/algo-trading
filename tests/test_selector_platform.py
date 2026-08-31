@@ -6,7 +6,7 @@ from typing import Any
 
 import pytest
 
-from experiments.meta_selector_backtest import CASH, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, FinalDatasetReference, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -17,6 +17,14 @@ from trading_stack.scorecards import INELIGIBLE, ScorecardBuilder, ScorecardInpu
 from trading_stack.selector import ABSTAIN, ENSEMBLE, SELECT, AdaptiveStrategySelector, SelectorPolicy, SwitchCostEstimator
 
 UTC = timezone.utc
+
+
+def final_reference(start: datetime) -> FinalDatasetReference:
+    return FinalDatasetReference(
+        dataset_id="synthetic", dataset_content_hash="dataset-a", symbol="ABC",
+        exchange="NSE", timeframe="1m", decision_times=(start + timedelta(days=2),),
+        universe_snapshot_id="META",
+    )
 
 
 def certified_inputs(**overrides):
@@ -777,7 +785,7 @@ def test_t2_10_w_runner_freezes_and_consumes_one_immutable_policy():
     start = datetime(2024, 4, 1, tzinfo=UTC)
     train = [obs(start, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="TRAIN", data_hash="dataset-a", label_start=start, label_end=start, evidence_start=start, evidence_end=start)]
     validation = [obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="VALIDATION", data_hash="dataset-a", label_start=start + timedelta(days=1), label_end=start + timedelta(days=1), evidence_start=start + timedelta(days=1), evidence_end=start + timedelta(days=1))]
-    final = [obs(start + timedelta(days=2), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="FINAL_OOS", data_hash="dataset-a", label_start=start + timedelta(days=2), label_end=start + timedelta(days=2), evidence_start=start + timedelta(days=2), evidence_end=start + timedelta(days=2))]
+    final = final_reference(start)
     db = DuckDBManager(":memory:")
     runner = MetaResearchRunner(db)
     selector = AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))
@@ -793,7 +801,7 @@ def test_t2_10_w_runner_freezes_and_consumes_one_immutable_policy():
     assert isinstance(result.frozen_policy, FrozenMetaPolicy)
     assert stored["selected_trial_id"] == result.frozen_policy.selected_trial_id
     assert result.final_oos_result.metrics["total_return"] >= 0
-    with pytest.raises(ValueError, match="frozen policy binding"):
+    with pytest.raises(ValueError, match="resolved observations"):
         MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="changed")), db=db).run(
             final,
             meta_split="FINAL_OOS",
@@ -850,7 +858,7 @@ def test_t2_10_za_lifecycle_rejects_freeze_before_validation():
     db = DuckDBManager(":memory:")
     with pytest.raises(ValueError, match="lifecycle timestamps"):
         MetaResearchRunner(db).run(
-            [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+            [make("TRAIN", 0)], [make("VALIDATION", 1)], final_reference(start),
             [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
             data_hash="dataset-a", frozen_at=start + timedelta(hours=1),
         )
@@ -871,7 +879,7 @@ def test_t2_10_zb_two_candidates_keep_family_and_result_lineage():
         ("candidate-b", AdaptiveStrategySelector(SelectorPolicy(version="selector-b")), MetaReplayPolicy(version="meta-b")),
     ]
     result = MetaResearchRunner(db).run(
-        [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], final_reference(start),
         candidates, data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
     )
     assert len(db.list_experiment_families()) == 1
@@ -909,7 +917,7 @@ def test_t2_10_zd_certificate_materializes_after_final_oos_and_is_persisted():
         return obs(timestamp, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a", label_start=timestamp, label_end=timestamp, evidence_start=timestamp, evidence_end=timestamp)
     db = DuckDBManager(":memory:")
     result = MetaResearchRunner(db).run(
-        [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], final_reference(start),
         [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
         data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
     )
@@ -926,7 +934,7 @@ def test_t2_10_ze_stored_policy_payload_hash_mismatch_fails_final_loading():
         return obs(timestamp, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a", label_start=timestamp, label_end=timestamp, evidence_start=timestamp, evidence_end=timestamp)
     db = DuckDBManager(":memory:")
     result = MetaResearchRunner(db).run(
-        [make("TRAIN", 0)], [make("VALIDATION", 1)], [make("FINAL_OOS", 2)],
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], final_reference(start),
         [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
         data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
     )
