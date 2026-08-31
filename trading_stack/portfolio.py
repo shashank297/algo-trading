@@ -253,6 +253,43 @@ class PortfolioEventBacktester:
             exclusions=getattr(dataset, "exclusions", pd.DataFrame()),
         )
 
+    def execute_historical_rebalance(
+        self,
+        *,
+        run_id: str,
+        date: pd.Timestamp,
+        day: pd.DataFrame,
+        targets: pd.DataFrame,
+        cash: float,
+        quantities: dict[str, float],
+        average_cost: dict[str, float],
+        entry_timestamps: dict[str, pd.Timestamp],
+        entry_reasons: dict[str, str],
+        entry_cost_pools: dict[str, float],
+        entry_execution_cost_pools: dict[str, float],
+        last_prices: dict[str, float],
+        mode: str = "event-driven",
+        execution_mode: str = "EOD_BATCH",
+    ) -> tuple[float, dict[str, Any]]:
+        """Execute one historical rebalance with the authoritative portfolio primitive."""
+
+        return self._rebalance(
+            run_id=run_id,
+            date=date,
+            day=day,
+            targets=targets,
+            cash=cash,
+            quantities=quantities,
+            average_cost=average_cost,
+            entry_timestamps=entry_timestamps,
+            entry_reasons=entry_reasons,
+            entry_cost_pools=entry_cost_pools,
+            entry_execution_cost_pools=entry_execution_cost_pools,
+            last_prices=last_prices,
+            mode=mode,
+            execution_mode=execution_mode,
+        )
+
     def _rebalance(
         self,
         *,

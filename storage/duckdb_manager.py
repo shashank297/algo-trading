@@ -3656,7 +3656,8 @@ class DuckDBManager:
             "meta_run_id", "policy_version", "selector_policy_version", "selector_policy_hash",
             "scorecard_policy_version", "meta_split", "purge_periods", "embargo_periods",
             "status", "verdict", "metrics_json", "baselines_json", "stress_results_json",
-            "attribution_json", "checkpoint_json", "checkpoint_hash", "evidence_hash", "available_at",
+            "attribution_json", "checkpoint_json", "checkpoint_hash", "orders_json", "fills_json",
+            "risk_decisions_json", "evidence_hash", "available_at",
         )
         run_data = {
             "meta_run_id": result.meta_run_id,
@@ -3675,6 +3676,9 @@ class DuckDBManager:
             "attribution_json": json.dumps(result.attribution, sort_keys=True),
             "checkpoint_json": json.dumps(asdict(result.checkpoint), sort_keys=True, default=str),
             "checkpoint_hash": result.checkpoint.checkpoint_hash,
+            "orders_json": json.dumps(result.orders, sort_keys=True, default=str),
+            "fills_json": json.dumps(result.fills, sort_keys=True, default=str),
+            "risk_decisions_json": json.dumps(result.risk_decisions, sort_keys=True, default=str),
             "evidence_hash": result.evidence_hash,
             "available_at": timestamp,
         }
@@ -3725,3 +3729,15 @@ class DuckDBManager:
                         [result.meta_run_id, attribution_type, value],
                     )
         return str(result.meta_run_id)
+
+    def load_meta_selector_checkpoint(self, meta_run_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT checkpoint_json, checkpoint_hash FROM meta_selector_runs WHERE meta_run_id=?",
+            [meta_run_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown meta selector run {meta_run_id}")
+        checkpoint = json.loads(str(row[0] or "{}"))
+        if not checkpoint:
+            raise ValueError(f"Meta selector run {meta_run_id} has no checkpoint")
+        return checkpoint

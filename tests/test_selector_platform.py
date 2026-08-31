@@ -6,8 +6,11 @@ from typing import Any
 
 import pytest
 
-from experiments.meta_selector_backtest import CASH, MetaReplayPolicy, MetaSelectorBacktest, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, MetaReplayPolicy, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
+from experiments.trials import ExperimentFamilySpec, ResearchTrial
+from risk.engine import RiskEngine
+from risk.models import RiskPolicy
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.conditional_evidence import ConditionalEvidenceBuilder, ConditionalEvidencePolicy
 from trading_stack.scorecards import INELIGIBLE, ScorecardBuilder, ScorecardInputs, ScorecardPolicy, StrategyScorecard
@@ -126,12 +129,68 @@ def obs(time, cards, returns, **kwargs):
         strategy_returns=returns,
         target_portfolios=kwargs.get("target_portfolios", {}),
         asset_returns=kwargs.get("asset_returns", {}),
+        prices=kwargs.get("prices", {}),
+        sectors=kwargs.get("sectors", {}),
         benchmark_return=kwargs.get("benchmark_return", 0.0),
         raw_regime=kwargs.get("raw_regime"),
         operational_regime=kwargs.get("operational_regime"),
         known_at=kwargs.get("known_at"),
         available_at=kwargs.get("available_at"),
     )
+
+
+def register_meta_trial(db: DuckDBManager, items, replay: MetaSelectorBacktest, *, created_at: datetime):
+    final_items = [item for item in items if item.meta_split == "FINAL_OOS"]
+    scorecard_hash = MetaSelectorBacktest._canonical_visible_scorecard_policy_hash(tuple(final_items))
+    strategy_universe = sorted({
+        card.strategy_name
+        for item in final_items
+        for card in item.scorecards
+        if card.available_at <= item.decision_time
+    })
+    family = ExperimentFamilySpec(
+        experiment_family_id=f"meta-family-{created_at.timestamp()}",
+        hypothesis="meta selector",
+        strategy_names=["meta_selector"],
+        strategy_versions=["phase2.10"],
+        universe_snapshot_id="META",
+        timeframe="1d",
+        feature_versions=["phase2.10"],
+        cost_model_version="synthetic",
+        parameter_space={},
+        maximum_trials=10,
+        selection_metric="total_return",
+        walk_forward_design={"purge_periods": 0, "embargo_periods": 0},
+        source_revision="test",
+        created_at=created_at,
+    )
+    db.register_experiment_family(family)
+    trial = ResearchTrial(
+        experiment_family_id=family.experiment_family_id,
+        strategy_name="meta_selector",
+        strategy_version="phase2.10",
+        scope="META_SELECTOR",
+        timeframe="1d",
+        parameters={
+            "selector_policy_version": replay.selector.policy.version,
+            "selector_policy_hash": replay.selector.policy.policy_hash,
+            "scorecard_policy_hash": scorecard_hash,
+            "meta_replay_policy_version": replay.replay_policy.version,
+            "meta_replay_policy_hash": replay.replay_policy.policy_hash,
+            "meta_policy_version": replay.replay_policy.version,
+            "data_hash": "synthetic",
+            "cost_model_hash": replay.cost_estimator.schedule.version,
+            "purge_periods": 0,
+            "embargo_periods": 0,
+            "meta_split": "FINAL_OOS",
+            "strategy_universe": strategy_universe,
+        },
+        source_revision="test",
+        data_hash="synthetic",
+        cost_model_hash=replay.cost_estimator.schedule.version,
+        created_at=created_at,
+    )
+    return db.create_research_trial(trial)
 
 
 def test_t2_8_01_high_sharpe_dq_failure_ineligible():
@@ -234,6 +293,16 @@ def test_t2_8_14b_scorecard_available_at_is_explicit_and_not_backdated():
         )
 
 
+def test_t2_8_14c_required_paper_evidence_missing_fails_closed():
+    result = card(policy=ScorecardPolicy(require_paper_evidence=True))
+    assert result.eligibility_status == INELIGIBLE
+    assert "PAPER_EVIDENCE_MISSING" in result.rejection_reasons
+    failed = card(policy=ScorecardPolicy(require_paper_evidence=True), inputs=certified_inputs(paper_evidence_pass=False))
+    assert "PAPER_EVIDENCE_FAILED" in failed.rejection_reasons
+    passed = card(policy=ScorecardPolicy(require_paper_evidence=True), inputs=certified_inputs(paper_evidence_pass=True))
+    assert passed.eligibility_status == "ELIGIBLE"
+
+
 def test_t2_8_15_restart_requery_returns_identical_immutable_scorecard():
     db = DuckDBManager(":memory:")
     result = card()
@@ -314,6 +383,11 @@ def test_t2_9_09b_missing_correlation_blocks_ensemble_not_select():
     decision = selector_decision([alpha, beta])
     assert decision.decision == SELECT
     assert decision.selected_strategies == ("alpha",)
+
+
+def test_t2_9_09c_invalid_missing_correlation_policy_rejected():
+    with pytest.raises(ValueError, match="missing_correlation_policy"):
+        SelectorPolicy(missing_correlation_policy="assume_zero")
 
 
 def test_t2_9_10_future_scorecard_evidence_cannot_be_consumed():
@@ -472,17 +546,47 @@ def test_t2_10_i2_abstain_cash_policy_liquidates_existing_risk():
     assert result.equity_curve[-1]["holdings"] == {}
 
 
-def test_t2_10_j_restart_replay_reproduces_uninterrupted_run():
+def test_t2_10_i3_b5_invokes_public_historical_rebalance_adapter(monkeypatch):
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)))
+    called = 0
+    original = replay.execution_adapter.execute_historical_rebalance
+
+    def wrapped(*args, **kwargs):
+        nonlocal called
+        called += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(replay.execution_adapter, "execute_historical_rebalance", wrapped)
+    replay.run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})])
+    assert called >= 1
+
+
+def test_t2_10_j_restart_replay_reproduces_uninterrupted_run(tmp_path):
     now = datetime(2024, 4, 1, tzinfo=UTC)
     observations = [obs(now + timedelta(days=i), [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}) for i in range(5)]
     uninterrupted = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations)
     first_leg = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations[:2])
-    resumed = MetaSelectorBacktest(AdaptiveStrategySelector()).run(observations, checkpoint=first_leg.checkpoint)
+    db_path = tmp_path / "meta_restart.duckdb"
+    db = DuckDBManager(str(db_path))
+    db.persist_meta_selector_result(
+        first_leg,
+        policy_version="meta-selector-v2",
+        selector_policy_version="selector-v1",
+        selector_policy_hash=MetaSelectorBacktest(AdaptiveStrategySelector()).selector.policy.policy_hash,
+    )
+    db.close()
+    fresh_db = DuckDBManager(str(db_path))
+    loaded_checkpoint = MetaSelectorCheckpoint.from_dict(fresh_db.load_meta_selector_checkpoint(first_leg.meta_run_id))
+    resumed = MetaSelectorBacktest(AdaptiveStrategySelector(), db=fresh_db).run(observations, checkpoint=loaded_checkpoint)
     assert uninterrupted.equity_curve[2:] == resumed.equity_curve
     assert uninterrupted.decisions[2:] == resumed.decisions
-    assert uninterrupted.switches[1:] == resumed.switches
+    assert tuple(s for s in uninterrupted.switches if s["decision_time"] > observations[1].decision_time) == resumed.switches
     assert uninterrupted.checkpoint.holdings == resumed.checkpoint.holdings
     assert uninterrupted.checkpoint.cash == pytest.approx(resumed.checkpoint.cash)
+    assert uninterrupted.orders[len(first_leg.orders):] == resumed.orders
+    assert uninterrupted.fills[len(first_leg.fills):] == resumed.fills
+    assert uninterrupted.risk_decisions[len(first_leg.risk_decisions):] == resumed.risk_decisions
 
 
 def test_t2_10_k_future_trial_does_not_change_earlier_replay():
@@ -494,16 +598,21 @@ def test_t2_10_k_future_trial_does_not_change_earlier_replay():
 
 def test_t2_10_k2_final_oos_requires_pre_registered_trial():
     now = datetime(2024, 4, 1, tzinfo=UTC)
-    replay = MetaSelectorBacktest(AdaptiveStrategySelector())
     final = [obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="FINAL_OOS")]
+    db = DuckDBManager(":memory:")
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), db=db)
     with pytest.raises(ValueError, match="pre-registered"):
         replay.run(final, meta_split="FINAL_OOS")
+    with pytest.raises(ValueError, match="real Phase 2.1"):
+        replay.run(final, meta_split="FINAL_OOS", registered_trial_id="fake", trial_created_at=now - timedelta(days=1))
+    late_trial_id = register_meta_trial(db, final, replay, created_at=now)
     with pytest.raises(ValueError, match="before FINAL_OOS"):
-        replay.run(final, meta_split="FINAL_OOS", registered_trial_id="trial", trial_created_at=now)
+        replay.run(final, meta_split="FINAL_OOS", registered_trial_id=late_trial_id, trial_created_at=now)
+    trial_id = register_meta_trial(db, final, replay, created_at=now - timedelta(days=1))
     result = replay.run(
         final,
         meta_split="FINAL_OOS",
-        registered_trial_id="trial",
+        registered_trial_id=trial_id,
         trial_created_at=now - timedelta(days=1),
     )
     assert result.metrics["total_return"] > 0
@@ -573,6 +682,40 @@ def test_t2_10_s2_strategy_return_series_not_used_as_b5_execution_shortcut():
     assert result.metrics["total_return"] < 0.01
 
 
+def test_t2_10_s3_risk_modify_uses_approved_notional():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    replay = MetaSelectorBacktest(
+        AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)),
+        risk_engine=RiskEngine(RiskPolicy(max_position_pct=0.05)),
+    )
+    result = replay.run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})])
+    assert result.risk_decisions[0]["risk_action"] == "MODIFY"
+    assert result.risk_decisions[0]["approved_notional"] < result.risk_decisions[0]["requested_notional"]
+    assert result.risk_decisions[0]["executed_notional"] <= result.risk_decisions[0]["approved_notional"] * 1.01
+
+
+def test_t2_10_s4_sell_first_replay_orders_precede_buys():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    inc = replace(card(name="inc"), overall_score=0.2)
+    new = replace(card(name="new"), overall_score=0.9)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(
+        [
+            obs(now, [inc], {"inc": 0.0}, target_portfolios={"inc": {"ABC": 0.2}}, asset_returns={"ABC": 0.0}),
+            obs(now + timedelta(days=1), [inc, new], {"new": 0.0}, target_portfolios={"new": {"XYZ": 0.2}}, asset_returns={"ABC": 0.0, "XYZ": 0.0}),
+        ]
+    )
+    second_orders = [order for order in result.orders if order["requested_at"] == now + timedelta(days=1)]
+    assert [order["side"] for order in second_orders][:2] == ["SELL", "BUY"]
+
+
+def test_t2_10_s5_b2_without_meta_train_fails_closed():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run(
+        [obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})]
+    )
+    assert result.baselines["B2_static"]["selection"] == "UNAVAILABLE_NO_META_TRAIN"
+
+
 def test_t2_10_t_portfolio_continuity_uses_deltas_not_reset():
     estimate = SwitchCostEstimator().estimate(
         current_holdings={"ABC": 0.6},
@@ -592,8 +735,8 @@ def test_t2_10_u_sell_first_risk_reduction_ordering():
     assert estimate.buys_after_sells == ("XYZ",)
 
 
-def test_t2_10_v_hash_determinism_same_inputs_same_result():
-    test_t2_10_j_restart_replay_reproduces_uninterrupted_run()
+def test_t2_10_v_hash_determinism_same_inputs_same_result(tmp_path):
+    test_t2_10_j_restart_replay_reproduces_uninterrupted_run(tmp_path)
 
 
 def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():

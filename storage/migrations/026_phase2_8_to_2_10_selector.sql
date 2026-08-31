@@ -108,12 +108,18 @@ CREATE TABLE IF NOT EXISTS meta_selector_runs (
     attribution_json JSON NOT NULL,
     checkpoint_json JSON DEFAULT '{}',
     checkpoint_hash VARCHAR DEFAULT 'unknown',
+    orders_json JSON DEFAULT '[]',
+    fills_json JSON DEFAULT '[]',
+    risk_decisions_json JSON DEFAULT '[]',
     evidence_hash VARCHAR NOT NULL,
     available_at TIMESTAMPTZ NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 ALTER TABLE meta_selector_runs ADD COLUMN IF NOT EXISTS checkpoint_json JSON DEFAULT '{}';
 ALTER TABLE meta_selector_runs ADD COLUMN IF NOT EXISTS checkpoint_hash VARCHAR DEFAULT 'unknown';
+ALTER TABLE meta_selector_runs ADD COLUMN IF NOT EXISTS orders_json JSON DEFAULT '[]';
+ALTER TABLE meta_selector_runs ADD COLUMN IF NOT EXISTS fills_json JSON DEFAULT '[]';
+ALTER TABLE meta_selector_runs ADD COLUMN IF NOT EXISTS risk_decisions_json JSON DEFAULT '[]';
 
 CREATE TABLE IF NOT EXISTS meta_selector_equity_curve (
     meta_run_id VARCHAR NOT NULL,

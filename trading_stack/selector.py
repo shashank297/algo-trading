@@ -47,6 +47,10 @@ class SelectorPolicy:
     allow_ensemble: bool = True
     missing_correlation_policy: str = "select_only"
 
+    def __post_init__(self) -> None:
+        if self.missing_correlation_policy != "select_only":
+            raise ValueError("missing_correlation_policy must be 'select_only'")
+
     @property
     def policy_hash(self) -> str:
         return _canonical_hash(asdict(self))

@@ -86,7 +86,7 @@ class ScorecardInputs:
     cost_stress_pass: bool | None = None
     parameter_robustness_pass: bool | None = None
     capacity_pass: bool | None = None
-    paper_evidence_pass: bool | None = True
+    paper_evidence_pass: bool | None = None
     zero_reconciliation_drift: bool | None = None
     fold_consistency: float | None = None
     parameter_robustness_score: float | None = None
