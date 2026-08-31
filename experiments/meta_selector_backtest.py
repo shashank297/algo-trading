@@ -39,6 +39,20 @@ def _canonical_hash(payload: object) -> str:
     ).hexdigest()
 
 
+def _acceptance_policy_hash(policy: MetaReplayPolicy) -> str:
+    return _canonical_hash({"acceptance_policy_version": "phase2-10-acceptance-v1", "gates": {
+        "min_final_oos_duration_days": policy.min_final_oos_duration_days,
+        "min_final_oos_observations": policy.min_final_oos_observations,
+        "min_independent_trades": policy.min_independent_trades,
+        "max_switch_rate": policy.max_switch_rate,
+        "max_drawdown": policy.max_drawdown,
+        "min_net_edge": policy.min_net_edge,
+        "require_robustness_certification": policy.require_robustness_certification,
+        "require_selector_stability": policy.require_selector_stability,
+        "require_causal_verification": policy.require_causal_verification,
+    }})
+
+
 @dataclass(frozen=True)
 class MetaReplayPolicy:
     version: str = "meta-selector-v2"
@@ -107,6 +121,11 @@ class MetaSelectorObservation:
     execution_exchange: str = "NSE"
     risk_state_as_of: datetime | None = None
     prior_returns_available_at: datetime | None = None
+    risk_snapshot_id: str | None = None
+    risk_snapshot_hash: str | None = None
+    risk_snapshot: dict[str, Any] = field(default_factory=dict)
+    risk_batch_id: str | None = None
+    batch_start_snapshot_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -123,12 +142,17 @@ class FinalDatasetReference:
     regime_snapshot_ids: tuple[str, ...] = ()
     asset_state_snapshot_ids: tuple[str, ...] = ()
     risk_snapshot_ids: tuple[str, ...] = ()
+    benchmark_series_id: str | None = None
+    strategy_series_ids: tuple[str, ...] = ()
+    outcome_materialization_cutoff: datetime | None = None
 
     def __post_init__(self) -> None:
         if not self.decision_times or any(timestamp.tzinfo is None for timestamp in self.decision_times):
             raise ValueError("FINAL dataset reference requires timezone-aware decision times")
         if self.timeframe != "1m":
             raise ValueError("FINAL dataset reference requires canonical 1m data")
+        if self.outcome_materialization_cutoff is not None and self.outcome_materialization_cutoff.tzinfo is None:
+            raise ValueError("outcome_materialization_cutoff must be timezone-aware")
 
 
 @dataclass(frozen=True)
@@ -157,6 +181,7 @@ class CausalRiskSnapshot:
                data_hash: str) -> "CausalRiskSnapshot":
         if as_of.tzinfo is None:
             raise ValueError("risk snapshot as_of must be timezone-aware")
+        as_of = as_of.astimezone(timezone.utc)
         values: dict[str, Any] = {
             "snapshot_id": snapshot_id, "as_of": as_of, "exposure": exposure,
             "sector_exposure": dict(sorted(sector_exposure.items())), "daily_pnl": daily_pnl,
@@ -252,6 +277,9 @@ class FinalOOSProvenanceCertificate:
 
     @classmethod
     def create(cls, *, meta_run_id: str, frozen_policy_id: str, frozen_policy_hash: str, selected_trial_id: str, selector_policy_hash: str, meta_policy_hash: str, scorecard_policy_hash: str, dataset_ids: Iterable[str], dataset_content_hashes: Iterable[str], evidence_hashes: Iterable[str], resolver_hash: str, execution_hash: str, final_oos_start: datetime, final_oos_end: datetime, materialized_at: datetime, cost_model_version: str, cost_model_hash: str, purge_periods: int, embargo_periods: int, acceptance_policy_version: str = "phase2-10-acceptance-v1", acceptance_policy_hash: str = "") -> FinalOOSProvenanceCertificate:
+        final_oos_start = final_oos_start.astimezone(timezone.utc)
+        final_oos_end = final_oos_end.astimezone(timezone.utc)
+        materialized_at = materialized_at.astimezone(timezone.utc)
         if materialized_at <= final_oos_end:
             raise ValueError("provenance certificate must materialize after FINAL_OOS")
         values: dict[str, Any] = {"meta_run_id": meta_run_id, "frozen_policy_id": frozen_policy_id, "frozen_policy_hash": frozen_policy_hash, "selected_trial_id": selected_trial_id, "selector_policy_hash": selector_policy_hash, "meta_policy_hash": meta_policy_hash, "scorecard_policy_hash": scorecard_policy_hash, "dataset_ids": tuple(sorted(dataset_ids)), "dataset_content_hashes": tuple(sorted(dataset_content_hashes)), "evidence_hashes": tuple(sorted(evidence_hashes)), "resolver_hash": resolver_hash, "execution_hash": execution_hash, "final_oos_start": final_oos_start, "final_oos_end": final_oos_end, "materialized_at": materialized_at, "cost_model_version": cost_model_version, "cost_model_hash": cost_model_hash, "purge_periods": purge_periods, "embargo_periods": embargo_periods, "acceptance_policy_version": acceptance_policy_version, "acceptance_policy_hash": acceptance_policy_hash}
@@ -317,6 +345,7 @@ class FrozenMetaPolicy:
     ) -> FrozenMetaPolicy:
         if frozen_at.tzinfo is None:
             raise ValueError("frozen_at must be timezone-aware")
+        frozen_at = frozen_at.astimezone(timezone.utc)
         candidate_ids = tuple(sorted(candidate_trial_ids))
         universe_ids = tuple(sorted(universe_lineage))
         values = {
@@ -464,6 +493,7 @@ class MetaResearchRunner:
             selector_policy_payload={"schema_version": "selector-policy-v1", **asdict(selector.policy)},
             meta_policy_payload={"schema_version": "meta-replay-policy-v1", **asdict(replay_policy)},
             scorecard_policy_payload={"schema_version": "scorecard-policy-v1", "policy_hash": scorecard_policy_hash},
+            acceptance_policy_hash=_acceptance_policy_hash(replay_policy),
         )
         self.db.persist_frozen_meta_policy(frozen)
         candidate_by_id = {candidate_id: (candidate_selector, candidate_policy) for candidate_id, candidate_selector, candidate_policy in candidate_list}
@@ -563,6 +593,9 @@ class MetaResearchRunner:
             raise ValueError("frozen policy selected trial candidate binding mismatch")
         resolver = HistoricalEvidenceResolver(self.db)
         items = resolver.final_observations(final_dataset_reference)
+        resolved_strategies = {card.strategy_name for item in items for card in item.scorecards}
+        if not resolved_strategies.issubset(set(artifact.get("universe_lineage") or ())):
+            raise ValueError("FINAL scorecard strategy is outside frozen universe lineage")
         replay = MetaSelectorBacktest(
             AdaptiveStrategySelector(selector_policy), replay_policy=replay_policy,
             resolver=resolver, db=self.db,
@@ -614,27 +647,66 @@ class MetaResearchRunner:
             acceptance_policy_hash=str(artifact.get("acceptance_policy_hash") or ""),
         )
         self.db.persist_final_oos_provenance_certificate(certificate)
-        persisted_certificate = self.db.validate_final_oos_provenance_certificate(certificate.certificate_id)
+        return result
+
+    def evaluate_final_oos_acceptance(self, certificate_id: str) -> str:
+        """Reload persisted FINAL artifacts and issue the sole empirical verdict."""
+        certificate = self.db.validate_final_oos_provenance_certificate(certificate_id)
+        artifact = self.db.load_frozen_meta_policy(str(certificate["frozen_policy_id"]))
+        if str(artifact["acceptance_policy_version"]) != str(certificate["acceptance_policy_version"]):
+            raise ValueError("acceptance policy version does not match certificate")
+        if str(artifact["acceptance_policy_hash"]) != str(certificate["acceptance_policy_hash"]):
+            raise ValueError("acceptance policy hash does not match certificate")
+        result = self.db.load_meta_selector_result_record(str(certificate["meta_run_id"]))
+        if result["meta_split"] != "FINAL_OOS" or result["final_oos_execution_hash"] != certificate["execution_hash"]:
+            raise ValueError("certificate result binding mismatch")
+        if not certificate["dataset_ids"] or any(str(value).lower() == "synthetic" for value in certificate["dataset_content_hashes"]):
+            return "PHASE 2.10 IMPLEMENTATION READY"
+        payload = dict(artifact.get("meta_policy_payload") or {})
+        if payload.pop("schema_version", None) != "meta-replay-policy-v1":
+            raise ValueError("unsupported stored acceptance policy payload")
+        policy = MetaReplayPolicy(**payload)
+        policy_hash = artifact["acceptance_policy_hash"]
+        if not policy_hash or policy_hash != _acceptance_policy_hash(policy):
+            raise ValueError("frozen artifact has no acceptance policy hash")
+        metrics = dict(result["metrics"])
+        baselines = dict(result["baselines"])
+        stress = dict(result["stress_results"])
+        simple_best = max(float(baselines[name]["total_return"]) for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"))
+        gates_pass = (
+            metrics.get("final_oos_duration_days", 0.0) >= policy.min_final_oos_duration_days
+            and metrics.get("decision_count", 0.0) >= policy.min_final_oos_observations
+            and metrics.get("trade_count", 0.0) >= policy.min_independent_trades
+            and metrics.get("evidence_coverage", 0.0) >= 1.0
+            and metrics.get("robustness_certified", 0.0) >= 1.0
+            and metrics.get("selector_stable", 0.0) >= 1.0
+            and metrics.get("causal_verification", 0.0) >= 1.0
+            and metrics.get("switch_count", 0.0) / max(metrics.get("decision_count", 0.0), 1.0) <= policy.max_switch_rate
+            and metrics.get("max_drawdown", 0.0) >= -policy.max_drawdown
+            and metrics.get("total_return", 0.0) - simple_best > policy.min_net_edge
+            and float(stress.get("2.0x_cost", {}).get("total_return", -1.0)) >= simple_best
+        )
+        verdict = (
+            "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
+            if gates_pass
+            else "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
+        )
         acceptance_payload = {
-            "meta_run_id": result.meta_run_id,
-            "certificate_id": certificate.certificate_id,
-            "certificate_hash": persisted_certificate["certificate_hash"],
-            "execution_hash": result.final_oos_execution_hash,
-            "verdict": result.verdict,
+            "meta_run_id": certificate["meta_run_id"], "certificate_id": certificate_id,
+            "certificate_hash": certificate["certificate_hash"], "execution_hash": certificate["execution_hash"],
+            "acceptance_policy_version": certificate["acceptance_policy_version"],
+            "acceptance_policy_hash": certificate["acceptance_policy_hash"], "verdict": verdict,
         }
         self.db.persist_phase2_10_empirical_acceptance(
             acceptance_id=_canonical_hash(acceptance_payload)[:32],
-            meta_run_id=result.meta_run_id,
-            certificate_id=certificate.certificate_id,
-            certificate_hash=str(persisted_certificate["certificate_hash"]),
-            execution_hash=result.final_oos_execution_hash,
-            verdict=result.verdict,
-            accepted_at=execution_materialized_at + pd.Timedelta(microseconds=1).to_pytimedelta(),
+            meta_run_id=str(certificate["meta_run_id"]), certificate_id=certificate_id,
+            certificate_hash=str(certificate["certificate_hash"]), execution_hash=str(certificate["execution_hash"]),
+            verdict=verdict, accepted_at=pd.Timestamp(certificate["materialized_at"]).to_pydatetime() + pd.Timedelta(microseconds=1).to_pytimedelta(),
             acceptance_hash=_canonical_hash(acceptance_payload),
-            acceptance_policy_version=str(artifact.get("acceptance_policy_version") or "phase2-10-acceptance-v1"),
-            acceptance_policy_hash=str(artifact.get("acceptance_policy_hash") or ""),
+            acceptance_policy_version=str(certificate["acceptance_policy_version"]),
+            acceptance_policy_hash=str(certificate["acceptance_policy_hash"]),
         )
-        return result
+        return verdict
 
     def _derive_empirical_provenance(
         self, items: tuple[MetaSelectorObservation, ...], trial_id: str, frozen_policy_id: str, data_hash: str,
@@ -687,6 +759,8 @@ class HistoricalEvidenceResolver:
             risk = self.db.load_phase2_10_causal_risk_snapshot(risk_id) if risk_id else None
             if reference.dataset_id != "synthetic" and (regime is None or asset is None or risk is None):
                 raise ValueError("FINAL PIT regime, asset-state, and risk snapshots are required")
+            if reference.dataset_id != "synthetic" and (reference.benchmark_series_id is None or not reference.strategy_series_ids):
+                raise ValueError("FINAL outcome series identifiers are required")
             if regime is None:
                 regime = {}
             if asset is None:
@@ -697,14 +771,40 @@ class HistoricalEvidenceResolver:
                 raise ValueError("FINAL PIT selector snapshot is after the decision cutoff")
             if pd.Timestamp(risk["as_of"]).to_pydatetime() > decision_time:
                 raise ValueError("FINAL risk snapshot is after the decision cutoff")
+            outcome_rows = self.db.list_phase2_10_outcome_series_at(
+                decision_time,
+                evaluation_cutoff=reference.outcome_materialization_cutoff or max(reference.decision_times),
+                benchmark_series_id=reference.benchmark_series_id,
+                strategy_series_ids=reference.strategy_series_ids,
+            )
+            if reference.dataset_id != "synthetic":
+                returned_series = {str(row["series_id"]) for row in outcome_rows}
+                required_series = {reference.benchmark_series_id, *reference.strategy_series_ids}
+                if not required_series.issubset(returned_series):
+                    raise ValueError("FINAL outcome series are unavailable at the evaluation cutoff")
+                for row in outcome_rows:
+                    if pd.Timestamp(row["observation_time"]).to_pydatetime() != decision_time:
+                        raise ValueError("FINAL outcome series observation is misaligned")
+                    if pd.Timestamp(row["holding_end"]).to_pydatetime() <= decision_time:
+                        raise ValueError("FINAL outcome series holding interval is invalid")
+            strategy_returns = {
+                str(row["strategy_name"]): float(row["value"])
+                for row in outcome_rows if row.get("series_type") == "STRATEGY" and row.get("strategy_name")
+            }
+            benchmark_return = next(
+                (float(row["value"]) for row in outcome_rows if row.get("series_type") == "BENCHMARK"), 0.0
+            )
             template = MetaSelectorObservation(
                 decision_time=decision_time, symbol=reference.symbol, horizon="1d",
                 market_regime=regime.get("raw_regime"), regime_confidence=float(regime.get("confidence", 1.0) or 1.0),
-                asset_cluster=asset.get("behavior_cluster"), scorecards=(), strategy_returns={},
+                asset_cluster=asset.get("behavior_cluster"), scorecards=(), strategy_returns=strategy_returns,
+                benchmark_return=benchmark_return,
                 meta_split="FINAL_OOS", data_hash=str(reference.dataset_content_hash),
                 execution_dataset_id=None if reference.dataset_id == "synthetic" else reference.dataset_id,
                 execution_timeframe=reference.timeframe,
                 execution_exchange=reference.exchange, risk_state_as_of=pd.Timestamp(risk["as_of"]).to_pydatetime(),
+                risk_snapshot_id=risk.get("snapshot_id"), risk_snapshot_hash=risk.get("snapshot_hash"),
+                risk_snapshot=dict(risk),
                 label_start=decision_time, label_end=decision_time,
                 evidence_start=decision_time, evidence_end=decision_time,
             )
@@ -721,24 +821,32 @@ class HistoricalEvidenceResolver:
                         },
                     ),
                 )
-            observations.append(self.observation_at(decision_time, template=template))
+            resolved = self.observation_at(decision_time, template=template)
+            if reference.dataset_id != "synthetic":
+                if any(str(row.get("dataset_hash")) != reference.dataset_content_hash for row in resolved.historical_bars):
+                    raise ValueError("FINAL dataset content hash does not match certified execution source")
+                for row in outcome_rows:
+                    if row.get("symbol") != reference.symbol or row.get("universe_snapshot_id") != reference.universe_snapshot_id or row.get("timeframe") != reference.timeframe:
+                        raise ValueError("FINAL outcome series identity mismatch")
+            observations.append(resolved)
         return tuple(observations)
 
-    def scorecards_at(self, decision_time: datetime, *, horizon: str | None = None) -> list[StrategyScorecard]:
+    def scorecards_at(self, decision_time: datetime, *, horizon: str | None = None, knowledge_cutoff: datetime | None = None) -> list[StrategyScorecard]:
         if decision_time.tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        return [self._scorecard_from_row(row) for row in self.db.list_scorecards_at(decision_time, horizon=horizon)]
+        return [self._scorecard_from_row(row) for row in self.db.list_scorecards_at(decision_time, horizon=horizon, knowledge_cutoff=knowledge_cutoff)]
 
-    def conditional_evidence_at(self, decision_time: datetime, *, strategy_name: str | None = None) -> list[dict[str, Any]]:
+    def conditional_evidence_at(self, decision_time: datetime, *, strategy_name: str | None = None, knowledge_cutoff: datetime | None = None) -> list[dict[str, Any]]:
         if decision_time.tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        return self.db.list_phase2_7_conditional_evidence_at(decision_time, strategy_name=strategy_name)
+        return self.db.list_phase2_7_conditional_evidence_at(decision_time, strategy_name=strategy_name, knowledge_cutoff=knowledge_cutoff)
 
     def observation_at(self, decision_time: datetime, *, template: MetaSelectorObservation) -> MetaSelectorObservation:
-        evidence = self.conditional_evidence_at(decision_time)
+        knowledge_cutoff = template.known_at or decision_time
+        evidence = self.conditional_evidence_at(decision_time, knowledge_cutoff=knowledge_cutoff)
         visible_evidence_ids = {str(row.get("evidence_id")) for row in evidence}
         cards = tuple(
-            card for card in self.scorecards_at(decision_time, horizon=template.horizon)
+            card for card in self.scorecards_at(decision_time, horizon=template.horizon, knowledge_cutoff=knowledge_cutoff)
             if card.conditional_evidence_id is None or str(card.conditional_evidence_id) in visible_evidence_ids
         )
         if template.execution_dataset_id is not None:
@@ -1129,6 +1237,15 @@ class MetaSelectorBacktest:
                 "delayed_execution": stress_result("delayed_execution", delay_periods=1) if len(items) > 1 else stress_results["1.0x_cost"],
                 "reduced_liquidity": stress_result("reduced_liquidity", liquidity_multiplier=0.5),
             })
+        metrics["robustness_certified"] = float(all(
+            scenario in stress_results for scenario in ("1.5x_cost", "2.0x_cost", "reduced_liquidity", "delayed_execution")
+        ))
+        metrics["selector_stable"] = float(
+            metrics.get("switch_count", 0.0) / max(metrics.get("decision_count", 0.0), 1.0) <= self.replay_policy.max_switch_rate
+        )
+        metrics["causal_verification"] = float(all(
+            row.get("risk_state_as_of") is not None for row in risk_rows
+        ) and all(order.get("execution_lineage") for order in orders))
         baselines["B5_adaptive"] = {"total_return": metrics["total_return"], "selection": "adaptive_selector"}
         verdict = "PHASE 2.10 IMPLEMENTATION READY"
         if meta_split == "FINAL_OOS":
@@ -1163,12 +1280,26 @@ class MetaSelectorBacktest:
         evidence_hash = _canonical_hash(payload)
         final_oos_execution_hash = _canonical_hash({
             "decisions": [asdict(decision) for decision in decisions],
+            "targets": [
+                {"symbol": symbol, "weight": weight}
+                for item in items for strategy in item.target_portfolios.values()
+                for symbol, weight in strategy.items()
+            ],
             "orders": orders,
             "fills": fills,
             "risk_decisions": risk_rows,
             "equity_curve": equity_rows,
             "metrics": metrics,
+            "baselines": baselines,
             "attribution": attribution,
+            "dataset_ids": sorted({item.execution_dataset_id for item in items if item.execution_dataset_id}),
+            "dataset_hashes": sorted({item.data_hash for item in items}),
+            "evidence_ids": sorted({card.evidence_hash for item in items for card in item.scorecards}),
+            "risk_snapshot_ids": sorted({item.risk_snapshot_id for item in items if item.risk_snapshot_id}),
+            "execution_bar_lineage": [
+                {key: row.get(key) for key in ("symbol", "timestamp", "dataset_id", "dataset_hash", "known_at")}
+                for item in items for row in item.historical_bars
+            ],
         })
         return MetaSelectorResult(
             meta_run_id=evidence_hash[:32],
@@ -1443,6 +1574,11 @@ class MetaSelectorBacktest:
         symbols = sorted(set(current_weights) | set(target_weights))
         symbols.sort(key=lambda symbol: float(target_weights.get(symbol, 0.0)) - float(current_weights.get(symbol, 0.0)))
         current_gross_exposure = sum(abs(value) * portfolio_value for value in adjusted.values())
+        risk_snapshot = dict(item.risk_snapshot)
+        if item.meta_split == "FINAL_OOS" and item.execution_dataset_id is not None and not risk_snapshot:
+            raise ValueError("FINAL risk snapshot is required for risk gating")
+        risk_batch_id = item.risk_batch_id or _canonical_hash({"decision_time": item.decision_time, "symbol": item.symbol})[:32]
+        batch_start_snapshot_id = item.batch_start_snapshot_id or item.risk_snapshot_id
         for symbol in symbols:
             current_weight = float(adjusted.get(symbol, 0.0))
             target_weight = float(target_weights.get(symbol, 0.0))
@@ -1452,7 +1588,8 @@ class MetaSelectorBacktest:
                 continue
             side = OrderSide.BUY if delta_weight > 0 else OrderSide.SELL
             liquidity_row = day.loc[symbol] if symbol in day.index else {}
-            daily_turnover_crore = float(liquidity_row.get("lagged_traded_value", 0.0) or 0.0) / 10_000_000.0
+            daily_turnover_crore = float(risk_snapshot.get("instrument_liquidity", {}).get(symbol, liquidity_row.get("lagged_traded_value", 0.0)) or 0.0) / 10_000_000.0
+            prior_state_hash = _canonical_hash({"weights": adjusted, "gross_exposure": current_gross_exposure})
             proposal = TradeProposal(
                 symbol=symbol,
                 sector=item.sectors.get(symbol, "UNKNOWN"),
@@ -1462,11 +1599,15 @@ class MetaSelectorBacktest:
                 order_side=side,
                 current_gross_exposure=current_gross_exposure,
                 current_sector_exposure=sum(abs(value) * portfolio_value for key, value in adjusted.items() if item.sectors.get(key, "UNKNOWN") == item.sectors.get(symbol, "UNKNOWN")),
-                daily_pnl=daily_pnl,
-                current_drawdown=current_drawdown,
-                open_position_count=sum(1 for value in adjusted.values() if abs(value) > 1e-12),
+                daily_pnl=float(risk_snapshot.get("daily_pnl", daily_pnl)),
+                current_drawdown=float(risk_snapshot.get("drawdown", current_drawdown)),
+                open_position_count=len([value for value in adjusted.values() if abs(value) > 1e-12]),
                 daily_turnover_crore=daily_turnover_crore,
-                estimated_portfolio_var_pct=(float(pd.Series(prior_returns, dtype=float).std(ddof=0) * 2.33) if prior_returns else None),
+                estimated_portfolio_var_pct=(
+                    float(cast(float, risk_snapshot["var_result"]))
+                    if risk_snapshot.get("var_result") is not None
+                    else (float(pd.Series(prior_returns, dtype=float).std(ddof=0) * 2.33) if prior_returns else None)
+                ),
             )
             decision = self.risk_engine.evaluate(proposal)
             approved_notional = float(decision.approved_notional)
@@ -1490,6 +1631,11 @@ class MetaSelectorBacktest:
                     "order_ids": (),
                     "fill_ids": (),
                     "risk_state_as_of": item.risk_state_as_of or item.decision_time,
+                    "risk_batch_id": risk_batch_id,
+                    "batch_start_snapshot_id": batch_start_snapshot_id,
+                    "prior_state_hash": prior_state_hash,
+                    "risk_snapshot_id": item.risk_snapshot_id,
+                    "risk_snapshot_hash": item.risk_snapshot_hash,
                 }
             )
         return {symbol: weight for symbol, weight in adjusted.items() if weight > 1e-12}, rows
@@ -1755,49 +1901,4 @@ class MetaSelectorBacktest:
         *,
         empirical_provenance: dict[str, Any] | None = None,
     ) -> str:
-        if meta_split != "FINAL_OOS":
-            return "PHASE 2.10 IMPLEMENTATION READY"
-        not_justified = "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
-        required_provenance = {
-            "non_synthetic_dataset", "registered_trial", "frozen_policy", "causal_inputs", "isolated_final_oos",
-        }
-        if not isinstance(empirical_provenance, dict) or not required_provenance.issubset(empirical_provenance):
-            return "PHASE 2.10 IMPLEMENTATION READY"
-        if not all(bool(empirical_provenance[key]) for key in required_provenance):
-            return "PHASE 2.10 IMPLEMENTATION READY"
-        if metrics.get("final_oos_duration_days", 0.0) < self.replay_policy.min_final_oos_duration_days:
-            return not_justified
-        if metrics.get("trade_count", 0.0) < self.replay_policy.min_independent_trades:
-            return not_justified
-        if self.replay_policy.require_robustness_certification and not empirical_provenance.get("robustness_certified", False):
-            return not_justified
-        if self.replay_policy.require_selector_stability and not empirical_provenance.get("selector_stable", False):
-            return not_justified
-        if self.replay_policy.require_causal_verification and not empirical_provenance.get("causal_verification", False):
-            return not_justified
-        simple_best = max(
-            float(baselines[name]["total_return"])
-            for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
-        )
-        if metrics.get("decision_count", 0.0) < 1 or metrics.get("trade_count", 0.0) < 1 or metrics.get("evidence_coverage", 0.0) < 1.0:
-            return not_justified
-        required_provenance = {
-            "non_synthetic_dataset", "registered_trial", "frozen_policy", "causal_inputs", "isolated_final_oos",
-        }
-        if not isinstance(empirical_provenance, dict) or not required_provenance.issubset(empirical_provenance):
-            return "PHASE 2.10 IMPLEMENTATION READY"
-        if not all(bool(empirical_provenance[key]) for key in required_provenance):
-            return "PHASE 2.10 IMPLEMENTATION READY"
-        if metrics["total_return"] <= simple_best:
-            return not_justified
-        if observation_count < self.replay_policy.min_final_oos_observations:
-            return not_justified
-        if metrics["switch_count"] / max(observation_count, 1) > self.replay_policy.max_switch_rate:
-            return not_justified
-        if metrics["max_drawdown"] < -self.replay_policy.max_drawdown:
-            return not_justified
-        if metrics["total_return"] - simple_best <= self.replay_policy.min_net_edge:
-            return not_justified
-        if stress_results.get("2.0x_cost", {}).get("total_return", metrics["total_return"]) < simple_best:
-            return not_justified
-        return "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
+        return "PHASE 2.10 IMPLEMENTATION READY"

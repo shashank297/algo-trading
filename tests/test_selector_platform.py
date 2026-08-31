@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Iterable, cast
 
 import pytest
 
-from experiments.meta_selector_backtest import CASH, FinalDatasetReference, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -803,7 +803,7 @@ def test_t2_10_w_runner_freezes_and_consumes_one_immutable_policy():
     assert result.final_oos_result.metrics["total_return"] >= 0
     with pytest.raises(ValueError, match="resolved observations"):
         MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(version="changed")), db=db).run(
-            final,
+            cast(Iterable[MetaSelectorObservation | dict[str, Any]], final),
             meta_split="FINAL_OOS",
             registered_trial_id=result.frozen_policy.selected_trial_id,
             frozen_policy_id=result.frozen_policy.frozen_policy_id,
@@ -940,7 +940,7 @@ def test_t2_10_ze_stored_policy_payload_hash_mismatch_fails_final_loading():
     )
     db.conn.execute("UPDATE frozen_meta_policies SET selector_policy_payload='{}' WHERE frozen_policy_id=?", [result.frozen_policy.frozen_policy_id])
     with pytest.raises(ValueError, match="frozen policy artifact hash mismatch"):
-        MetaResearchRunner(db).run_final_oos(result.frozen_policy.frozen_policy_id, [])
+        MetaResearchRunner(db).run_final_oos(result.frozen_policy.frozen_policy_id, cast(FinalDatasetReference, []))
 
 
 def test_t2_10_zf_trial_cutoff_excludes_future_registry_rows():
@@ -1003,6 +1003,82 @@ def test_t2_10_zg_conditional_evidence_cutoff_excludes_appended_future_row():
     resolver = HistoricalEvidenceResolver(db)
     assert resolver.conditional_evidence_at(cutoff) == []
     assert len(resolver.conditional_evidence_at(future)) == 1
+
+
+def test_t2_10_zh_certificate_reload_is_required_for_acceptance():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    def make(split: str, offset: int) -> MetaSelectorObservation:
+        timestamp = start + timedelta(days=offset)
+        return obs(timestamp, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a", label_start=timestamp, label_end=timestamp, evidence_start=timestamp, evidence_end=timestamp)
+    db = DuckDBManager(":memory:")
+    runner = MetaResearchRunner(db)
+    result = runner.run(
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], final_reference(start),
+        [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
+        data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
+    )
+    runner.run_final_oos(result.frozen_policy.frozen_policy_id, final_reference(start))
+    certificate_row = db.conn.execute("SELECT certificate_id FROM final_oos_provenance_certificates ORDER BY certificate_id DESC LIMIT 1").fetchone()
+    assert certificate_row is not None
+    certificate_id = certificate_row[0]
+    certificate = db.validate_final_oos_provenance_certificate(certificate_id)
+    assert certificate["acceptance_policy_hash"] == result.frozen_policy.acceptance_policy_hash
+    assert runner.evaluate_final_oos_acceptance(certificate_id) == "PHASE 2.10 IMPLEMENTATION READY"
+
+
+def test_t2_10_zi_acceptance_policy_substitution_fails_certificate_validation():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    db = DuckDBManager(":memory:")
+    certificate = FinalOOSProvenanceCertificate.create(
+        meta_run_id="run", frozen_policy_id="frozen", frozen_policy_hash="frozen-hash",
+        selected_trial_id="trial", selector_policy_hash="selector", meta_policy_hash="meta",
+        scorecard_policy_hash="scorecard", dataset_ids=("dataset",), dataset_content_hashes=("content",),
+        evidence_hashes=("evidence",), resolver_hash="resolver", execution_hash="execution",
+        final_oos_start=start, final_oos_end=start + timedelta(days=2),
+        materialized_at=start + timedelta(days=3), cost_model_version="cost-v1", cost_model_hash="cost-hash",
+        purge_periods=0, embargo_periods=0, acceptance_policy_version="policy-a",
+        acceptance_policy_hash="hash-a",
+    )
+    db.persist_final_oos_provenance_certificate(certificate)
+    db.conn.execute("UPDATE final_oos_provenance_certificates SET acceptance_policy_hash='hash-b' WHERE certificate_id=?", [certificate.certificate_id])
+    with pytest.raises(ValueError, match="certificate hash mismatch"):
+        db.validate_final_oos_provenance_certificate(certificate.certificate_id)
+
+
+def test_t2_10_zj_causal_risk_snapshot_tampering_fails_closed():
+    from experiments.meta_selector_backtest import CausalRiskSnapshot
+    db = DuckDBManager(":memory:")
+    snapshot = CausalRiskSnapshot.create(
+        snapshot_id="risk-1", as_of=datetime(2024, 4, 1, tzinfo=UTC), exposure=100.0,
+        sector_exposure={"TECH": 100.0}, daily_pnl=1.0, drawdown=0.01,
+        var_inputs=(0.1, 0.2), var_result=0.3, open_positions={"ABC": 1.0},
+        instrument_liquidity={"ABC": 1000000.0}, rolling_returns=(0.01,),
+        rolling_volatility=0.02, data_hash="dataset",
+    )
+    db.persist_phase2_10_causal_risk_snapshot(snapshot)
+    db.conn.execute("UPDATE phase2_10_causal_risk_snapshots SET var_result=9.0 WHERE snapshot_id='risk-1'")
+    with pytest.raises(ValueError, match="risk snapshot hash mismatch"):
+        db.load_phase2_10_causal_risk_snapshot("risk-1")
+
+
+def test_t2_10_zk_bitemporal_trial_invalidation_respects_knowledge_cutoff():
+    base = datetime(2024, 4, 1, tzinfo=UTC)
+    db = DuckDBManager(":memory:")
+    runner = MetaResearchRunner(db)
+    trial_id = runner._register_candidate(
+        "candidate", AdaptiveStrategySelector(), MetaReplayPolicy(), "dataset",
+        0, 0, base, "scorecard", "alpha", ["alpha"],
+    )
+    success = base + timedelta(days=1)
+    db.transition_research_trial(trial_id, "SUCCEEDED", effective_at=success, recorded_at=success)
+    historical = base + timedelta(days=2)
+    assert [row["trial_id"] for row in db.list_research_trials_at(historical, family_id="meta-selector-phase2-10")] == [trial_id]
+    db.transition_research_trial(
+        trial_id, "INVALIDATED", invalidation_reason="late audit",
+        effective_at=base + timedelta(days=3), recorded_at=base + timedelta(days=4),
+    )
+    assert [row["trial_id"] for row in db.list_research_trials_at(historical, family_id="meta-selector-phase2-10")] == [trial_id]
+    assert db.list_research_trials_at(base + timedelta(days=5), family_id="meta-selector-phase2-10") == []
 
 
 def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():

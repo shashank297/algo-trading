@@ -1446,12 +1446,13 @@ class DuckDBManager:
                         ],
                     )
                     event_time = pd.Timestamp(trial.created_at).to_pydatetime()
+                    recorded_time = datetime.now(timezone.utc)
                     event_status = trial.status.value if hasattr(trial.status, "value") else str(trial.status)
-                    event_payload = {"trial_id": target_trial_id, "status": event_status, "effective_at": event_time, "recorded_at": event_time}
+                    event_payload = {"trial_id": target_trial_id, "status": event_status, "effective_at": event_time, "recorded_at": recorded_time}
                     event_hash = hashlib.sha256(json.dumps(event_payload, sort_keys=True, default=str).encode()).hexdigest()
                     self.conn.execute(
                         "INSERT INTO research_trial_lifecycle_events (event_id, trial_id, status, effective_at, recorded_at, event_hash, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                        [event_hash[:32], target_trial_id, event_status, event_time, event_time, event_hash, json.dumps(event_payload, sort_keys=True, default=str)],
+                        [event_hash[:32], target_trial_id, event_status, event_time, recorded_time, event_hash, json.dumps(event_payload, sort_keys=True, default=str)],
                     )
                 return target_trial_id
             except (RuntimeError, ValueError):
@@ -3556,17 +3557,36 @@ class DuckDBManager:
 
 
     def list_phase2_7_conditional_evidence_at(
-        self, decision_time: datetime, *, strategy_name: str | None = None
+        self, decision_time: datetime, *, strategy_name: str | None = None,
+        knowledge_cutoff: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return only Phase 2.7 evidence available at an explicit historical cutoff."""
         if pd.Timestamp(decision_time).tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        query = "SELECT * FROM strategy_conditional_evidence WHERE available_at <= ?"
-        params: list[Any] = [decision_time]
+        knowledge = knowledge_cutoff or decision_time
+        if pd.Timestamp(knowledge).tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
+        query = "SELECT * FROM strategy_conditional_evidence WHERE available_at <= ? AND (recorded_at IS NULL OR recorded_at <= ?)"
+        params: list[Any] = [decision_time, knowledge]
         if strategy_name is not None:
             query += " AND strategy_name = ?"
             params.append(strategy_name)
         return self.conn.execute(query + " ORDER BY available_at, evidence_id", params).fetchdf().to_dict("records")
+
+    def list_phase2_10_outcome_series_at(
+        self, observation_time: datetime, *, evaluation_cutoff: datetime,
+        benchmark_series_id: str | None, strategy_series_ids: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        if pd.Timestamp(observation_time).tzinfo is None or pd.Timestamp(evaluation_cutoff).tzinfo is None:
+            raise ValueError("outcome cutoffs must be timezone-aware")
+        ids = tuple(item for item in (benchmark_series_id, *strategy_series_ids) if item)
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return self.conn.execute(
+            f"SELECT * FROM phase2_10_outcome_series WHERE series_id IN ({placeholders}) AND observation_time=? AND available_at <= ? ORDER BY series_type, strategy_name, series_id",
+            [*ids, observation_time, evaluation_cutoff],
+        ).fetchdf().to_dict("records")
 
     def persist_scorecard(self, scorecard: Any) -> str:
         data = dict(scorecard.__dict__)
@@ -3602,12 +3622,16 @@ class DuckDBManager:
         return str(data["scorecard_id"])
 
     def list_scorecards_at(
-        self, decision_time: datetime, *, horizon: str | None = None, strategy_name: str | None = None
+        self, decision_time: datetime, *, horizon: str | None = None, strategy_name: str | None = None,
+        knowledge_cutoff: datetime | None = None,
     ) -> list[dict[str, Any]]:
         if pd.Timestamp(decision_time).tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
-        query = "SELECT * FROM strategy_scorecards WHERE available_at <= ?"
-        params: list[Any] = [decision_time]
+        knowledge = knowledge_cutoff or decision_time
+        if pd.Timestamp(knowledge).tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
+        query = "SELECT * FROM strategy_scorecards WHERE available_at <= ? AND (recorded_at IS NULL OR recorded_at <= ?)"
+        params: list[Any] = [decision_time, knowledge]
         if horizon:
             query += " AND horizon = ?"
             params.append(horizon)
@@ -3856,8 +3880,11 @@ class DuckDBManager:
                 "dataset_ids", "dataset_content_hashes", "evidence_hashes", "resolver_hash",
                 "execution_hash", "final_oos_start", "final_oos_end", "materialized_at",
                 "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
+                "acceptance_policy_version", "acceptance_policy_hash",
             )
         }
+        for field in ("final_oos_start", "final_oos_end", "materialized_at"):
+            payload[field] = pd.Timestamp(payload[field]).tz_convert("UTC").to_pydatetime()
         expected_hash = hashlib.sha256(
             json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
         ).hexdigest()
@@ -3872,6 +3899,18 @@ class DuckDBManager:
         if certificate["materialized_at"] <= certificate["final_oos_end"]:
             raise ValueError("FINAL_OOS provenance certificate materialized before completion")
         return certificate
+
+    def load_meta_selector_result_record(self, meta_run_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM meta_selector_runs WHERE meta_run_id=?", [meta_run_id]
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown meta selector run {meta_run_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        for field in ("metrics_json", "baselines_json", "stress_results_json", "attribution_json", "orders_json", "fills_json", "risk_decisions_json"):
+            result[field[:-5]] = json.loads(str(result[field] or "{}"))
+        return result
 
     def persist_phase2_10_causal_risk_snapshot(self, snapshot: Any) -> str:
         values = asdict(snapshot)
@@ -3903,7 +3942,7 @@ class DuckDBManager:
         for field in ("sector_exposure", "var_inputs", "open_positions", "instrument_liquidity", "rolling_returns"):
             result[field] = json.loads(str(result[field]))
         payload = {
-            "snapshot_id": result["snapshot_id"], "as_of": result["as_of"],
+            "snapshot_id": result["snapshot_id"], "as_of": pd.Timestamp(result["as_of"]).tz_convert("UTC").to_pydatetime(),
             "exposure": result["exposure"], "sector_exposure": dict(sorted(result["sector_exposure"].items())),
             "daily_pnl": result["daily_pnl"], "drawdown": result["drawdown"],
             "var_inputs": tuple(result["var_inputs"]), "var_result": result["var_result"],
