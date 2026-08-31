@@ -142,7 +142,7 @@ def test_t01_oos_only_rows() -> None:
     ids = ConditionalEvidenceService(db).materialize("run")
     assert len(ids) == 4
     assert db.conn.execute("SELECT COUNT(*) FROM strategy_conditional_observations").fetchone()[0] == 40
-    rows = db.list_phase2_7_conditional_evidence_at(datetime(2025, 1, 1, tzinfo=UTC))
+    rows = db.list_phase2_7_conditional_evidence_at(datetime(2030, 1, 1, tzinfo=UTC))
     assert {row["aggregation_level"] for row in rows} == {"GLOBAL", "REGIME", "ASSET_CLUSTER", "REGIME_ASSET_CLUSTER"}
 
 
@@ -162,9 +162,27 @@ def test_t02_training_in_sample_exclusion() -> None:
 def test_t03_future_regime_mutation() -> None:
     db = _db()
     ids = ConditionalEvidenceService(db).materialize("run")
-    future = datetime(2026, 1, 1, tzinfo=UTC)
     db.conn.execute(
-        "UPDATE regime_transition_events SET operational_regime_after='BEAR' WHERE decision_time > ?", [future]
+        "INSERT INTO regime_transition_events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            "rt_future",
+            "NSE",
+            "NIFTY",
+            "EOD",
+            datetime(2024, 12, 31, tzinfo=UTC),
+            "raw39",
+            "BULL",
+            "BEAR",
+            datetime(2024, 12, 31, tzinfo=UTC),
+            1,
+            1.0,
+            "CHANGED",
+            "future-only",
+            "BEAR",
+            "p",
+            "h",
+            datetime(2024, 12, 31, tzinfo=UTC),
+        ],
     )
     assert ConditionalEvidenceService(db).materialize("run") == ids
 
@@ -172,8 +190,29 @@ def test_t03_future_regime_mutation() -> None:
 def test_t04_future_asset_state_mutation() -> None:
     db = _db()
     ids = ConditionalEvidenceService(db).materialize("run")
-    future = datetime(2026, 1, 1, tzinfo=UTC)
-    db.conn.execute("UPDATE asset_state_snapshots SET behavior_cluster='ILLIQUID' WHERE decision_time > ?", [future])
+    db.conn.execute(
+        "INSERT INTO asset_state_snapshots (asset_state_id,symbol,exchange,context_type,as_of,decision_time,behavior_cluster,cluster_confidence,eligibility,eligibility_reasons_json,features_json,input_evidence_manifest_json,input_evidence_hash,input_hashes_json,model_version,policy_version,policy_hash,created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        [
+            "as_future",
+            "ABC",
+            "NSE",
+            "EOD",
+            datetime(2024, 12, 31, tzinfo=UTC).date(),
+            datetime(2024, 12, 31, tzinfo=UTC),
+            "ILLIQUID",
+            1.0,
+            "ELIGIBLE",
+            "[]",
+            "{}",
+            "{}",
+            "h",
+            "{}",
+            "v",
+            "p",
+            "h",
+            datetime(2024, 12, 31, tzinfo=UTC),
+        ],
+    )
     assert ConditionalEvidenceService(db).materialize("run") == ids
 
 
@@ -181,6 +220,7 @@ def test_t05_available_at_cutoff() -> None:
     db = _db()
     ConditionalEvidenceService(db).materialize("run")
     assert not db.list_phase2_7_conditional_evidence_at(datetime(2024, 2, 1, tzinfo=UTC))
+    assert db.list_phase2_7_conditional_evidence_at(datetime(2030, 1, 1, tzinfo=UTC))
     with pytest.raises(ValueError, match="timezone-aware"):
         db.list_phase2_7_conditional_evidence_at(datetime(2025, 1, 1))
 
@@ -195,15 +235,23 @@ def test_t06_tiny_sample_insufficient() -> None:
 
 def test_t07_tiny_sample_shrinkage() -> None:
     db = _db()
+    db.conn.execute(
+        "UPDATE regime_transition_events SET operational_regime_after='BEAR' WHERE decision_time <= ?",
+        [datetime(2024, 1, 3, tzinfo=UTC)],
+    )
+    db.conn.execute(
+        "UPDATE strategy_equity_curve SET net_return=0.10 WHERE timestamp <= ?",
+        [datetime(2024, 1, 3, tzinfo=UTC)],
+    )
     policy = ConditionalEvidencePolicy(
         minimum_observations=100, minimum_trades=0, minimum_folds=2, minimum_span_days=1, prior_observations=100
     )
     ConditionalEvidenceService(db, policy).materialize("run")
     row = db.conn.execute(
-        "SELECT evidence_status, raw_conditional_metric, shrunk_metric FROM strategy_conditional_evidence WHERE aggregation_level='GLOBAL'"
+        "SELECT evidence_status, raw_conditional_metric, global_metric, shrunk_metric FROM strategy_conditional_evidence WHERE aggregation_level='REGIME' AND market_regime='BEAR'"
     ).fetchone()
     assert row[0] == "INSUFFICIENT_CONDITIONAL_EVIDENCE"
-    assert row[2] == pytest.approx(row[1])
+    assert abs(row[3] - row[2]) < abs(row[1] - row[2])
 
 
 def test_t08_large_sample_has_more_conditional_weight() -> None:
@@ -264,7 +312,8 @@ def test_t12_execution_cost_effect() -> None:
     high = _db()
     high.conn.execute("UPDATE walk_forward_trade_attribution SET cost=1000")
     ConditionalEvidenceService(high).materialize("run")
-    assert _global_row(high)[10] < _global_row(low)[10]
+    assert _global_row(high)[10] == pytest.approx(_global_row(low)[10])
+    assert _global_row(high)[9] > _global_row(low)[9]
 
 
 def test_t13_deterministic_evidence_hash() -> None:
@@ -354,6 +403,25 @@ def test_authoritative_cost_lineage_and_missing_lineage_fail_closed() -> None:
         ConditionalEvidenceService(missing).materialize("run")
 
 
+def test_trial_run_data_hash_mismatch_fails_closed() -> None:
+    db = _db()
+    db.conn.execute(
+        "UPDATE research_trials_log SET trial_json=?",
+        [
+            json.dumps(
+                {
+                    "strategy_version": "strategy-v1",
+                    "data_hash": "other-data",
+                    "cost_model_version": "cost-v1",
+                    "cost_model_hash": "cost-hash",
+                }
+            )
+        ],
+    )
+    with pytest.raises(ValueError, match="data hash"):
+        ConditionalEvidenceService(db).materialize("run")
+
+
 def test_phase2_7_cli_is_read_only_end_to_end(tmp_path: Path) -> None:
     database = tmp_path / "phase27.duckdb"
     db = _db(str(database))
@@ -361,6 +429,7 @@ def test_phase2_7_cli_is_read_only_end_to_end(tmp_path: Path) -> None:
     protected = ("strategy_runs", "promotion_reviews", "strategy_orders", "paper_sessions")
     before = {table: db.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in protected}
     db.close()
+    before_mtime = database.stat().st_mtime_ns
     clean_env = os.environ.copy()
     for name in ("SMARTAPI_API_KEY", "SMARTAPI_CLIENT_CODE", "SMARTAPI_PIN", "SMARTAPI_TOTP_SECRET"):
         clean_env.pop(name, None)
@@ -373,7 +442,7 @@ def test_phase2_7_cli_is_read_only_end_to_end(tmp_path: Path) -> None:
             "--strategy",
             "trend_following",
             "--evidence-at",
-            "2025-01-01T00:00:00+00:00",
+            "2030-01-01T00:00:00+00:00",
             "--database-path",
             str(database),
         ],
@@ -384,6 +453,7 @@ def test_phase2_7_cli_is_read_only_end_to_end(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert database.stat().st_mtime_ns == before_mtime
     for field in (
         "strategy_version",
         "aggregation_level",

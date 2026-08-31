@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Any, Iterable
 import numpy as np
 import pandas as pd
 
+from trading_stack.backtest import _annualized_return, _profit_factor, _sharpe_ratio, _sortino_ratio
+
 if TYPE_CHECKING:
     from storage.duckdb_manager import DuckDBManager
 
@@ -93,7 +95,15 @@ class ConditionalEvidenceBuilder:
             raise ValueError("No OUT_OF_SAMPLE observations; in-sample fallback is prohibited")
         timestamps = [datetime.fromisoformat(str(x["timestamp"]).replace("Z", "+00:00")) for x in rows]
         net_returns = [float(x.get("net_return", 0.0)) for x in rows]
+        returns = pd.Series(net_returns, dtype=float)
+        equity = (1.0 + returns).cumprod()
+        drawdown = equity / equity.cummax() - 1.0
         costs = [float(x.get("cost", 0.0)) for x in rows]
+        cost_ratio = sum(
+            float(x.get("cost", 0.0)) / abs(float(x.get("equity", 0.0)))
+            for x in rows
+            if float(x.get("equity", 0.0))
+        )
         trades = sum(int(x.get("trade_count", 0)) for x in rows)
         folds = len({str(x.get("fold_id")) for x in rows if x.get("fold_id") is not None})
         span_days = (max(timestamps) - min(timestamps)).days
@@ -135,16 +145,18 @@ class ConditionalEvidenceBuilder:
             folds,
             min(timestamps),
             max(timestamps),
-            sum(net_returns),
+            float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0,
+            _sharpe_ratio(returns, timeframe),
+            _sortino_ratio(returns, timeframe),
+            float(_annualized_return(equity, timeframe, 1.0) / abs(float(drawdown.min())))
+            if not drawdown.empty and float(drawdown.min()) < 0
+            else 0.0,
+            float(drawdown.min()) if not drawdown.empty else 0.0,
+            _profit_factor(returns),
+            float(sum(value > 0 for value in net_returns) / len(net_returns)),
             raw,
-            raw,
-            raw,
-            min(0.0, min(net_returns)),
             0.0,
-            0.0,
-            raw,
-            0.0,
-            sum(costs),
+            cost_ratio,
             status,
             raw,
             global_metric,
@@ -179,7 +191,7 @@ class ConditionalEvidenceService:
         if run is None or run[4] is None or str(run[5]).upper() not in {"COMPLETED", "SUCCEEDED"}:
             raise ValueError("Conditional evidence requires a completed persisted strategy run")
         rows = conn.execute(
-            """SELECT timestamp, fold_id, equity, gross_return, net_return
+            """SELECT timestamp, fold_id, equity, gross_return, net_return, drawdown, gross_exposure
                FROM strategy_equity_curve WHERE run_id = ? AND evidence_level = 'OUT_OF_SAMPLE'
                ORDER BY timestamp, fold_id""",
             [run_id],
@@ -187,6 +199,9 @@ class ConditionalEvidenceService:
         if rows.empty:
             raise ValueError("No OUT_OF_SAMPLE observations; in-sample fallback is prohibited")
         trial = self._authoritative_trial(run_id)
+        if str(trial["trial_data_hash"]) != str(run[3]):
+            raise ValueError("Authoritative trial data hash does not match strategy run data hash")
+        evidence_available_at = pd.Timestamp.now(tz="UTC")
         version = str(trial["strategy_version"])
         observations: list[dict] = []
         for record in rows.to_dict("records"):
@@ -211,7 +226,8 @@ class ConditionalEvidenceService:
             if cost_row is None:
                 raise RuntimeError("DuckDB returned no cost aggregate")
             cost, trade_count = cost_row
-            authoritative_net = float(record["gross_return"]) - float(cost) / float(record["equity"])
+            authoritative_net = float(record["net_return"])
+            cost_ratio = float(cost) / abs(float(record["equity"])) if float(record["equity"]) else 0.0
             status = "CONTEXT_AVAILABLE" if regime and asset and regime[1] and asset[1] else "CONTEXT_UNAVAILABLE"
             payload = {
                 "run_id": run_id,
@@ -219,9 +235,13 @@ class ConditionalEvidenceService:
                 "time": point.isoformat(),
                 "regime": regime,
                 "asset": asset,
-                "persisted_net": record["net_return"],
                 "net": authoritative_net,
+                "gross": float(record["gross_return"]),
+                "equity": float(record["equity"]),
+                "drawdown": float(record["drawdown"]),
+                "gross_exposure": float(record["gross_exposure"]),
                 "cost": cost,
+                "cost_ratio": cost_ratio,
             }
             observation_id = _hash(payload)[:32]
             observations.append(
@@ -231,7 +251,11 @@ class ConditionalEvidenceService:
                     "fold_id": str(record["fold_id"]),
                     "net_return": authoritative_net,
                     "gross_return": float(record["gross_return"]),
+                    "equity": float(record["equity"]),
+                    "drawdown": float(record["drawdown"]),
+                    "gross_exposure": float(record["gross_exposure"]),
                     "cost": float(cost),
+                    "cost_ratio": cost_ratio,
                     "trade_count": int(trade_count),
                     "regime": regime,
                     "asset": asset,
@@ -242,7 +266,7 @@ class ConditionalEvidenceService:
         self._persist_observations(run_id, run, version, observations)
         if any(item["status"] != "CONTEXT_AVAILABLE" for item in observations):
             raise ValueError("Every OOS observation requires causal regime and asset-state context")
-        return self._aggregate(run_id, run, version, observations, trial)
+        return self._aggregate(run_id, run, version, observations, trial, evidence_available_at)
 
     def _authoritative_trial(self, run_id: str) -> dict[str, Any]:
         """Return the sole immutable successful trial linked to this run."""
@@ -263,7 +287,7 @@ class ConditionalEvidenceService:
                         "cost_model_hash": str(trial["cost_model_hash"]),
                         "strategy_version": str(trial["strategy_version"]),
                         "trial_data_hash": str(trial["data_hash"]),
-                        "available_at": pd.Timestamp(finished_at).isoformat(),
+                        "trial_finished_at": pd.Timestamp(finished_at).isoformat(),
                     }
                 )
         if len(matches) != 1:
@@ -313,7 +337,15 @@ class ConditionalEvidenceService:
                     values,
                 )
 
-    def _aggregate(self, run_id: str, run: tuple, version: str, rows: list[dict], trial: dict[str, Any]) -> list[str]:
+    def _aggregate(
+        self,
+        run_id: str,
+        run: tuple,
+        version: str,
+        rows: list[dict],
+        trial: dict[str, Any],
+        evidence_available_at: pd.Timestamp,
+    ) -> list[str]:
         valid = [r for r in rows if r["status"] == "CONTEXT_AVAILABLE"]
         if not valid:
             raise ValueError("No causally established historical context")
@@ -326,7 +358,20 @@ class ConditionalEvidenceService:
             groups.setdefault(("REGIME_ASSET_CLUSTER", regime, asset), []).append(row)
         ids = []
         for (level, regime, asset), group in sorted(groups.items()):
-            ids.append(self._persist_group(run_id, run, version, level, regime, asset, group, global_metric, trial))
+            ids.append(
+                self._persist_group(
+                    run_id,
+                    run,
+                    version,
+                    level,
+                    regime,
+                    asset,
+                    group,
+                    global_metric,
+                    trial,
+                    evidence_available_at,
+                )
+            )
         return ids
 
     def _persist_group(
@@ -340,10 +385,16 @@ class ConditionalEvidenceService:
         group: list[dict],
         global_metric: float,
         trial: dict[str, Any],
+        evidence_available_at: pd.Timestamp,
     ) -> str:
-        values = np.array([r["net_return"] for r in group], dtype=float)
+        ordered = sorted(group, key=lambda row: (row["timestamp"], row["fold_id"]))
+        values = np.array([r["net_return"] for r in ordered], dtype=float)
+        returns = pd.Series(values, dtype=float)
+        equity = (1.0 + returns).cumprod()
+        drawdown = equity / equity.cummax() - 1.0
         costs = sum(r["cost"] for r in group)
         gross = sum(r["gross_return"] for r in group)
+        cost_ratio = sum(r["cost_ratio"] for r in group)
         n, trades, folds = len(group), sum(r["trade_count"] for r in group), len({r["fold_id"] for r in group})
         first, last = min(r["timestamp"] for r in group), max(r["timestamp"] for r in group)
         span = (last - first).days
@@ -371,8 +422,16 @@ class ConditionalEvidenceService:
         }
         digest = _hash(payload)
         evidence_id = digest[:32]
-        volatility = float(values.std(ddof=1)) if n > 1 else 0.0
-        sharpe = raw / volatility if volatility else 0.0
+        net_return = float(equity.iloc[-1] - 1.0) if not equity.empty else 0.0
+        cagr = _annualized_return(equity, str(run[2]), 1.0)
+        max_drawdown = float(drawdown.min()) if not drawdown.empty else 0.0
+        turnover = float(
+            pd.Series([r["gross_exposure"] for r in ordered], dtype=float)
+            .diff()
+            .abs()
+            .fillna(abs(float(ordered[0]["gross_exposure"])) if ordered else 0.0)
+            .sum()
+        )
         result = [
             evidence_id,
             level,
@@ -389,18 +448,18 @@ class ConditionalEvidenceService:
             folds,
             first,
             last,
-            float(values.sum()),
+            net_return,
             gross,
             costs,
-            sharpe,
-            sharpe,
-            sharpe,
-            float(min(0.0, values.cumsum().min())),
-            0.0,
-            0.0,
+            _sharpe_ratio(returns, str(run[2])),
+            _sortino_ratio(returns, str(run[2])),
+            float(cagr / abs(max_drawdown)) if max_drawdown < 0 else 0.0,
+            max_drawdown,
+            _profit_factor(returns),
+            float((values > 0).sum() / n) if n else 0.0,
             raw,
-            0.0,
-            costs / abs(gross) if gross else 0.0,
+            turnover,
+            cost_ratio,
             "SUFFICIENT" if sufficient else "INSUFFICIENT_CONDITIONAL_EVIDENCE",
             raw,
             global_metric,
@@ -412,7 +471,7 @@ class ConditionalEvidenceService:
             trial["cost_model_version"],
             json.dumps(lineage, sort_keys=True),
             digest,
-            trial["available_at"],
+            evidence_available_at,
             trial["cost_model_hash"],
         ]
         existing = self.db.conn.execute(
