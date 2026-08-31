@@ -3890,14 +3890,63 @@ class DuckDBManager:
         ).hexdigest()
         if expected_hash != certificate["certificate_hash"]:
             raise ValueError("FINAL_OOS provenance certificate hash mismatch")
+        artifact = self.load_frozen_meta_policy(str(certificate["frozen_policy_id"]))
+        artifact_payload = {
+            "selector_policy_version": artifact["selector_policy_version"],
+            "selector_policy_hash": artifact["selector_policy_hash"],
+            "scorecard_policy_hash": artifact["scorecard_policy_hash"],
+            "meta_policy_version": artifact["meta_policy_version"],
+            "meta_policy_hash": artifact["meta_policy_hash"],
+            "candidate_trial_ids": tuple(sorted(artifact["candidate_trial_ids"])),
+            "selected_trial_id": artifact["selected_trial_id"],
+            "data_hash": artifact["data_hash"],
+            "b2_strategy": artifact.get("b2_strategy"),
+            "universe_lineage": tuple(sorted(artifact["universe_lineage"])),
+            "cost_model_version": artifact["cost_model_version"],
+            "cost_model_hash": artifact["cost_model_hash"],
+            "purge_periods": artifact["purge_periods"],
+            "embargo_periods": artifact["embargo_periods"],
+            "frozen_at": pd.Timestamp(artifact["frozen_at"]).tz_convert("UTC").to_pydatetime(),
+            "selection_rule": artifact["selection_rule"],
+            "selection_result": artifact.get("selection_result"),
+            "selector_policy_payload": artifact.get("selector_policy_payload") or {},
+            "meta_policy_payload": artifact.get("meta_policy_payload") or {},
+            "scorecard_policy_payload": artifact.get("scorecard_policy_payload") or {},
+            "acceptance_policy_version": artifact.get("acceptance_policy_version"),
+            "acceptance_policy_hash": artifact.get("acceptance_policy_hash"),
+        }
+        expected_artifact_hash = hashlib.sha256(json.dumps(artifact_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+        if expected_artifact_hash != artifact.get("artifact_hash"):
+            raise ValueError("FINAL_OOS frozen artifact hash mismatch")
+        if artifact.get("artifact_hash") != certificate["frozen_policy_hash"]:
+            raise ValueError("FINAL_OOS certificate frozen artifact binding mismatch")
+        if artifact.get("selected_trial_id") != certificate["selected_trial_id"]:
+            raise ValueError("FINAL_OOS certificate selected trial binding mismatch")
+        if str(artifact.get("acceptance_policy_version")) != str(certificate["acceptance_policy_version"]):
+            raise ValueError("FINAL_OOS certificate acceptance policy version mismatch")
+        if str(artifact.get("acceptance_policy_hash")) != str(certificate["acceptance_policy_hash"]):
+            raise ValueError("FINAL_OOS certificate acceptance policy hash mismatch")
+        trial = self.get_research_trial(str(certificate["selected_trial_id"]))
+        if trial is None or trial.get("experiment_family_id") != certificate["experiment_family_id"]:
+            raise ValueError("FINAL_OOS certificate trial binding mismatch")
+        if str(certificate["selected_trial_id"]) not in set(artifact.get("candidate_trial_ids") or ()):
+            raise ValueError("FINAL_OOS certificate candidate binding mismatch")
+        if certificate["materialized_at"] <= certificate["final_oos_end"]:
+            raise ValueError("FINAL_OOS provenance certificate materialized before completion")
         result = self.conn.execute(
             "SELECT final_oos_execution_hash FROM meta_selector_runs WHERE meta_run_id = ? AND final_oos_execution_hash = ?",
             [certificate["meta_run_id"], certificate["execution_hash"]],
         ).fetchone()
         if result is None:
             raise ValueError("FINAL_OOS provenance certificate has no persisted execution result")
-        if certificate["materialized_at"] <= certificate["final_oos_end"]:
-            raise ValueError("FINAL_OOS provenance certificate materialized before completion")
+        result_row = self.conn.execute(
+            "SELECT meta_split, available_at, verdict FROM meta_selector_runs WHERE meta_run_id=?",
+            [certificate["meta_run_id"]],
+        ).fetchone()
+        if result_row is None or result_row[0] != "FINAL_OOS" or result_row[2] != "PHASE 2.10 IMPLEMENTATION READY":
+            raise ValueError("FINAL_OOS certificate result is not an immutable pre-verdict result")
+        if result_row[1] is not None and certificate["materialized_at"] <= result_row[1]:
+            raise ValueError("FINAL_OOS certificate materialized before result persistence")
         return certificate
 
     def load_meta_selector_result_record(self, meta_run_id: str) -> dict[str, Any]:
