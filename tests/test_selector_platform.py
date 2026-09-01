@@ -9,7 +9,7 @@ from typing import Any, Iterable, cast
 import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _BaselineSelector, _acceptance_policy_hash, _baseline_artifact_hash, _baseline_execution_payload, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _BaselineSelector, _acceptance_policy_hash, _baseline_artifact_hash, _baseline_execution_payload, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _recompute_transition_stress_quality, _stress_artifact_hash, _stress_execution_hash, _validate_baseline_artifact
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -1490,11 +1490,16 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BEAR"},
     ]
     transition["regime_lineage"] = [
-        {"timestamp": start.isoformat(), "operational_regime": "BULL"},
-        {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BULL"},
+        {"timestamp": start.isoformat(), "operational_regime": "BULL", "selector_consumed_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BULL", "selector_consumed_regime": "BULL"},
     ]
     transition["transition_lineage"] = [
+        {"timestamp": start.isoformat(), "base_operational_regime": "BULL", "perturbed_operational_regime": "BULL", "selector_consumed_regime": "BULL"},
         {"timestamp": (start + timedelta(days=1)).isoformat(), "base_operational_regime": "BEAR", "perturbed_operational_regime": "BULL", "selector_consumed_regime": "BULL"},
+    ]
+    transition["selector_decisions"] = [
+        {"selector_consumed_regime": "BULL"},
+        {"selector_consumed_regime": "BULL"},
     ]
     transition["execution_hash"] = _stress_execution_hash(transition)
     transition["result_hash"] = _stress_artifact_hash(transition)
@@ -1671,3 +1676,85 @@ def test_t2_10_zo_acceptance_storage_is_idempotent_and_conflict_safe():
         db.persist_phase2_10_empirical_acceptance(
             **{**arguments, "acceptance_id": conflicting_id, "acceptance_hash": conflicting_hash, "verdict": simpler_verdict}
         )
+
+
+def test_t2_8_effective_policy_identity_is_order_independent_and_material_changes_split_identity():
+    policy = ScorecardPolicy()
+    reordered = replace(policy, weights=dict(reversed(tuple(policy.weights.items()))))
+    changed_weights = dict(policy.weights)
+    changed_weights["performance"] += 0.01
+    changed_weights["downside"] -= 0.01
+    changed = replace(policy, weights=changed_weights)
+
+    assert reordered.policy_hash == policy.policy_hash
+    assert reordered.effective_version == policy.effective_version
+    assert changed.policy_hash != policy.policy_hash
+    assert changed.effective_version != policy.effective_version
+
+
+def test_t2_8_effective_policy_identity_conflict_is_immutable():
+    db = DuckDBManager(":memory:")
+    scorecard = card()
+    db.persist_scorecard(scorecard)
+
+    with pytest.raises(ValueError, match="immutable scorecard"):
+        db.persist_scorecard(replace(scorecard, evidence_hash="tampered-evidence"))
+    with pytest.raises(ValueError, match="effective scorecard policy identity"):
+        db.persist_scorecard(replace(scorecard, scorecard_policy_hash="tampered-policy"))
+
+
+def test_t2_10_transition_stress_uses_returned_stressed_lineage_and_selector_regime():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    items = [
+        obs(start, [card()], {"alpha": 0.01}, raw_regime="BULL", operational_regime="BULL", meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, raw_regime="BEAR", operational_regime="BEAR", meta_split="RESEARCH"),
+    ]
+    result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(items)
+    transition = result.stress_results["transition_uncertainty"]
+
+    assert transition["informative"] is True
+    assert any(
+        row["base_operational_regime"] != row["perturbed_operational_regime"]
+        for row in transition["transition_lineage"]
+    )
+    assert all(
+        row["selector_consumed_regime"] == row["perturbed_operational_regime"]
+        for row in transition["transition_lineage"]
+    )
+    assert _recompute_transition_stress_quality(result.stress_results, MetaReplayPolicy())
+
+
+def test_t2_10_transition_integrity_tampering_hard_fails_at_acceptance_boundary():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([
+        obs(start, [card()], {"alpha": 0.01}, raw_regime="BULL", operational_regime="BULL", meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, raw_regime="BEAR", operational_regime="BEAR", meta_split="RESEARCH"),
+    ])
+    tampered = dict(result.stress_results)
+    transition = dict(tampered["transition_uncertainty"])
+    transition["execution_hash"] = "tampered-execution-hash"
+    tampered["transition_uncertainty"] = transition
+
+    with pytest.raises(ValueError, match="transition execution hash mismatch"):
+        _recompute_transition_stress_quality(tampered, MetaReplayPolicy(), strict=True)
+
+
+def test_t2_10_baseline_hash_binds_per_time_decision_lineage():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([
+        obs(start, [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+    ])
+    baseline = result.baselines["B3_equal_ensemble"]
+    assert _validate_baseline_artifact(baseline)
+    mutated = {
+        **baseline,
+        "baseline_decisions": [
+            {**baseline["baseline_decisions"][0], "selected_strategies": ("tampered",)},
+            *baseline["baseline_decisions"][1:],
+        ],
+    }
+    mutated["result_hash"] = _baseline_artifact_hash(mutated)
+
+    with pytest.raises(ValueError, match="baseline execution hash mismatch"):
+        _validate_baseline_artifact(mutated, strict=True)

@@ -261,7 +261,7 @@ def _stress_artifact_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
             "orders", "fills", "costs", "risk_decisions", "attribution",
             "execution_lineage", "informative", "transition_lineage",
             "base_transition_lineage", "regime_lineage",
-            "selector_consumed_regimes",
+            "selector_consumed_regimes", "selector_decisions",
         )
     }
 
@@ -275,7 +275,7 @@ def _stress_execution_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
             "slippage", "switching_cost_drag", "switch_count", "total_return",
             "max_drawdown", "informative", "transition_lineage",
             "base_transition_lineage", "regime_lineage",
-            "selector_consumed_regimes",
+            "selector_consumed_regimes", "selector_decisions",
         )
     }
 
@@ -293,7 +293,7 @@ def _baseline_artifact_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         key: artifact.get(key)
         for key in (
             "baseline_id", "selection", "policy_version", "policy_hash",
-            "eligible_strategies", "targets", "target_hash", "deltas",
+            "eligible_strategies", "baseline_decisions", "targets", "target_hash", "deltas",
             "orders", "fills", "risk_decisions", "costs", "equity_curve",
             "metrics", "cost_model_version", "cost_model_hash",
             "execution_hash", "equity_hash",
@@ -310,7 +310,7 @@ def _baseline_execution_payload(artifact: dict[str, Any]) -> dict[str, Any]:
         key: artifact.get(key)
         for key in (
             "baseline_id", "selection", "policy_version", "policy_hash",
-            "eligible_strategies", "targets", "target_hash", "deltas",
+            "eligible_strategies", "baseline_decisions", "targets", "target_hash", "deltas",
             "orders", "fills", "risk_decisions", "costs", "equity_curve",
             "metrics", "total_return", "max_drawdown", "cvar", "turnover",
             "total_execution_cost", "slippage", "cost_model_version", "cost_model_hash",
@@ -319,32 +319,43 @@ def _baseline_execution_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _validate_baseline_artifact(artifact: dict[str, Any]) -> bool:
+def _validate_baseline_artifact(artifact: dict[str, Any], *, strict: bool = False) -> bool:
     if not artifact or artifact.get("selection", "").startswith("UNAVAILABLE"):
         return False
-    if artifact.get("result_hash") != _baseline_artifact_hash(artifact):
-        return False
-    if artifact.get("target_hash") != _canonical_hash(artifact.get("targets", [])):
-        return False
-    if not artifact.get("execution_hash") or not artifact.get("equity_hash"):
-        return False
-    if artifact.get("execution_hash") != _canonical_hash(_baseline_execution_payload(artifact)):
-        return False
-    if artifact.get("equity_hash") != _canonical_hash(artifact.get("equity_curve", [])):
-        return False
-    return all(
-        field in artifact
-        for field in ("eligible_strategies", "targets", "deltas", "orders", "fills", "risk_decisions", "costs", "metrics")
+    required_fields = (
+        "eligible_strategies", "baseline_decisions", "targets", "deltas", "orders",
+        "fills", "risk_decisions", "costs", "metrics", "result_hash", "execution_hash",
+        "equity_hash",
     )
+    if any(field not in artifact for field in required_fields):
+        return False
+    checks = (
+        ("result hash", artifact.get("result_hash"), _baseline_artifact_hash(artifact)),
+        ("target hash", artifact.get("target_hash"), _canonical_hash(artifact.get("targets", []))),
+        ("execution hash", artifact.get("execution_hash"), _canonical_hash(_baseline_execution_payload(artifact))),
+        ("equity hash", artifact.get("equity_hash"), _canonical_hash(artifact.get("equity_curve", []))),
+    )
+    for label, actual, expected in checks:
+        if actual != expected:
+            if strict:
+                raise ValueError(f"baseline {label} mismatch")
+            return False
+    return True
 
 
 def _recompute_stress_quality(
     stress_results: dict[str, dict[str, Any]],
     policy: MetaReplayPolicy,
+    *,
+    strict: bool = False,
 ) -> bool:
     thresholds = _stress_threshold_map(policy)
     base = stress_results.get("1.0x_cost")
-    if not base or _stress_artifact_hash(base) != base.get("result_hash"):
+    if not base:
+        return False
+    if _stress_artifact_hash(base) != base.get("result_hash"):
+        if strict:
+            raise ValueError("base stress result hash mismatch")
         return False
     base_return = float(base.get("total_return", 0.0))
     base_cost = float(base.get("execution_cost", 0.0))
@@ -354,8 +365,12 @@ def _recompute_stress_quality(
         if not scenario or scenario.get("scenario_id") != scenario_id:
             return False
         if _stress_execution_hash(scenario) != scenario.get("execution_hash"):
+            if strict:
+                raise ValueError(f"stress execution hash mismatch for {scenario_id}")
             return False
         if _stress_artifact_hash(scenario) != scenario.get("result_hash"):
+            if strict:
+                raise ValueError(f"stress result hash mismatch for {scenario_id}")
             return False
         if not scenario.get("execution_hash") or not scenario.get("cost_model_hash"):
             return False
@@ -421,14 +436,20 @@ def _recompute_selector_stability(evidence: Iterable[dict[str, Any]]) -> dict[st
 def _recompute_transition_stress_quality(
     stress_results: dict[str, dict[str, Any]],
     policy: MetaReplayPolicy,
+    *,
+    strict: bool = False,
 ) -> bool:
     for scenario_id in policy.required_regime_stress_scenarios:
         scenario = stress_results.get(scenario_id)
         if not scenario or scenario.get("scenario_id") != scenario_id:
             return False
         if _stress_execution_hash(scenario) != scenario.get("execution_hash"):
+            if strict:
+                raise ValueError(f"transition execution hash mismatch for {scenario_id}")
             return False
         if _stress_artifact_hash(scenario) != scenario.get("result_hash"):
+            if strict:
+                raise ValueError(f"transition result hash mismatch for {scenario_id}")
             return False
         if not scenario.get("informative"):
             return False
@@ -445,7 +466,28 @@ def _recompute_transition_stress_quality(
             row.get("selector_consumed_regime") != row.get("perturbed_operational_regime")
             for row in transition_lineage if isinstance(row, dict)
         ):
+            if strict:
+                raise ValueError("transition selector regime lineage mismatch")
             return False
+        regime_lineage = scenario.get("regime_lineage", [])
+        decision_payloads = scenario.get("selector_decisions", ())
+        if not isinstance(regime_lineage, list) or len(regime_lineage) != len(transition_lineage):
+            return False
+        if decision_payloads and len(decision_payloads) != len(transition_lineage):
+            return False
+        for index, row in enumerate(transition_lineage):
+            if not isinstance(row, dict) or not isinstance(regime_lineage[index], dict):
+                return False
+            stressed_regime = regime_lineage[index].get("operational_regime")
+            consumed_regime = regime_lineage[index].get("selector_consumed_regime")
+            if stressed_regime != row.get("perturbed_operational_regime") or consumed_regime != row.get("selector_consumed_regime"):
+                if strict:
+                    raise ValueError("transition stressed regime lineage contradicts selector lineage")
+                return False
+            if decision_payloads and decision_payloads[index].get("selector_consumed_regime") != row.get("selector_consumed_regime"):
+                if strict:
+                    raise ValueError("transition decision regime lineage mismatch")
+                return False
         if _canonical_hash(scenario.get("base_transition_lineage", [])) == _canonical_hash(scenario.get("regime_lineage", [])):
             return False
     return True
@@ -1521,13 +1563,13 @@ class MetaResearchRunner:
             metrics["statistical_evidence"] = statistical_artifact
         baselines = dict(result["baselines"])
         if not all(
-            _validate_baseline_artifact(baselines.get(name, {}))
+            _validate_baseline_artifact(baselines.get(name, {}), strict=True)
             for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
         ):
             return IMPLEMENTATION_READY_VERDICT
         stress = dict(result["stress_results"])
         execution_payload = dict(result.get("execution_payload") or {})
-        stress_quality_pass = _recompute_stress_quality(stress, policy)
+        stress_quality_pass = _recompute_stress_quality(stress, policy, strict=True)
         selector_stability = _recompute_selector_stability(
             execution_payload.get("selector_stability_evidence", ())
         )
@@ -1539,7 +1581,7 @@ class MetaResearchRunner:
         simple_best = float(baselines.get(comparator, {}).get("total_return", float("-inf")))
         if not pd.notna(simple_best):
             raise ValueError("frozen simple comparator result is unavailable")
-        transition_quality_pass = _recompute_transition_stress_quality(stress, policy)
+        transition_quality_pass = _recompute_transition_stress_quality(stress, policy, strict=True)
         statistical_quality_pass = _recompute_statistical_quality(
             result, policy, db=self.db, evidence=statistical_artifact,
         )
@@ -2357,6 +2399,7 @@ class MetaSelectorBacktest:
                 "regime_lineage": scenario.execution_payload.get("regime_lineage", []),
                 "base_transition_lineage": scenario.execution_payload.get("base_regime_lineage", []),
                 "selector_consumed_regimes": scenario.execution_payload.get("selector_consumed_regimes", []),
+                "selector_decisions": scenario.execution_payload.get("decisions", []),
             }
             artifact["execution_hash"] = _stress_execution_hash(artifact)
             artifact["result_hash"] = _stress_artifact_hash(artifact)
@@ -2385,6 +2428,7 @@ class MetaSelectorBacktest:
                 "selector_consumed_regimes": [
                     item.operational_regime or item.market_regime for item in items
                 ],
+                "selector_decisions": [asdict(decision) for decision in decisions],
             },
         }
         if include_stress:
@@ -2400,21 +2444,31 @@ class MetaSelectorBacktest:
                 "transition_policy": "one_observation_delayed_operational_regime",
                 "delay_observations": 1,
             }
+            stressed_regime_lineage = list(transition.get("regime_lineage", []))
+            stressed_decisions = list(transition.get("selector_decisions", []))
+            if len(stressed_regime_lineage) != len(items) or len(stressed_decisions) != len(items):
+                raise ValueError("transition stress did not produce complete stressed lineage")
             transition["transition_lineage"] = [
                 {
                     "timestamp": item.decision_time,
                     "base_operational_regime": base_regime_lineage[index]["operational_regime"],
-                    "perturbed_operational_regime": operational_regimes[index],
-                    "selector_consumed_regime": operational_regimes[index],
+                    "perturbed_operational_regime": stressed_regime_lineage[index]["operational_regime"],
+                    "selector_consumed_regime": stressed_regime_lineage[index]["selector_consumed_regime"],
                 }
                 for index, item in enumerate(items)
             ]
             transition["base_transition_lineage"] = list(base_regime_lineage)
-            transition["regime_lineage"] = transition["transition_lineage"]
+            transition["regime_lineage"] = stressed_regime_lineage
             transition["informative"] = any(
                 row["base_operational_regime"] != row["perturbed_operational_regime"]
                 for row in transition["transition_lineage"]
             )
+            if any(
+                stressed_decisions[index].get("selector_consumed_regime")
+                != row["selector_consumed_regime"]
+                for index, row in enumerate(transition["transition_lineage"])
+            ):
+                raise ValueError("transition stress selector consumption does not match stressed replay")
             transition["execution_hash"] = _stress_execution_hash(transition)
             transition["result_hash"] = _stress_artifact_hash(transition)
             stress_results["transition_uncertainty"] = transition
@@ -3372,6 +3426,26 @@ class MetaSelectorBacktest:
                 for card in item.scorecards
                 if getattr(card, "is_eligible", False) and card.available_at <= item.decision_time
             })
+            decision_payloads = list(result.execution_payload.get("decisions", []))
+            baseline_decisions = []
+            if len(decision_payloads) == len(items):
+                for item, decision_payload in zip(items, decision_payloads):
+                    visible_cards = tuple(
+                        card for card in item.scorecards
+                        if card.available_at <= item.decision_time
+                    )
+                    baseline_decisions.append({
+                        "decision_time": decision_payload.get("decision_time", item.decision_time),
+                        "eligible_strategies": tuple(sorted(
+                            card.strategy_name
+                            for card in visible_cards
+                            if getattr(card, "is_eligible", False)
+                        )),
+                        "decision": decision_payload.get("decision"),
+                        "selected_strategies": tuple(decision_payload.get("selected_strategies", ())),
+                        "weights": dict(sorted(dict(decision_payload.get("weights", {})).items())),
+                        "selector_evidence_hash": decision_payload.get("evidence_hash"),
+                    })
             targets = result.execution_payload.get("targets", [])
             metrics = {
                 key: value for key, value in result.metrics.items()
@@ -3383,6 +3457,7 @@ class MetaSelectorBacktest:
                 "policy_version": self.replay_policy.version,
                 "policy_hash": self.replay_policy.policy_hash,
                 "eligible_strategies": eligible_strategies,
+                "baseline_decisions": baseline_decisions,
                 "targets": targets,
                 "target_hash": _canonical_hash(targets),
                 "deltas": result.execution_payload.get("deltas", []),
