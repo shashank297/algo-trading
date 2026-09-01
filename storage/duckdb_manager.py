@@ -3946,7 +3946,7 @@ class DuckDBManager:
                 "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
                 "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
                 "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
-                "knowledge_cutoff",
+                "knowledge_cutoff", "statistical_evidence_id", "statistical_evidence_hash",
             )
         }
         for field in ("final_oos_start", "final_oos_end", "materialized_at", "knowledge_cutoff"):
@@ -3960,6 +3960,18 @@ class DuckDBManager:
             raise ValueError("FINAL_OOS provenance certificate hash mismatch")
         if str(certificate["certificate_id"]) != str(certificate["certificate_hash"])[:32]:
             raise ValueError("FINAL_OOS provenance certificate ID binding mismatch")
+        statistical_evidence_id = str(certificate.get("statistical_evidence_id") or "")
+        statistical_evidence_hash = str(certificate.get("statistical_evidence_hash") or "")
+        if statistical_evidence_id or statistical_evidence_hash:
+            if not statistical_evidence_id or not statistical_evidence_hash:
+                raise ValueError("FINAL_OOS statistical evidence binding is incomplete")
+            statistical = self.validate_phase2_10_statistical_evidence(statistical_evidence_id)
+            if str(statistical.get("evidence_hash")) != statistical_evidence_hash:
+                raise ValueError("FINAL_OOS statistical evidence hash binding mismatch")
+            if str(statistical.get("meta_run_id")) != str(certificate.get("meta_run_id")):
+                raise ValueError("FINAL_OOS statistical evidence run binding mismatch")
+            if str(statistical.get("source_execution_hash")) != str(certificate.get("execution_hash")):
+                raise ValueError("FINAL_OOS statistical evidence execution binding mismatch")
         artifact = self.load_frozen_meta_policy(str(certificate["frozen_policy_id"]))
         artifact_payload = {
             "selector_policy_version": artifact["selector_policy_version"],
@@ -4023,9 +4035,15 @@ class DuckDBManager:
                 "risk_comparison_mode", "max_secondary_risk_worsening",
                 "required_statistical_tests", "statistical_test_version",
                 "primary_statistical_criterion", "min_statistical_probability",
+                "min_psr_probability", "min_dsr_probability",
                 "statistical_confidence_level", "statistical_bootstrap_resamples",
-                "statistical_bootstrap_seed", "statistical_multiple_testing_method",
+                "statistical_bootstrap_seed", "bootstrap_method", "bootstrap_block_size",
+                "bootstrap_required_metric", "bootstrap_min_lower_bound",
+                "statistical_multiple_testing_method",
                 "statistical_min_observations", "statistical_min_independent_trades",
+                "b2_unavailable_action", "b4_volatility_lookback", "b4_min_history",
+                "b4_volatility_estimator", "b4_insufficient_history_action",
+                "transition_delay_observations",
                 "required_regime_stress_scenarios", "required_stress_scenarios",
                 "stress_thresholds",
             )
@@ -4306,6 +4324,128 @@ class DuckDBManager:
             ).fetchall()
         ]
         return result
+
+    def persist_phase2_10_statistical_evidence(self, evidence: dict[str, Any]) -> str:
+        """Persist one immutable, standalone Phase 2.10 statistical artifact."""
+        payload = dict(evidence)
+        evidence_hash = str(payload.get("evidence_hash") or "")
+        evidence_id = str(payload.get("statistical_evidence_id") or "")
+        if not evidence_id or not evidence_hash:
+            raise ValueError("statistical evidence requires an immutable ID and hash")
+        canonical = hashlib.sha256(
+            json.dumps(
+                {key: value for key, value in payload.items() if key not in {"evidence_hash", "statistical_evidence_id"}},
+                sort_keys=True, default=str, separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        if canonical != evidence_hash or evidence_id != evidence_hash[:32]:
+            raise ValueError("statistical evidence hash or ID mismatch")
+        row = {
+            "statistical_evidence_id": evidence_id,
+            "meta_run_id": str(payload["meta_run_id"]),
+            "frozen_policy_id": payload.get("frozen_policy_id"),
+            "selected_trial_id": payload.get("selected_trial_id"),
+            "experiment_family_id": str(payload["experiment_family_id"]),
+            "source_execution_hash": str(payload["source_execution_hash"]),
+            "source_equity_hash": str(payload.get("source_equity_hash") or payload.get("equity_hash") or ""),
+            "returns_hash": str(payload["returns_hash"]),
+            "meta_policy_hash": str(payload["meta_policy_hash"]),
+            "acceptance_policy_hash": str(payload["acceptance_policy_hash"]),
+            "evidence_json": json.dumps(payload, sort_keys=True, default=str),
+            "observation_count": int(payload["observations"]),
+            "independent_trade_count": int(payload["independent_trades"]),
+            "materialized_at": payload["materialized_at"],
+            "evidence_hash": evidence_hash,
+        }
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash FROM phase2_10_statistical_evidence WHERE statistical_evidence_id=?",
+                [evidence_id],
+            ).fetchone()
+            by_run = self.conn.execute(
+                "SELECT statistical_evidence_id, evidence_hash FROM phase2_10_statistical_evidence WHERE meta_run_id=?",
+                [row["meta_run_id"]],
+            ).fetchone()
+            if existing is not None and str(existing[0]) != evidence_hash:
+                raise ValueError("Conflicting immutable statistical evidence")
+            if by_run is not None and (str(by_run[0]) != evidence_id or str(by_run[1]) != evidence_hash):
+                raise ValueError("Conflicting statistical evidence for meta run")
+            if existing is None:
+                columns = tuple(row)
+                self.conn.execute(
+                    f"INSERT INTO phase2_10_statistical_evidence ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [row[column] for column in columns],
+                )
+        return evidence_id
+
+    def load_phase2_10_statistical_evidence(self, statistical_evidence_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT evidence_json FROM phase2_10_statistical_evidence WHERE statistical_evidence_id=?",
+            [statistical_evidence_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown Phase 2.10 statistical evidence {statistical_evidence_id}")
+        return json.loads(str(row[0]))
+
+    def load_phase2_10_statistical_evidence_for_run(self, meta_run_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT statistical_evidence_id FROM phase2_10_statistical_evidence WHERE meta_run_id=?",
+            [meta_run_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"No Phase 2.10 statistical evidence for meta run {meta_run_id}")
+        return self.validate_phase2_10_statistical_evidence(str(row[0]))
+
+    def validate_phase2_10_statistical_evidence(self, statistical_evidence_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM phase2_10_statistical_evidence WHERE statistical_evidence_id=?",
+            [statistical_evidence_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown Phase 2.10 statistical evidence {statistical_evidence_id}")
+        columns = [item[0] for item in self.conn.description]
+        stored = dict(zip(columns, row))
+        try:
+            evidence = json.loads(str(stored["evidence_json"]))
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Phase 2.10 statistical evidence payload is invalid") from exc
+        expected_hash = hashlib.sha256(
+            json.dumps(
+                {key: value for key, value in evidence.items() if key not in {"evidence_hash", "statistical_evidence_id"}},
+                sort_keys=True, default=str, separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        if expected_hash != evidence.get("evidence_hash"):
+            raise ValueError("Phase 2.10 statistical evidence hash mismatch")
+        if str(statistical_evidence_id) != str(expected_hash)[:32]:
+            raise ValueError("Phase 2.10 statistical evidence ID mismatch")
+        expected_columns = {
+            "statistical_evidence_id": evidence.get("statistical_evidence_id"),
+            "meta_run_id": evidence.get("meta_run_id"),
+            "frozen_policy_id": evidence.get("frozen_policy_id"),
+            "selected_trial_id": evidence.get("selected_trial_id"),
+            "experiment_family_id": evidence.get("experiment_family_id"),
+            "source_execution_hash": evidence.get("source_execution_hash"),
+            "source_equity_hash": evidence.get("source_equity_hash") or evidence.get("equity_hash"),
+            "returns_hash": evidence.get("returns_hash"),
+            "meta_policy_hash": evidence.get("meta_policy_hash") or evidence.get("policy_hash"),
+            "acceptance_policy_hash": evidence.get("acceptance_policy_hash"),
+            "observation_count": evidence.get("observations"),
+            "independent_trade_count": evidence.get("independent_trades"),
+            "materialized_at": evidence.get("materialized_at"),
+            "evidence_hash": evidence.get("evidence_hash"),
+        }
+        for column, expected in expected_columns.items():
+            actual = stored[column]
+            if column in {"observation_count", "independent_trade_count"}:
+                matches = int(actual) == int(expected)
+            elif column == "materialized_at":
+                matches = pd.Timestamp(actual) == pd.Timestamp(expected)
+            else:
+                matches = (None if actual is None else str(actual)) == (None if expected is None else str(expected))
+            if not matches:
+                raise ValueError(f"Phase 2.10 statistical evidence column mismatch: {column}")
+        return evidence
 
     def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
         """Reload and verify the immutable pre-verdict execution payload."""

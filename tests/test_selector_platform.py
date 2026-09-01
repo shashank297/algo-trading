@@ -9,7 +9,7 @@ from typing import Any, Iterable, cast
 import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _canonical_hash, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _baseline_artifact_hash, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -1348,6 +1348,44 @@ def test_t2_10_zl_acceptance_policy_canonicalizes_scenarios_and_thresholds():
             MetaReplayPolicy(required_stress_scenarios=scenarios)
 
 
+def test_t2_10_statistical_bootstrap_is_recomputed_and_standalone():
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP",),
+        primary_statistical_criterion="dsr_probability",
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)
+    evidence = replay._statistical_evidence(
+        returns, independent_trades=10, meta_split="FINAL_OOS", equity_hash=_canonical_hash(equity_curve),
+    )
+    evidence.update({
+        "meta_run_id": "statistical-run",
+        "frozen_policy_id": "frozen-statistical",
+        "selected_trial_id": "trial-statistical",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": datetime(2024, 2, 1, tzinfo=UTC),
+        "source_execution_hash": "execution-statistical",
+        "statistical_evidence_id": "",
+    })
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key not in {"evidence_hash", "statistical_evidence_id"}
+    })
+    evidence["statistical_evidence_id"] = evidence["evidence_hash"][:32]
+    result = {
+        "metrics": {"statistical_evidence": evidence},
+        "equity_curve": equity_curve,
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "execution-statistical",
+    }
+    assert _recompute_statistical_quality(result, policy)
+    tampered = {**evidence, "tests": {**evidence["tests"], "BOOTSTRAP": {**evidence["tests"]["BOOTSTRAP"], "metric": {**evidence["tests"]["BOOTSTRAP"]["metric"], "lower_bound": 0.5}}}}
+    assert not _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": tampered}}, policy)
+
+
 @pytest.mark.parametrize(
     ("simple_return", "expected_verdict"),
     [
@@ -1363,12 +1401,16 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     final = final_reference(start)
     db = DuckDBManager(":memory:")
     runner = MetaResearchRunner(db)
+    test_policy = MetaReplayPolicy(
+        required_statistical_tests=("PSR",),
+        primary_statistical_criterion="psr_probability",
+    )
     lifecycle = runner.run(
         train, validation, final,
-        [("candidate-a", AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)), MetaReplayPolicy())],
+        [("candidate-a", AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)), test_policy)],
         data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
     )
-    policy = MetaReplayPolicy()
+    policy = test_policy
 
     def scenario(scenario_id: str, total_return: float, execution_cost: float, *, fill_count: float = 1.0, slippage: float = 0.01, switching_cost_drag: float = 0.01, bar: str = "base") -> dict[str, Any]:
         artifact = {
@@ -1395,7 +1437,17 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     }
     transition = scenario("transition_uncertainty", 0.07, 0.012, bar="transition")
     transition["informative"] = True
-    transition["transition_lineage"] = [{"timestamp": start.isoformat(), "regime": "BULL"}, {"timestamp": (start + timedelta(days=1)).isoformat(), "regime": "BEAR"}]
+    transition["base_transition_lineage"] = [
+        {"timestamp": start.isoformat(), "operational_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BEAR"},
+    ]
+    transition["regime_lineage"] = [
+        {"timestamp": start.isoformat(), "operational_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BULL"},
+    ]
+    transition["transition_lineage"] = [
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "base_operational_regime": "BEAR", "perturbed_operational_regime": "BULL"},
+    ]
     transition["execution_hash"] = _stress_execution_hash(transition)
     transition["result_hash"] = _stress_artifact_hash(transition)
     stress["transition_uncertainty"] = transition
@@ -1414,7 +1466,9 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     metrics.update({"final_oos_duration_days": 2.0, "decision_count": 2.0, "trade_count": 2.0, "evidence_coverage": 1.0, "causal_verification": 1.0, "switch_count": 0.0, "max_drawdown": -0.10, "total_return": 0.20, "robustness_certified": 0.0, "selector_stable": 0.0})
     baselines = dict(base_result.baselines)
     for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"):
-        baselines[name] = {**baselines.get(name, {}), "total_return": simple_return}
+        baseline = {**baselines.get(name, {}), "total_return": simple_return}
+        baseline["result_hash"] = _baseline_artifact_hash(baseline)
+        baselines[name] = baseline
     returns = [0.01 + (index % 3) * 0.001 for index in range(30)]
     fixture_equity_curve = tuple(
         {
@@ -1436,6 +1490,7 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     execution_hash = hashlib.sha256(json.dumps(execution_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
     statistical = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)._statistical_evidence(returns, independent_trades=10, meta_split="FINAL_OOS")
     statistical["source_execution_hash"] = execution_hash
+    statistical["source_equity_hash"] = _canonical_hash(fixture_equity_curve)
     statistical["evidence_hash"] = _canonical_hash({key: value for key, value in statistical.items() if key != "evidence_hash"})
     metrics["statistical_evidence"] = statistical
     pre_payload = {**base_result.pre_verdict_result_payload, "metrics": metrics, "baselines": baselines, "stress": stress, "execution_payload": execution_payload, "final_oos_execution_hash": execution_hash}
@@ -1448,6 +1503,20 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         fixture_result, policy_version=policy.version, selector_policy_version=lifecycle.frozen_policy.selector_policy_version,
         selector_policy_hash=lifecycle.frozen_policy.selector_policy_hash, meta_split="FINAL_OOS", available_at=start + timedelta(days=3),
     )
+    statistical_artifact = dict(statistical)
+    statistical_artifact.update({
+        "meta_run_id": fixture_result.meta_run_id,
+        "frozen_policy_id": lifecycle.frozen_policy.frozen_policy_id,
+        "selected_trial_id": lifecycle.frozen_policy.selected_trial_id,
+        "acceptance_policy_hash": lifecycle.frozen_policy.acceptance_policy_hash,
+        "meta_policy_hash": lifecycle.frozen_policy.meta_policy_hash,
+        "materialized_at": start + timedelta(days=3),
+    })
+    statistical_artifact["evidence_hash"] = _canonical_hash({
+        key: value for key, value in statistical_artifact.items() if key != "evidence_hash"
+    })
+    statistical_artifact["statistical_evidence_id"] = statistical_artifact["evidence_hash"][:32]
+    db.persist_phase2_10_statistical_evidence(statistical_artifact)
     db.conn.execute(
         "INSERT INTO market_datasets (dataset_id, exchange, timeframe, provider_name, raw_hash, transformation_hash, lifecycle_status, status, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["fixture-dataset", "NSE", "1m", "test-fixture", "dataset-a", "dataset-a", "CANONICAL_PROMOTED", "VERIFIED", "{}"],
@@ -1486,6 +1555,8 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         outcome_series_bindings=(("fixture-outcome", "fixture-outcome-hash"),), execution_bar_hashes=("fixture-bar-hash",),
         execution_bar_ids=("fixture-bar-id",), dataset_certification_bindings=(("fixture-dataset", "fixture-certification"),),
         dataset_bindings=(("fixture-dataset", "dataset-a"),), knowledge_cutoff=start + timedelta(days=2),
+        statistical_evidence_id=statistical_artifact["statistical_evidence_id"],
+        statistical_evidence_hash=statistical_artifact["evidence_hash"],
     )
     db.persist_final_oos_provenance_certificate(certificate)
     assert db.validate_final_oos_provenance_certificate(certificate.certificate_id)["certificate_id"] == certificate.certificate_id
