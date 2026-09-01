@@ -3638,6 +3638,13 @@ class DuckDBManager:
             ).fetchone()
             if existing and existing[0] != data["evidence_hash"]:
                 raise ValueError("Conflicting immutable scorecard")
+            policy_conflict = self.conn.execute(
+                "SELECT DISTINCT scorecard_policy_hash FROM strategy_scorecards "
+                "WHERE scorecard_policy_version=? AND scorecard_policy_hash<>?",
+                [data["scorecard_policy_version"], data["scorecard_policy_hash"]],
+            ).fetchone()
+            if policy_conflict is not None:
+                raise ValueError("Conflicting effective scorecard policy identity")
             if not existing:
                 self.conn.execute(
                     f"INSERT INTO strategy_scorecards ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
@@ -3744,7 +3751,7 @@ class DuckDBManager:
             "status": "SUCCEEDED",
             "verdict": result.verdict,
             "metrics_json": json.dumps(result.metrics, sort_keys=True),
-            "baselines_json": json.dumps(result.baselines, sort_keys=True),
+            "baselines_json": json.dumps(result.baselines, sort_keys=True, default=str),
             "stress_results_json": json.dumps(result.stress_results, sort_keys=True, default=str),
             "attribution_json": json.dumps(result.attribution, sort_keys=True),
             "checkpoint_json": json.dumps(asdict(result.checkpoint), sort_keys=True, default=str),
@@ -3835,6 +3842,8 @@ class DuckDBManager:
             "selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload",
             "acceptance_policy_version", "acceptance_policy_hash",
             "experiment_family_id", "universe_snapshot_id",
+            "simple_comparator", "comparator_selection_rule",
+            "comparator_selection_evidence_hash", "comparator_validation_cutoff",
             "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
             "frozen_at", "artifact_hash",
         )
@@ -3977,6 +3986,13 @@ class DuckDBManager:
             "acceptance_policy_hash": artifact.get("acceptance_policy_hash"),
             "experiment_family_id": artifact.get("experiment_family_id"),
             "universe_snapshot_id": artifact.get("universe_snapshot_id"),
+            "simple_comparator": artifact.get("simple_comparator"),
+            "comparator_selection_rule": artifact.get("comparator_selection_rule"),
+            "comparator_selection_evidence_hash": artifact.get("comparator_selection_evidence_hash"),
+            "comparator_validation_cutoff": (
+                pd.Timestamp(artifact["comparator_validation_cutoff"]).tz_convert("UTC").to_pydatetime()
+                if artifact.get("comparator_validation_cutoff") is not None else None
+            ),
         }
         expected_artifact_hash = hashlib.sha256(json.dumps(artifact_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
         if expected_artifact_hash != artifact.get("artifact_hash"):
@@ -4002,7 +4018,16 @@ class DuckDBManager:
                 "min_net_edge", "require_robustness_certification",
                 "require_selector_stability", "require_causal_verification",
                 "min_selector_stability", "selector_stability_perturbation",
-                "required_stress_scenarios", "stress_thresholds",
+                "min_risk_reduction", "max_return_sacrifice_for_risk",
+                "primary_risk_metric", "secondary_risk_metric",
+                "risk_comparison_mode", "max_secondary_risk_worsening",
+                "required_statistical_tests", "statistical_test_version",
+                "primary_statistical_criterion", "min_statistical_probability",
+                "statistical_confidence_level", "statistical_bootstrap_resamples",
+                "statistical_bootstrap_seed", "statistical_multiple_testing_method",
+                "statistical_min_observations", "statistical_min_independent_trades",
+                "required_regime_stress_scenarios", "required_stress_scenarios",
+                "stress_thresholds",
             )
             required_stress_scenarios = sorted(
                 str(value) for value in meta_policy_payload.get("required_stress_scenarios", ())
@@ -4014,11 +4039,15 @@ class DuckDBManager:
                 }
                 for row in meta_policy_payload.get("stress_thresholds", ())
             }
+            required_statistical_tests = sorted(
+                str(value) for value in meta_policy_payload.get("required_statistical_tests", ())
+            )
             acceptance_payload = {
                 "acceptance_policy_version": certificate["acceptance_policy_version"],
                 "gates": {
                     **{name: meta_policy_payload[name] for name in acceptance_gate_names if name in meta_policy_payload and name not in {"required_stress_scenarios", "stress_thresholds"}},
                     "required_stress_scenarios": required_stress_scenarios,
+                    "required_statistical_tests": required_statistical_tests,
                     "stress_thresholds": stress_thresholds,
                 },
             }
@@ -4261,6 +4290,21 @@ class DuckDBManager:
         result = dict(zip(columns, row))
         for field in ("metrics_json", "baselines_json", "stress_results_json", "attribution_json", "orders_json", "fills_json", "risk_decisions_json", "costs_json", "execution_payload_json", "pre_verdict_result_payload_json"):
             result[field[:-5]] = json.loads(str(result[field] or "{}"))
+        result["equity_curve"] = [
+            {
+                "timestamp": row[0],
+                "equity": row[1],
+                "net_return": row[2],
+                "drawdown": row[3],
+                "position": row[4],
+                "decision": row[5],
+            }
+            for row in self.conn.execute(
+                "SELECT timestamp, equity, net_return, drawdown, position, decision "
+                "FROM meta_selector_equity_curve WHERE meta_run_id=? ORDER BY timestamp",
+                [meta_run_id],
+            ).fetchall()
+        ]
         return result
 
     def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:

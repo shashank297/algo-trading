@@ -1393,6 +1393,12 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         "delayed_execution": scenario("delayed_execution", 0.07, 0.012, bar="delayed"),
         "reduced_liquidity": scenario("reduced_liquidity", 0.05, 0.012, fill_count=0.5),
     }
+    transition = scenario("transition_uncertainty", 0.07, 0.012, bar="transition")
+    transition["informative"] = True
+    transition["transition_lineage"] = [{"timestamp": start.isoformat(), "regime": "BULL"}, {"timestamp": (start + timedelta(days=1)).isoformat(), "regime": "BEAR"}]
+    transition["execution_hash"] = _stress_execution_hash(transition)
+    transition["result_hash"] = _stress_artifact_hash(transition)
+    stress["transition_uncertainty"] = transition
     tampered_stress = dict(stress)
     tampered_stress["1.5x_cost"] = {
         **stress["1.5x_cost"], "fills": [{"fill_id": "tampered-fill"}],
@@ -1409,11 +1415,32 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     baselines = dict(base_result.baselines)
     for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"):
         baselines[name] = {**baselines.get(name, {}), "total_return": simple_return}
-    execution_payload = {**base_result.execution_payload, "orders": [fixture_order], "selector_stability_evidence": stability_evidence}
+    returns = [0.01 + (index % 3) * 0.001 for index in range(30)]
+    fixture_equity_curve = tuple(
+        {
+            "timestamp": start + timedelta(days=2 + index),
+            "cash": 100_000.0,
+            "holdings": {},
+            "equity": 100_000.0,
+            "net_return": value,
+            "drawdown": -0.01,
+            "position": 0.0,
+            "decision": "SELECT",
+            "turnover": 0.01,
+            "execution_cost": 0.01,
+            "slippage": 0.001,
+        }
+        for index, value in enumerate(returns)
+    )
+    execution_payload = {**base_result.execution_payload, "orders": [fixture_order], "selector_stability_evidence": stability_evidence, "equity_curve": fixture_equity_curve}
     execution_hash = hashlib.sha256(json.dumps(execution_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+    statistical = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)._statistical_evidence(returns, independent_trades=10, meta_split="FINAL_OOS")
+    statistical["source_execution_hash"] = execution_hash
+    statistical["evidence_hash"] = _canonical_hash({key: value for key, value in statistical.items() if key != "evidence_hash"})
+    metrics["statistical_evidence"] = statistical
     pre_payload = {**base_result.pre_verdict_result_payload, "metrics": metrics, "baselines": baselines, "stress": stress, "execution_payload": execution_payload, "final_oos_execution_hash": execution_hash}
     fixture_result = replace(
-        base_result, meta_run_id=f"fixture-final-{simple_return}", metrics=metrics, baselines=baselines, stress_results=stress,
+        base_result, meta_run_id=f"fixture-final-{simple_return}", metrics=metrics, baselines=baselines, stress_results=stress, equity_curve=fixture_equity_curve,
         orders=(fixture_order,), final_oos_execution_hash=execution_hash, execution_payload=execution_payload,
         pre_verdict_result_payload=pre_payload, pre_verdict_result_hash=_canonical_hash(pre_payload),
     )

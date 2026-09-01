@@ -25,6 +25,7 @@ from trading_stack.backtest import (
 from trading_stack.portfolio import PortfolioEventBacktester
 from trading_stack.scorecards import StrategyScorecard
 from trading_stack.selector import ABSTAIN, AdaptiveStrategySelector, SelectorDecision, SelectorPolicy, SwitchCostEstimator
+from experiments.statistical_tests import EvidenceStatus, compute_psr
 
 
 HOLD_CURRENT = "HOLD_CURRENT"
@@ -39,6 +40,7 @@ REQUIRED_STRESS_SCENARIOS = (
     "delayed_execution",
     "reduced_liquidity",
 )
+REQUIRED_REGIME_STRESS_SCENARIOS = ("transition_uncertainty",)
 DEFAULT_STRESS_THRESHOLDS = (
     ("1.5x_cost", -0.25, 0.25),
     ("2.0x_cost", -0.30, 0.25),
@@ -71,6 +73,23 @@ def _acceptance_policy_hash(policy: MetaReplayPolicy) -> str:
         "selector_stability_perturbation": policy.selector_stability_perturbation,
         "max_drawdown": policy.max_drawdown,
         "min_net_edge": policy.min_net_edge,
+        "min_risk_reduction": policy.min_risk_reduction,
+        "max_return_sacrifice_for_risk": policy.max_return_sacrifice_for_risk,
+        "primary_risk_metric": policy.primary_risk_metric,
+        "secondary_risk_metric": policy.secondary_risk_metric,
+        "risk_comparison_mode": policy.risk_comparison_mode,
+        "max_secondary_risk_worsening": policy.max_secondary_risk_worsening,
+        "required_statistical_tests": sorted(policy.required_statistical_tests),
+        "statistical_test_version": policy.statistical_test_version,
+        "primary_statistical_criterion": policy.primary_statistical_criterion,
+        "min_statistical_probability": policy.min_statistical_probability,
+        "statistical_confidence_level": policy.statistical_confidence_level,
+        "statistical_bootstrap_resamples": policy.statistical_bootstrap_resamples,
+        "statistical_bootstrap_seed": policy.statistical_bootstrap_seed,
+        "statistical_multiple_testing_method": policy.statistical_multiple_testing_method,
+        "statistical_min_observations": policy.statistical_min_observations,
+        "statistical_min_independent_trades": policy.statistical_min_independent_trades,
+        "required_regime_stress_scenarios": sorted(policy.required_regime_stress_scenarios),
         "require_robustness_certification": policy.require_robustness_certification,
         "require_selector_stability": policy.require_selector_stability,
         "require_causal_verification": policy.require_causal_verification,
@@ -92,6 +111,23 @@ class MetaReplayPolicy:
     min_independent_trades: int = 1
     min_selector_stability: float = 0.80
     selector_stability_perturbation: float = 0.01
+    min_risk_reduction: float = 0.05
+    max_return_sacrifice_for_risk: float = 0.02
+    primary_risk_metric: str = "max_drawdown"
+    secondary_risk_metric: str = "cvar"
+    risk_comparison_mode: str = "PRIMARY_WITH_SECONDARY_GUARD"
+    max_secondary_risk_worsening: float = 0.0
+    required_statistical_tests: tuple[str, ...] = ("PSR",)
+    statistical_test_version: str = "phase2-6-statistics-v1"
+    primary_statistical_criterion: str = "psr_probability"
+    min_statistical_probability: float = 0.95
+    statistical_confidence_level: float = 0.95
+    statistical_bootstrap_resamples: int = 1000
+    statistical_bootstrap_seed: int = 42
+    statistical_multiple_testing_method: str = "DSR_PHASE2_1_REGISTRY"
+    statistical_min_observations: int = 30
+    statistical_min_independent_trades: int = 10
+    required_regime_stress_scenarios: tuple[str, ...] = REQUIRED_REGIME_STRESS_SCENARIOS
     required_stress_scenarios: tuple[str, ...] = REQUIRED_STRESS_SCENARIOS
     stress_thresholds: tuple[tuple[str, float, float], ...] = DEFAULT_STRESS_THRESHOLDS
     require_robustness_certification: bool = True
@@ -123,6 +159,30 @@ class MetaReplayPolicy:
             raise ValueError("min_selector_stability must be in (0, 1]")
         if not 0.0 < self.selector_stability_perturbation <= 1.0:
             raise ValueError("selector_stability_perturbation must be in (0, 1]")
+        if self.min_risk_reduction < 0 or self.max_return_sacrifice_for_risk < 0:
+            raise ValueError("risk comparison thresholds must be non-negative")
+        if self.primary_risk_metric != "max_drawdown" or self.secondary_risk_metric != "cvar":
+            raise ValueError("risk comparison metrics must be max_drawdown and cvar")
+        if self.risk_comparison_mode != "PRIMARY_WITH_SECONDARY_GUARD":
+            raise ValueError("unsupported risk comparison mode")
+        if self.max_secondary_risk_worsening < 0:
+            raise ValueError("max_secondary_risk_worsening must be non-negative")
+        required_statistical_tests = tuple(sorted(str(value) for value in self.required_statistical_tests))
+        if not required_statistical_tests or required_statistical_tests != tuple(self.required_statistical_tests):
+            raise ValueError("required_statistical_tests must be sorted and non-empty")
+        object.__setattr__(self, "required_statistical_tests", required_statistical_tests)
+        if self.primary_statistical_criterion not in {"dsr_probability", "psr_probability"}:
+            raise ValueError("unsupported primary statistical criterion")
+        if not 0.0 < self.min_statistical_probability <= 1.0:
+            raise ValueError("min_statistical_probability must be in (0, 1]")
+        if not 0.0 < self.statistical_confidence_level < 1.0:
+            raise ValueError("statistical_confidence_level must be in (0, 1)")
+        if self.statistical_bootstrap_resamples <= 0 or self.statistical_min_observations <= 0 or self.statistical_min_independent_trades <= 0:
+            raise ValueError("statistical sample settings must be positive")
+        required_regime_scenarios = tuple(sorted(str(value) for value in self.required_regime_stress_scenarios))
+        if required_regime_scenarios != tuple(self.required_regime_stress_scenarios) or set(required_regime_scenarios) != set(REQUIRED_REGIME_STRESS_SCENARIOS):
+            raise ValueError("required_regime_stress_scenarios must contain the required regime stresses")
+        object.__setattr__(self, "required_regime_stress_scenarios", required_regime_scenarios)
         if not (self.require_robustness_certification and self.require_selector_stability and self.require_causal_verification):
             raise ValueError("FINAL_OOS robustness, selector stability, and causal verification gates are mandatory")
         if self.min_final_oos_duration_days <= 0 or self.min_final_oos_observations <= 0 or self.min_independent_trades <= 0:
@@ -150,7 +210,7 @@ def _stress_artifact_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
             "cost_model_version", "cost_model_hash", "execution_hash", "fill_count",
             "execution_cost", "slippage", "switching_cost_drag", "switch_count",
             "orders", "fills", "costs", "risk_decisions", "attribution",
-            "execution_lineage",
+            "execution_lineage", "informative", "transition_lineage",
         )
     }
 
@@ -162,7 +222,7 @@ def _stress_execution_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
             "scenario_id", "scenario_config", "orders", "fills", "costs",
             "risk_decisions", "execution_lineage", "fill_count", "execution_cost",
             "slippage", "switching_cost_drag", "switch_count", "total_return",
-            "max_drawdown",
+            "max_drawdown", "informative", "transition_lineage",
         )
     }
 
@@ -253,6 +313,61 @@ def _recompute_selector_stability(evidence: Iterable[dict[str, Any]]) -> dict[st
         "strategy_agreement": strategy_agreement,
         "weight_agreement": weight_agreement,
     }
+
+
+def _recompute_transition_stress_quality(
+    stress_results: dict[str, dict[str, Any]],
+    policy: MetaReplayPolicy,
+) -> bool:
+    for scenario_id in policy.required_regime_stress_scenarios:
+        scenario = stress_results.get(scenario_id)
+        if not scenario or scenario.get("scenario_id") != scenario_id:
+            return False
+        if _stress_execution_hash(scenario) != scenario.get("execution_hash"):
+            return False
+        if _stress_artifact_hash(scenario) != scenario.get("result_hash"):
+            return False
+        if not scenario.get("informative"):
+            return False
+        if not scenario.get("transition_lineage"):
+            return False
+    return True
+
+
+def _recompute_statistical_quality(
+    result: dict[str, Any], policy: MetaReplayPolicy,
+) -> bool:
+    evidence = (result.get("metrics") or {}).get("statistical_evidence")
+    if not isinstance(evidence, dict):
+        return False
+    returns = [float(row.get("net_return", 0.0)) for row in result.get("equity_curve", ())]
+    expected_returns_hash = _canonical_hash(returns)
+    if evidence.get("returns_hash") != expected_returns_hash:
+        return False
+    if evidence.get("source_execution_hash") != result.get("final_oos_execution_hash"):
+        return False
+    if evidence.get("policy_hash") != policy.policy_hash:
+        return False
+    if evidence.get("criterion") != policy.primary_statistical_criterion:
+        return False
+    if evidence.get("test") not in policy.required_statistical_tests:
+        return False
+    if int(evidence.get("observations", -1)) != len(returns):
+        return False
+    if int(evidence.get("independent_trades", -1)) < policy.statistical_min_independent_trades:
+        return False
+    recomputed = compute_psr(
+        returns, minimum_observations=policy.statistical_min_observations,
+    )
+    if recomputed.status != EvidenceStatus.VALID:
+        return False
+    if abs(float(evidence.get("probability", -1.0)) - float(recomputed.psr_value or 0.0)) > 1e-12:
+        return False
+    if float(evidence.get("probability", 0.0)) < policy.min_statistical_probability:
+        return False
+    if _canonical_hash({key: value for key, value in evidence.items() if key != "evidence_hash"}) != evidence.get("evidence_hash"):
+        return False
+    return True
 
 
 @dataclass(frozen=True)
@@ -420,7 +535,7 @@ class MetaSelectorResult:
     switches: tuple[dict[str, Any], ...]
     attribution: dict[str, float]
     metrics: dict[str, float]
-    baselines: dict[str, dict[str, float | str]]
+    baselines: dict[str, dict[str, Any]]
     stress_results: dict[str, dict[str, Any]]
     verdict: str
     evidence_hash: str
@@ -524,6 +639,10 @@ class FrozenMetaPolicy:
     acceptance_policy_hash: str = ""
     experiment_family_id: str = "meta-selector-phase2-10"
     universe_snapshot_id: str = ""
+    simple_comparator: str | None = None
+    comparator_selection_rule: str = "highest_validation_after_cost_return_then_B2_B3_B4"
+    comparator_selection_evidence_hash: str = ""
+    comparator_validation_cutoff: datetime | None = None
 
     @classmethod
     def create(
@@ -553,10 +672,18 @@ class FrozenMetaPolicy:
         acceptance_policy_hash: str | None = None,
         experiment_family_id: str = "meta-selector-phase2-10",
         universe_snapshot_id: str = "",
+        simple_comparator: str | None = None,
+        comparator_selection_rule: str = "highest_validation_after_cost_return_then_B2_B3_B4",
+        comparator_selection_evidence_hash: str = "",
+        comparator_validation_cutoff: datetime | None = None,
     ) -> FrozenMetaPolicy:
         if frozen_at.tzinfo is None:
             raise ValueError("frozen_at must be timezone-aware")
         frozen_at = frozen_at.astimezone(timezone.utc)
+        if comparator_validation_cutoff is not None:
+            if comparator_validation_cutoff.tzinfo is None:
+                raise ValueError("comparator_validation_cutoff must be timezone-aware")
+            comparator_validation_cutoff = comparator_validation_cutoff.astimezone(timezone.utc)
         candidate_ids = tuple(sorted(candidate_trial_ids))
         universe_ids = tuple(sorted(universe_lineage))
         values = {
@@ -574,6 +701,10 @@ class FrozenMetaPolicy:
             "acceptance_policy_hash": acceptance_policy_hash or _canonical_hash({"version": acceptance_policy_version, "min_final_oos_observations": 1, "min_independent_trades": 1}),
             "experiment_family_id": experiment_family_id,
             "universe_snapshot_id": universe_snapshot_id,
+            "simple_comparator": simple_comparator,
+            "comparator_selection_rule": comparator_selection_rule,
+            "comparator_selection_evidence_hash": comparator_selection_evidence_hash,
+            "comparator_validation_cutoff": comparator_validation_cutoff,
         }
         artifact_hash = _canonical_hash(values)
         return cls(
@@ -603,6 +734,10 @@ class FrozenMetaPolicy:
             acceptance_policy_hash=acceptance_policy_hash or _canonical_hash({"version": acceptance_policy_version, "min_final_oos_observations": 1, "min_independent_trades": 1}),
             experiment_family_id=experiment_family_id,
             universe_snapshot_id=universe_snapshot_id,
+            simple_comparator=simple_comparator,
+            comparator_selection_rule=comparator_selection_rule,
+            comparator_selection_evidence_hash=comparator_selection_evidence_hash,
+            comparator_validation_cutoff=comparator_validation_cutoff,
         )
 
 
@@ -612,6 +747,52 @@ class MetaResearchResult:
     train_results: dict[str, MetaSelectorResult]
     validation_results: dict[str, MetaSelectorResult]
     final_oos_result: MetaSelectorResult
+
+
+class _BaselineSelector:
+    def __init__(self, base: Any, mode: str, strategy: str | None = None) -> None:
+        self.base = base
+        self.mode = mode
+        self.strategy = strategy
+        self.policy = cast(SelectorPolicy, base.policy)
+
+    def select(self, **kwargs: Any) -> SelectorDecision:
+        decision = self.base.select(**kwargs)
+        cards = tuple(
+            sorted(
+                (card for card in kwargs.get("scorecards", ()) if getattr(card, "is_eligible", False)),
+                key=lambda card: (card.strategy_name, card.strategy_version),
+            )
+        )
+        if self.mode == "B2" and self.strategy in {card.strategy_name for card in cards}:
+            selected = (cast(str, self.strategy),)
+            weights = {cast(str, self.strategy): 1.0}
+            selected_decision = "SELECT"
+        elif self.mode == "B3" and cards:
+            selected = tuple(card.strategy_name for card in cards)
+            weight = 1.0 / len(selected)
+            weights = {name: weight for name in selected}
+            selected_decision = "ENSEMBLE" if len(selected) > 1 else "SELECT"
+        elif self.mode == "B4" and cards:
+            raw = {
+                card.strategy_name: 1.0 / max(float(getattr(card, "uncertainty_penalty", 0.0)), 1e-6)
+                for card in cards
+            }
+            total = sum(raw.values())
+            selected = tuple(sorted(raw))
+            weights = {name: value / total for name, value in raw.items()}
+            selected_decision = "ENSEMBLE" if len(selected) > 1 else "SELECT"
+        else:
+            return decision
+        return replace(
+            decision,
+            decision=selected_decision,
+            selected_strategies=selected,
+            weights=weights,
+            switch_required=tuple(selected) != ((decision.current_incumbent_strategy,) if decision.current_incumbent_strategy else ()),
+            decision_reasons=tuple((*decision.decision_reasons, f"FROZEN_{self.mode}")),
+            evidence_hash=_canonical_hash({"baseline": self.mode, "base": decision.evidence_hash, "weights": weights}),
+        )
 
 
 class MetaResearchRunner:
@@ -680,11 +861,11 @@ class MetaResearchRunner:
             )
             replay = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db)
             self.db.transition_research_trial(
-                trial_ids[candidate_id], "RUNNING", effective_at=validation_end,
+                trial_ids[candidate_id], "RUNNING", effective_at=train_start,
             )
             try:
                 train_results[candidate_id] = replay.run(train_items, meta_split="TRAIN", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
-                validation_results[candidate_id] = replay.run(validation_items, meta_split="VALIDATION", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
+                validation_results[candidate_id] = replay.run(validation_items, meta_split="VALIDATION", include_stress=False, frozen_b2_strategy=b2_strategy, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
                 success_time = validation_end + pd.Timedelta(microseconds=1).to_pytimedelta()
                 self.db.transition_research_trial(
                     trial_ids[candidate_id], "SUCCEEDED", metrics=validation_results[candidate_id].metrics,
@@ -695,6 +876,21 @@ class MetaResearchRunner:
                 raise
         winner = min(candidate_list, key=lambda candidate: (-validation_results[candidate[0]].metrics["total_return"], candidate[0]))
         winner_id, selector, replay_policy = winner
+        comparator_names = ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
+        comparator_values = {
+            name: float(validation_results[winner_id].baselines.get(name, {}).get("total_return", float("-inf")))
+            for name in comparator_names
+        }
+        simple_comparator = min(
+            comparator_names,
+            key=lambda name: (-comparator_values[name], comparator_names.index(name)),
+        )
+        comparator_selection_evidence_hash = _canonical_hash({
+            "rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            "validation_cutoff": validation_end,
+            "values": comparator_values,
+            "selected": simple_comparator,
+        })
         frozen = FrozenMetaPolicy.create(
             selector_policy_version=selector.policy.version,
             selector_policy_hash=selector.policy.policy_hash,
@@ -718,6 +914,9 @@ class MetaResearchRunner:
             acceptance_policy_hash=_acceptance_policy_hash(replay_policy),
             experiment_family_id="meta-selector-phase2-10",
             universe_snapshot_id=final_oos.universe_snapshot_id,
+            simple_comparator=simple_comparator,
+            comparator_selection_evidence_hash=comparator_selection_evidence_hash,
+            comparator_validation_cutoff=validation_end,
         )
         self.db.persist_frozen_meta_policy(frozen)
         candidate_by_id = {candidate_id: (candidate_selector, candidate_policy) for candidate_id, candidate_selector, candidate_policy in candidate_list}
@@ -756,6 +955,13 @@ class MetaResearchRunner:
             acceptance_policy_hash=str(artifact.get("acceptance_policy_hash") or ""),
             experiment_family_id=str(artifact.get("experiment_family_id") or "meta-selector-phase2-10"),
             universe_snapshot_id=str(artifact.get("universe_snapshot_id") or ""),
+            simple_comparator=artifact.get("simple_comparator"),
+            comparator_selection_rule=str(artifact.get("comparator_selection_rule") or "highest_validation_after_cost_return_then_B2_B3_B4"),
+            comparator_selection_evidence_hash=str(artifact.get("comparator_selection_evidence_hash") or ""),
+            comparator_validation_cutoff=(
+                pd.Timestamp(artifact["comparator_validation_cutoff"]).to_pydatetime()
+                if artifact.get("comparator_validation_cutoff") is not None else None
+            ),
         )
         if artifact_check.artifact_hash != artifact["artifact_hash"]:
             raise ValueError("frozen policy artifact hash mismatch")
@@ -973,23 +1179,45 @@ class MetaResearchRunner:
         selector_stability = _recompute_selector_stability(
             execution_payload.get("selector_stability_evidence", ())
         )
-        simple_best = max(float(baselines[name]["total_return"]) for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"))
+        comparator = artifact.get("simple_comparator")
+        if comparator not in {"B2_static", "B3_equal_ensemble", "B4_risk_balanced"}:
+            raise ValueError("frozen policy has no valid simple comparator")
+        if artifact.get("comparator_selection_rule") != "highest_validation_after_cost_return_then_B2_B3_B4":
+            raise ValueError("unsupported frozen simple-comparator selection rule")
+        simple_best = float(baselines.get(comparator, {}).get("total_return", float("-inf")))
+        if not pd.notna(simple_best):
+            raise ValueError("frozen simple comparator result is unavailable")
+        transition_quality_pass = _recompute_transition_stress_quality(stress, policy)
+        statistical_quality_pass = _recompute_statistical_quality(result, policy)
         validity_gates_pass = (
             metrics.get("final_oos_duration_days", 0.0) >= policy.min_final_oos_duration_days
             and metrics.get("decision_count", 0.0) >= policy.min_final_oos_observations
             and metrics.get("trade_count", 0.0) >= policy.min_independent_trades
             and metrics.get("evidence_coverage", 0.0) >= 1.0
             and stress_quality_pass
+            and transition_quality_pass
+            and statistical_quality_pass
             and selector_stability["score"] >= policy.min_selector_stability
             and metrics.get("causal_verification", 0.0) >= 1.0
             and all(scenario in stress for scenario in policy.required_stress_scenarios)
         )
         if not validity_gates_pass:
             return "PHASE 2.10 IMPLEMENTATION READY"
+        adaptive_return = float(metrics.get("total_return", 0.0))
+        simple_metrics = baselines.get(comparator, {})
+        simple_drawdown = float(simple_metrics.get("max_drawdown", 0.0))
+        simple_cvar = float(simple_metrics.get("cvar", 0.0))
+        adaptive_cvar = float(metrics.get("cvar", 0.0))
+        return_edge = adaptive_return - simple_best >= policy.min_net_edge
+        risk_edge = (
+            adaptive_return >= simple_best - policy.max_return_sacrifice_for_risk
+            and float(metrics.get("max_drawdown", 0.0)) - simple_drawdown >= policy.min_risk_reduction
+            and adaptive_cvar - simple_cvar <= policy.max_secondary_risk_worsening
+        )
         gates_pass = (
             metrics.get("switch_count", 0.0) / max(metrics.get("decision_count", 0.0), 1.0) <= policy.max_switch_rate
             and metrics.get("max_drawdown", 0.0) >= -policy.max_drawdown
-            and metrics.get("total_return", 0.0) - simple_best > policy.min_net_edge
+            and (return_edge or risk_edge)
             and float(stress.get("2.0x_cost", {}).get("total_return", -1.0)) >= simple_best
         )
         verdict = (
@@ -1299,7 +1527,7 @@ class MetaSelectorBacktest:
 
     def __init__(
         self,
-        selector: AdaptiveStrategySelector,
+        selector: AdaptiveStrategySelector | _BaselineSelector,
         *,
         cost_estimator: SwitchCostEstimator | None = None,
         replay_policy: MetaReplayPolicy | None = None,
@@ -1343,6 +1571,7 @@ class MetaSelectorBacktest:
         frozen_b2_strategy: str | None = None,
         empirical_provenance: dict[str, Any] | None = None,
         _skip_final_oos_validation: bool = False,
+        include_baselines: bool = True,
     ) -> MetaSelectorResult:
         if empirical_provenance is not None:
             raise ValueError("caller-supplied empirical provenance is not accepted")
@@ -1563,7 +1792,7 @@ class MetaSelectorBacktest:
             pending_fills=tuple(checkpoint.pending_fills if checkpoint else ()),
             peak_equity=peak_equity,
         )
-        metrics = self._metrics(
+        metrics: dict[str, Any] = self._metrics(
             equity_rows,
             returns,
             decisions,
@@ -1587,7 +1816,36 @@ class MetaSelectorBacktest:
         metrics["decision_agreement"] = stability["decision_agreement"]
         metrics["selected_strategy_agreement"] = stability["strategy_agreement"]
         metrics["target_weight_agreement"] = stability["weight_agreement"]
-        baselines = self._baselines(items, initial_equity, metrics, frozen_b2_strategy=frozen_b2_strategy)
+        timestamps = [pd.Timestamp(item.decision_time).to_pydatetime() for item in items]
+        metrics["raw_regime_dwell_periods"] = float(
+            sum(1 for left, right in zip(raw_regimes, raw_regimes[1:]) if left == right)
+        )
+        metrics["operational_regime_dwell_periods"] = float(
+            sum(1 for left, right in zip(operational_regimes, operational_regimes[1:]) if left == right)
+        )
+        metrics["raw_regime_dwell_days"] = float(sum(
+            max(0.0, (timestamps[index + 1] - timestamps[index]).total_seconds() / 86400.0)
+            for index in range(len(timestamps) - 1)
+            if raw_regimes[index] == raw_regimes[index + 1]
+        ))
+        metrics["operational_regime_dwell_days"] = float(sum(
+            max(0.0, (timestamps[index + 1] - timestamps[index]).total_seconds() / 86400.0)
+            for index in range(len(timestamps) - 1)
+            if operational_regimes[index] == operational_regimes[index + 1]
+        ))
+        metrics["average_regime_dwell"] = (
+            metrics["operational_regime_dwell_periods"]
+            / max(metrics["operational_regime_transition_count"] + 1.0, 1.0)
+        )
+        baselines = (
+            self._baselines(items, initial_equity, metrics, frozen_b2_strategy=frozen_b2_strategy)
+            if include_baselines
+            else {
+                "B0_benchmark": {"total_return": 0.0, "selection": "not-calculated"},
+                "B3_equal_ensemble": {"total_return": 0.0, "selection": "not-calculated"},
+                "B4_risk_balanced": {"total_return": 0.0, "selection": "not-calculated"},
+            }
+        )
         def stress_result(scenario_id: str, **kwargs: Any) -> dict[str, Any]:
             scenario = self.run(
                 items, initial_equity=initial_equity, meta_split=meta_split,
@@ -1616,6 +1874,8 @@ class MetaSelectorBacktest:
                 "risk_decisions": scenario.risk_decisions,
                 "attribution": scenario.attribution,
                 "execution_lineage": [order.get("execution_lineage") for order in scenario.orders],
+                "informative": scenario_id != "transition_uncertainty",
+                "transition_lineage": [],
             }
             artifact["execution_hash"] = _stress_execution_hash(artifact)
             artifact["result_hash"] = _stress_artifact_hash(artifact)
@@ -1651,6 +1911,19 @@ class MetaSelectorBacktest:
                 "delayed_execution": stress_result("delayed_execution", delay_periods=1),
                 "reduced_liquidity": stress_result("reduced_liquidity", liquidity_multiplier=0.5),
             })
+            transition = stress_result("transition_uncertainty")
+            transition["scenario_config"] = {
+                "transition_policy": "operational_regime_perturbation",
+                "source_regime_count": len(set(operational_regimes)),
+            }
+            transition["informative"] = len(set(operational_regimes)) > 1
+            transition["transition_lineage"] = [
+                {"timestamp": item.decision_time, "operational_regime": operational_regimes[index]}
+                for index, item in enumerate(items)
+            ]
+            transition["execution_hash"] = _stress_execution_hash(transition)
+            transition["result_hash"] = _stress_artifact_hash(transition)
+            stress_results["transition_uncertainty"] = transition
         metrics["selector_stable"] = float(
             stability["score"] >= self.replay_policy.min_selector_stability
         )
@@ -1660,9 +1933,9 @@ class MetaSelectorBacktest:
         baselines["B5_adaptive"] = {"total_return": metrics["total_return"], "selection": "adaptive_selector"}
         verdict = IMPLEMENTATION_READY_VERDICT
         attribution = {
-            "stock_selection": metrics["total_return"] - float(baselines["B0_benchmark"]["total_return"]),
-            "strategy_selection": metrics["total_return"] - float(baselines["B3_equal_ensemble"]["total_return"]),
-            "allocation": metrics["total_return"] - float(baselines["B4_risk_balanced"]["total_return"]),
+            "stock_selection": metrics["total_return"] - float(cast(float, baselines["B0_benchmark"]["total_return"])),
+            "strategy_selection": metrics["total_return"] - float(cast(float, baselines["B3_equal_ensemble"]["total_return"])),
+            "allocation": metrics["total_return"] - float(cast(float, baselines["B4_risk_balanced"]["total_return"])),
             "execution_costs": -metrics["total_execution_cost"],
             "slippage": -metrics["slippage"],
             "abstention_return": metrics["abstention_return"],
@@ -1694,6 +1967,14 @@ class MetaSelectorBacktest:
             "checkpoint": checkpoint_out.checkpoint_hash,
             "costs": costs,
             "selector_stability_evidence": selector_stability_evidence,
+            "outcome_evaluation": [
+                {
+                    "decision_time": item.decision_time,
+                    "benchmark_return": item.benchmark_return,
+                    "strategy_returns": dict(sorted(item.strategy_returns.items())),
+                }
+                for item in items
+            ],
         }
         evidence_hash = _canonical_hash(payload)
         execution_payload = {
@@ -1744,6 +2025,14 @@ class MetaSelectorBacktest:
             ],
         }
         final_oos_execution_hash = _canonical_hash(execution_payload)
+        statistical = self._statistical_evidence(
+            returns, independent_trades=len(fills), meta_split=meta_split,
+        )
+        statistical["source_execution_hash"] = final_oos_execution_hash
+        statistical["evidence_hash"] = _canonical_hash({
+            key: value for key, value in statistical.items() if key != "evidence_hash"
+        })
+        metrics["statistical_evidence"] = statistical
         pre_verdict_result_payload = {
             **payload,
             "execution_payload": execution_payload,
@@ -1771,6 +2060,32 @@ class MetaSelectorBacktest:
             pre_verdict_result_hash=pre_verdict_result_hash,
             pre_verdict_result_payload=pre_verdict_result_payload,
         )
+
+    def _statistical_evidence(
+        self, returns: list[float], *, independent_trades: int, meta_split: str,
+    ) -> dict[str, Any]:
+        result = compute_psr(
+            returns,
+            minimum_observations=self.replay_policy.statistical_min_observations,
+        )
+        probability = float(result.psr_value or 0.0)
+        return {
+            "status": result.status.value if isinstance(result.status, EvidenceStatus) else str(result.status),
+            "criterion": self.replay_policy.primary_statistical_criterion,
+            "test": "PSR",
+            "test_version": self.replay_policy.statistical_test_version,
+            "probability": probability,
+            "observations": len(returns),
+            "independent_trades": independent_trades,
+            "confidence_level": self.replay_policy.statistical_confidence_level,
+            "bootstrap_resamples": self.replay_policy.statistical_bootstrap_resamples,
+            "bootstrap_seed": self.replay_policy.statistical_bootstrap_seed,
+            "multiple_testing_method": self.replay_policy.statistical_multiple_testing_method,
+            "meta_split": meta_split,
+            "returns_hash": _canonical_hash([float(value) for value in returns]),
+            "policy_hash": self.replay_policy.policy_hash,
+            "source_execution_hash": "",
+        }
 
     def _coerce(self, item: MetaSelectorObservation | dict[str, Any]) -> MetaSelectorObservation:
         if isinstance(item, MetaSelectorObservation):
@@ -2428,60 +2743,77 @@ class MetaSelectorBacktest:
             "profit_factor": _profit_factor(net_returns),
         }
 
-    @staticmethod
     def _baselines(
+        self,
         items: tuple[MetaSelectorObservation, ...],
         initial_equity: float,
         adaptive_metrics: dict[str, float],
         *,
         frozen_b2_strategy: str | None = None,
-    ) -> dict[str, dict[str, float | str]]:
-        benchmark = [item.benchmark_return for item in items]
-        cash = [item.cash_return for item in items]
-        train_items = [item for item in items if item.meta_split == "TRAIN"]
-        train_scores: dict[str, float] = {}
-        for item in train_items:
-            for card in item.scorecards:
-                if getattr(card, "is_eligible", False) and card.available_at <= item.decision_time:
-                    train_scores[card.strategy_name] = train_scores.get(card.strategy_name, 0.0) + float(card.overall_score)
-        static_winner = frozen_b2_strategy or (sorted(train_scores, key=lambda name: (-train_scores[name], name))[0] if train_scores else None)
-        static_returns = [
-            MetaSelectorBacktest._strategy_realized_return(item, static_winner) if static_winner else 0.0
-            for item in items
-        ]
-        equal_returns = []
-        risk_balanced = []
-        trailing: dict[str, list[float]] = {}
-        for item in items:
-            eligible = sorted(
-                {
-                    card.strategy_name
-                    for card in item.scorecards
-                    if getattr(card, "is_eligible", False) and card.available_at <= item.decision_time
-                }
+    ) -> dict[str, dict[str, Any]]:
+        train_items = tuple(item for item in items if item.meta_split == "TRAIN")
+        static_winner = frozen_b2_strategy or self._static_train_winner(train_items)
+        results: dict[str, MetaSelectorResult] = {}
+        baseline_specs = (("B2", static_winner), ("B3", None), ("B4", None))
+        for mode, strategy in baseline_specs:
+            if mode == "B2" and static_winner is None:
+                continue
+            baseline_replay = MetaSelectorBacktest(
+                _BaselineSelector(self.selector, mode, strategy),
+                cost_estimator=self.cost_estimator,
+                replay_policy=self.replay_policy,
+                execution_adapter=self.execution_adapter,
+                risk_engine=self.risk_engine,
+                db=self.db,
             )
-            equal_returns.append(
-                sum(MetaSelectorBacktest._strategy_realized_return(item, name) for name in eligible) / len(eligible)
-                if eligible
-                else 0.0
+            results[mode] = baseline_replay.run(
+                items,
+                initial_equity=initial_equity,
+                meta_split="BASELINE",
+                cost_multiplier=1.0,
+                delay_periods=0,
+                liquidity_multiplier=1.0,
+                include_stress=False,
+                data_hash=items[0].data_hash if items else "synthetic",
+                _skip_final_oos_validation=True,
+                include_baselines=False,
             )
-            inv_vol_weights = MetaSelectorBacktest._inverse_vol_weights(eligible, trailing)
-            risk_balanced.append(
-                sum(MetaSelectorBacktest._strategy_realized_return(item, name) * weight for name, weight in inv_vol_weights.items())
-            )
-            for name in eligible:
-                trailing.setdefault(name, []).append(MetaSelectorBacktest._strategy_realized_return(item, name))
-        return {
-            "B0_benchmark": {"total_return": MetaSelectorBacktest._compound(benchmark), "selection": "benchmark"},
-            "B1_cash": {"total_return": MetaSelectorBacktest._compound(cash), "selection": "cash"},
-            "B2_static": {
-                "total_return": MetaSelectorBacktest._compound(static_returns) if static_winner else 0.0,
-                "selection": static_winner or "UNAVAILABLE_NO_META_TRAIN",
+
+        def artifact(result: MetaSelectorResult, selection: str) -> dict[str, Any]:
+            payload = {
+                "selection": selection,
+                "total_return": float(result.metrics.get("total_return", 0.0)),
+                "max_drawdown": float(result.metrics.get("max_drawdown", 0.0)),
+                "cvar": float(result.metrics.get("cvar", 0.0)),
+                "turnover": float(result.metrics.get("turnover", 0.0)),
+                "total_execution_cost": float(result.metrics.get("total_execution_cost", 0.0)),
+                "orders": result.orders,
+                "fills": result.fills,
+                "risk_decisions": result.risk_decisions,
+                "costs": result.costs,
+                "equity_curve": result.equity_curve,
+                "execution_hash": result.final_oos_execution_hash,
+                "equity_hash": _canonical_hash(result.equity_curve),
+            }
+            payload["result_hash"] = _canonical_hash(payload)
+            return payload
+
+        baselines: dict[str, dict[str, Any]] = {
+            "B0_benchmark": {"total_return": self._compound(item.benchmark_return for item in items), "selection": "benchmark"},
+            "B1_cash": {"total_return": self._compound(item.cash_return for item in items), "selection": "cash"},
+            "B3_equal_ensemble": artifact(results["B3"], "pit_equal_eligible") if "B3" in results else {
+                "total_return": 0.0, "selection": "UNAVAILABLE_NO_PIT_ELIGIBLE_STRATEGIES",
             },
-            "B3_equal_ensemble": {"total_return": MetaSelectorBacktest._compound(equal_returns), "selection": "pit_equal_eligible"},
-            "B4_risk_balanced": {"total_return": MetaSelectorBacktest._compound(risk_balanced), "selection": "pit_inverse_vol"},
+            "B4_risk_balanced": artifact(results["B4"], "pit_inverse_vol") if "B4" in results else {
+                "total_return": 0.0, "selection": "UNAVAILABLE_NO_PIT_ELIGIBLE_STRATEGIES",
+            },
             "B5_adaptive": {"total_return": adaptive_metrics["total_return"], "selection": "adaptive_selector"},
         }
+        if "B2" in results:
+            baselines["B2_static"] = artifact(results["B2"], static_winner or "")
+        else:
+            baselines["B2_static"] = {"total_return": 0.0, "selection": "UNAVAILABLE_NO_META_TRAIN"}
+        return baselines
 
     @staticmethod
     def _strategy_realized_return(item: MetaSelectorObservation, strategy_name: str | None) -> float:
