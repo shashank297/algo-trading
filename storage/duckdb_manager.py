@@ -6,6 +6,7 @@ import hashlib
 import json
 import time
 import uuid
+from dataclasses import asdict
 from datetime import date, datetime, timezone
 
 
@@ -1444,6 +1445,15 @@ class DuckDBManager:
                             trial.created_at,
                         ],
                     )
+                    event_time = pd.Timestamp(trial.created_at).to_pydatetime()
+                    recorded_time = datetime.now(timezone.utc)
+                    event_status = trial.status.value if hasattr(trial.status, "value") else str(trial.status)
+                    event_payload = {"trial_id": target_trial_id, "status": event_status, "effective_at": event_time, "recorded_at": recorded_time}
+                    event_hash = hashlib.sha256(json.dumps(event_payload, sort_keys=True, default=str).encode()).hexdigest()
+                    self.conn.execute(
+                        "INSERT INTO research_trial_lifecycle_events (event_id, trial_id, status, effective_at, recorded_at, event_hash, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                        [event_hash[:32], target_trial_id, event_status, event_time, recorded_time, event_hash, json.dumps(event_payload, sort_keys=True, default=str)],
+                    )
                 return target_trial_id
             except (RuntimeError, ValueError):
                 raise
@@ -1496,6 +1506,8 @@ class DuckDBManager:
         metrics: dict[str, Any] | None = None,
         error_message: str | None = None,
         invalidation_reason: str | None = None,
+        effective_at: datetime | None = None,
+        recorded_at: datetime | None = None,
     ) -> None:
         """Append lifecycle evidence without deleting or replacing the trial."""
         row = self.conn.execute(
@@ -1515,6 +1527,10 @@ class DuckDBManager:
         if current_status in {"SUCCEEDED", "FAILED", "INVALIDATED", "CANCELLED"} and status != "INVALIDATED":
             raise ValueError(f"Invalid immutable research-trial transition from {current_status} to {status}.")
         now = datetime.now(timezone.utc)
+        effective = effective_at or now
+        recorded = recorded_at or now
+        if effective.tzinfo is None or recorded.tzinfo is None:
+            raise ValueError("lifecycle event timestamps must be timezone-aware")
         self.conn.execute(
             """
             UPDATE research_trials_log
@@ -1542,6 +1558,12 @@ class DuckDBManager:
                 now,
                 trial_id,
             ],
+        )
+        event_payload = {"trial_id": trial_id, "status": status, "effective_at": effective, "recorded_at": recorded, "metrics": metrics, "error_message": error_message, "invalidation_reason": invalidation_reason}
+        event_hash = hashlib.sha256(json.dumps(event_payload, sort_keys=True, default=str).encode()).hexdigest()
+        self.conn.execute(
+            "INSERT INTO research_trial_lifecycle_events (event_id, trial_id, status, effective_at, recorded_at, event_hash, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [event_hash[:32], trial_id, status, effective, recorded, event_hash, json.dumps(event_payload, sort_keys=True, default=str)],
         )
 
     def mark_trial_selected(self, trial_id: str, selected: bool = True) -> None:
@@ -2328,6 +2350,7 @@ class DuckDBManager:
     def load_certified_1m_source(
         self, *, source_dataset_id: str, symbol: str, exchange: str,
         start_ts: datetime | None = None, end_ts: datetime | None = None,
+        knowledge_cutoff: datetime | None = None,
     ) -> dict[str, Any]:
         """Load one exact canonical 1m dataset only after authoritative admission checks."""
         row = self.conn.execute(
@@ -2346,14 +2369,21 @@ class DuckDBManager:
         content_hash = str(transformed or raw or "").strip()
         if not content_hash:
             raise ValueError("Source dataset has no immutable content hash.")
-        certs = self.conn.execute(
-            """SELECT certification_id, checks_json FROM data_quality_certifications
+        if knowledge_cutoff is not None and pd.Timestamp(knowledge_cutoff).tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
+        cert_query = """SELECT certification_id, checks_json, completed_at FROM data_quality_certifications
                WHERE dataset_id = ? AND status = 'CERTIFIED' AND issue_count = 0
-               ORDER BY completed_at DESC""", [source_dataset_id]
-        ).fetchall()
+        """
+        cert_params: list[Any] = [source_dataset_id]
+        if knowledge_cutoff is not None:
+            cert_query += " AND completed_at <= ?"
+            cert_params.append(knowledge_cutoff)
+        cert_query += " ORDER BY completed_at DESC"
+        certs = self.conn.execute(cert_query, cert_params).fetchall()
         required = {"schema", "ohlc_integrity", "duplicates", "session_alignment", "missing_sessions", "timestamp_integrity"}
         valid_cert = False
-        for cert_id, checks_json in certs:
+        valid_certification_id: str | None = None
+        for cert_id, checks_json, _completed_at in certs:
             try:
                 bound_hash = json.loads(str(checks_json or "{}")).get("dataset_content_hash")
             except json.JSONDecodeError:
@@ -2363,6 +2393,7 @@ class DuckDBManager:
             ).fetchall()
             if bound_hash == content_hash and len(checks) == 6 and {str(c[0]) for c in checks if int(c[1]) == 0} == required:
                 valid_cert = True
+                valid_certification_id = str(cert_id)
                 break
         if not valid_cert:
             raise ValueError("Source dataset lacks DQ certification bound to its immutable hash.")
@@ -2377,6 +2408,11 @@ class DuckDBManager:
         dataset_available_at = self.get_market_dataset_availability(source_dataset_id)
         if dataset_available_at is None:
             raise ValueError("Source dataset lacks immutable availability evidence.")
+        if knowledge_cutoff is not None:
+            if pd.Timestamp(dataset_available_at).tzinfo is None:
+                raise ValueError("Source dataset availability must be timezone-aware.")
+            if pd.Timestamp(dataset_available_at) > pd.Timestamp(knowledge_cutoff):
+                raise ValueError("Source dataset was not available by the knowledge cutoff.")
         bars = self.conn.execute(
             """SELECT candles.symbol, candles.exchange, candles.timeframe, candles.timestamp,
                       candles.open, candles.high, candles.low, candles.close, candles.volume,
@@ -2392,8 +2428,14 @@ class DuckDBManager:
         ).df()
         if bars.empty:
             raise ValueError("No authoritative 1m source bars exist for the requested range.")
-        return {"bars": bars, "adjustment": str(adjustment), "content_hash": content_hash,
-                "provider_token": str(token or "DERIVED"), "dataset_available_at": dataset_available_at}
+        return {
+            "bars": bars,
+            "adjustment": str(adjustment),
+            "content_hash": content_hash,
+            "provider_token": str(token or "DERIVED"),
+            "dataset_available_at": dataset_available_at,
+            "certification_id": valid_certification_id,
+        }
 
     def _has_authoritative_dq_certification(
         self,
@@ -3535,14 +3577,884 @@ class DuckDBManager:
 
 
     def list_phase2_7_conditional_evidence_at(
-        self, decision_time: datetime, *, strategy_name: str | None = None
+        self, decision_time: datetime, *, strategy_name: str | None = None,
+        knowledge_cutoff: datetime | None = None,
     ) -> list[dict[str, Any]]:
         """Return only Phase 2.7 evidence available at an explicit historical cutoff."""
         if pd.Timestamp(decision_time).tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
+        knowledge = knowledge_cutoff
+        if knowledge is not None and pd.Timestamp(knowledge).tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
         query = "SELECT * FROM strategy_conditional_evidence WHERE available_at <= ?"
         params: list[Any] = [decision_time]
+        if knowledge is not None:
+            query += " AND recorded_at <= ?"
+            params.append(knowledge)
         if strategy_name is not None:
             query += " AND strategy_name = ?"
             params.append(strategy_name)
         return self.conn.execute(query + " ORDER BY available_at, evidence_id", params).fetchdf().to_dict("records")
+
+    def list_phase2_10_outcome_series_at(
+        self, observation_time: datetime, *, evaluation_cutoff: datetime,
+        benchmark_series_id: str | None, strategy_series_ids: tuple[str, ...],
+    ) -> list[dict[str, Any]]:
+        if pd.Timestamp(observation_time).tzinfo is None or pd.Timestamp(evaluation_cutoff).tzinfo is None:
+            raise ValueError("outcome cutoffs must be timezone-aware")
+        ids = tuple(item for item in (benchmark_series_id, *strategy_series_ids) if item)
+        if not ids:
+            return []
+        placeholders = ",".join("?" for _ in ids)
+        return self.conn.execute(
+            f"SELECT * FROM phase2_10_outcome_series WHERE series_id IN ({placeholders}) AND observation_time=? AND available_at <= ? ORDER BY series_type, strategy_name, series_id",
+            [*ids, observation_time, evaluation_cutoff],
+        ).fetchdf().to_dict("records")
+
+    def persist_scorecard(self, scorecard: Any) -> str:
+        data = dict(scorecard.__dict__)
+        columns = (
+            "scorecard_id", "strategy_name", "strategy_version", "horizon", "timeframe",
+            "global_evidence_id", "conditional_evidence_id", "eligibility_status",
+            "rejection_reasons_json", "performance_score", "downside_score",
+            "fold_consistency_score", "parameter_robustness_score", "cost_robustness_score",
+            "breadth_score", "paper_score", "regime_compatibility_score", "asset_compatibility_score",
+            "drawdown_penalty", "turnover_penalty", "correlation_penalty", "capacity_penalty",
+            "uncertainty_penalty", "overall_score", "available_at", "scorecard_version",
+            "scorecard_policy_version", "scorecard_policy_hash", "evidence_hash",
+            "evidence_ids_json", "explanation_json", "recorded_at",
+        )
+        data.update(
+            {
+                "rejection_reasons_json": json.dumps(data.pop("rejection_reasons"), sort_keys=True),
+                "evidence_ids_json": json.dumps(data.pop("evidence_ids"), sort_keys=True),
+                "explanation_json": json.dumps(data.pop("explanation"), sort_keys=True, default=str),
+                "recorded_at": datetime.now(timezone.utc),
+            }
+        )
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash FROM strategy_scorecards WHERE scorecard_id=?", [data["scorecard_id"]]
+            ).fetchone()
+            if existing and existing[0] != data["evidence_hash"]:
+                raise ValueError("Conflicting immutable scorecard")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO strategy_scorecards ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [data.get(column) for column in columns],
+                )
+        return str(data["scorecard_id"])
+
+    def list_scorecards_at(
+        self, decision_time: datetime, *, horizon: str | None = None, strategy_name: str | None = None,
+        knowledge_cutoff: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        if pd.Timestamp(decision_time).tzinfo is None:
+            raise ValueError("decision_time must be timezone-aware")
+        knowledge = knowledge_cutoff
+        if knowledge is not None and pd.Timestamp(knowledge).tzinfo is None:
+            raise ValueError("knowledge_cutoff must be timezone-aware")
+        query = "SELECT * FROM strategy_scorecards WHERE available_at <= ?"
+        params: list[Any] = [decision_time]
+        if knowledge is not None:
+            query += " AND recorded_at <= ?"
+            params.append(knowledge)
+        if horizon:
+            query += " AND horizon = ?"
+            params.append(horizon)
+        if strategy_name:
+            query += " AND strategy_name = ?"
+            params.append(strategy_name)
+        return self.conn.execute(query + " ORDER BY available_at, scorecard_id", params).fetchdf().to_dict("records")
+
+    def persist_selector_decision(self, decision: Any) -> str:
+        data = dict(decision.__dict__)
+        json_fields = (
+            "selected_strategies", "weights", "candidate_scorecards", "decision_reasons", "rejection_reasons",
+        )
+        for field in json_fields:
+            data[field + "_json"] = json.dumps(data.pop(field), sort_keys=True)
+        data["evidence_ids_json"] = json.dumps(data.pop("evidence_ids"), sort_keys=True, default=str)
+        columns = (
+            "selector_decision_id", "decision_time", "symbol", "horizon", "market_regime",
+            "regime_confidence", "asset_cluster", "decision", "selected_strategies_json",
+            "weights_json", "candidate_scorecards_json", "current_incumbent_strategy",
+            "expected_benefit_estimate", "uncertainty", "switch_required", "estimated_switch_cost",
+            "switch_buffer", "decision_reasons_json", "rejection_reasons_json",
+            "selector_policy_version", "selector_policy_hash", "evidence_hash", "available_at",
+            "evidence_ids_json",
+        )
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash FROM selector_decisions WHERE selector_decision_id=?",
+                [data["selector_decision_id"]],
+            ).fetchone()
+            if existing and existing[0] != data["evidence_hash"]:
+                raise ValueError("Conflicting immutable selector decision")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO selector_decisions ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [data.get(column) for column in columns],
+                )
+        return str(data["selector_decision_id"])
+
+    def get_selector_incumbent(self, symbol: str, horizon: str, at: datetime) -> str | None:
+        row = self.conn.execute(
+            """SELECT selected_strategies_json FROM selector_decisions
+               WHERE symbol=? AND horizon=? AND decision_time <= ? AND decision <> 'ABSTAIN'
+               ORDER BY decision_time DESC LIMIT 1""",
+            [symbol, horizon, at],
+        ).fetchone()
+        return json.loads(row[0])[0] if row and json.loads(row[0]) else None
+
+    def persist_meta_selector_result(
+        self,
+        result: Any,
+        *,
+        policy_version: str,
+        selector_policy_version: str,
+        selector_policy_hash: str,
+        scorecard_policy_version: str | None = None,
+        meta_split: str = "FINAL_OOS",
+        purge_periods: int = 0,
+        embargo_periods: int = 0,
+        available_at: datetime | None = None,
+    ) -> str:
+        timestamp = available_at or datetime.now(timezone.utc)
+        if pd.Timestamp(timestamp).tzinfo is None:
+            raise ValueError("available_at must be timezone-aware")
+        run_columns = (
+            "meta_run_id", "policy_version", "selector_policy_version", "selector_policy_hash",
+            "scorecard_policy_version", "meta_split", "purge_periods", "embargo_periods",
+            "status", "verdict", "metrics_json", "baselines_json", "stress_results_json",
+            "attribution_json", "checkpoint_json", "checkpoint_hash", "orders_json", "fills_json",
+            "risk_decisions_json", "costs_json", "evidence_hash", "available_at",
+            "final_oos_execution_hash", "execution_payload_json", "pre_verdict_result_hash",
+            "pre_verdict_result_payload_json",
+        )
+        run_data = {
+            "meta_run_id": result.meta_run_id,
+            "policy_version": policy_version,
+            "selector_policy_version": selector_policy_version,
+            "selector_policy_hash": selector_policy_hash,
+            "scorecard_policy_version": scorecard_policy_version,
+            "meta_split": meta_split,
+            "purge_periods": purge_periods,
+            "embargo_periods": embargo_periods,
+            "status": "SUCCEEDED",
+            "verdict": result.verdict,
+            "metrics_json": json.dumps(result.metrics, sort_keys=True),
+            "baselines_json": json.dumps(result.baselines, sort_keys=True),
+            "stress_results_json": json.dumps(result.stress_results, sort_keys=True, default=str),
+            "attribution_json": json.dumps(result.attribution, sort_keys=True),
+            "checkpoint_json": json.dumps(asdict(result.checkpoint), sort_keys=True, default=str),
+            "checkpoint_hash": result.checkpoint.checkpoint_hash,
+            "orders_json": json.dumps(result.orders, sort_keys=True, default=str),
+            "fills_json": json.dumps(result.fills, sort_keys=True, default=str),
+            "risk_decisions_json": json.dumps(result.risk_decisions, sort_keys=True, default=str),
+            "costs_json": json.dumps(getattr(result, "costs", ()), sort_keys=True, default=str),
+            "evidence_hash": result.evidence_hash,
+            "available_at": timestamp,
+            "final_oos_execution_hash": getattr(result, "final_oos_execution_hash", result.evidence_hash),
+            "execution_payload_json": json.dumps(getattr(result, "execution_payload", {}), sort_keys=True, default=str),
+            "pre_verdict_result_hash": getattr(result, "pre_verdict_result_hash", ""),
+            "pre_verdict_result_payload_json": json.dumps(getattr(result, "pre_verdict_result_payload", {}), sort_keys=True, default=str),
+        }
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT evidence_hash, final_oos_execution_hash, pre_verdict_result_hash FROM meta_selector_runs WHERE meta_run_id=?", [result.meta_run_id]
+            ).fetchone()
+            if existing and (
+                existing[0] != result.evidence_hash
+                or existing[1] != getattr(result, "final_oos_execution_hash", result.evidence_hash)
+                or existing[2] != getattr(result, "pre_verdict_result_hash", "")
+            ):
+                raise ValueError("Conflicting immutable meta selector run")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO meta_selector_runs ({', '.join(run_columns)}) VALUES ({', '.join('?' for _ in run_columns)})",
+                    [run_data[column] for column in run_columns],
+                )
+                for row in result.equity_curve:
+                    self.conn.execute(
+                        """INSERT INTO meta_selector_equity_curve
+                           (meta_run_id, timestamp, equity, net_return, drawdown, position, decision)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            result.meta_run_id, row["timestamp"], row["equity"], row["net_return"],
+                            row["drawdown"], row["position"], row["decision"],
+                        ],
+                    )
+                for decision in result.decisions:
+                    self.conn.execute(
+                        """INSERT INTO meta_selector_decisions
+                           (meta_run_id, selector_decision_id, decision_time, evidence_hash)
+                           VALUES (?, ?, ?, ?)""",
+                        [result.meta_run_id, decision.selector_decision_id, decision.decision_time, decision.evidence_hash],
+                    )
+                for switch in result.switches:
+                    self.conn.execute(
+                        """INSERT INTO meta_selector_switches
+                           (meta_run_id, decision_time, old_strategy, new_strategy, switching_cost,
+                            sells_first_json, buys_after_sells_json)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        [
+                            result.meta_run_id, switch["decision_time"], switch["old_strategy"],
+                            switch["new_strategy"], switch["switching_cost"],
+                            json.dumps(switch["sells_first"], sort_keys=True),
+                            json.dumps(switch["buys_after_sells"], sort_keys=True),
+                        ],
+                    )
+                for attribution_type, value in result.attribution.items():
+                    self.conn.execute(
+                        "INSERT INTO meta_selector_attribution (meta_run_id, attribution_type, value) VALUES (?, ?, ?)",
+                        [result.meta_run_id, attribution_type, value],
+                    )
+        return str(result.meta_run_id)
+
+    def load_meta_selector_checkpoint(self, meta_run_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT checkpoint_json, checkpoint_hash FROM meta_selector_runs WHERE meta_run_id=?",
+            [meta_run_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown meta selector run {meta_run_id}")
+        checkpoint = json.loads(str(row[0] or "{}"))
+        if not checkpoint:
+            raise ValueError(f"Meta selector run {meta_run_id} has no checkpoint")
+        return checkpoint
+
+    def persist_frozen_meta_policy(self, artifact: Any) -> str:
+        values = asdict(artifact)
+        columns = (
+            "frozen_policy_id", "selector_policy_version", "selector_policy_hash",
+            "scorecard_policy_hash", "meta_policy_version", "meta_policy_hash",
+            "candidate_trial_ids", "selected_trial_id", "data_hash", "universe_lineage",
+            "b2_strategy",
+            "selection_rule", "selection_result",
+            "selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload",
+            "acceptance_policy_version", "acceptance_policy_hash",
+            "experiment_family_id", "universe_snapshot_id",
+            "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
+            "frozen_at", "artifact_hash",
+        )
+        data = {
+            **values,
+            "candidate_trial_ids": json.dumps(values["candidate_trial_ids"], sort_keys=True),
+            "universe_lineage": json.dumps(values["universe_lineage"], sort_keys=True),
+            "selector_policy_payload": json.dumps(values["selector_policy_payload"], sort_keys=True),
+            "meta_policy_payload": json.dumps(values["meta_policy_payload"], sort_keys=True),
+            "scorecard_policy_payload": json.dumps(values["scorecard_policy_payload"], sort_keys=True),
+        }
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT artifact_hash FROM frozen_meta_policies WHERE frozen_policy_id=?",
+                [values["frozen_policy_id"]],
+            ).fetchone()
+            if existing and existing[0] != values["artifact_hash"]:
+                raise ValueError("Conflicting immutable frozen meta policy")
+            if not existing:
+                self.conn.execute(
+                    f"INSERT INTO frozen_meta_policies ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [data[column] for column in columns],
+                )
+        return str(values["frozen_policy_id"])
+
+    def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM frozen_meta_policies WHERE frozen_policy_id=?",
+            [frozen_policy_id],
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown frozen meta policy {frozen_policy_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        result["candidate_trial_ids"] = json.loads(str(result["candidate_trial_ids"]))
+        result["universe_lineage"] = json.loads(str(result["universe_lineage"]))
+        for field in ("selector_policy_payload", "meta_policy_payload", "scorecard_policy_payload"):
+            result[field] = json.loads(str(result[field] or "{}"))
+        return result
+
+    def persist_final_oos_provenance_certificate(self, certificate: Any) -> str:
+        values = asdict(certificate)
+        json_fields = (
+            "dataset_ids", "dataset_content_hashes", "evidence_hashes",
+            "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
+            "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
+            "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
+            "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
+        )
+        for field in json_fields:
+            values[field] = json.dumps(values[field], sort_keys=True)
+        columns = tuple(values)
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT certificate_hash FROM final_oos_provenance_certificates WHERE certificate_id=?",
+                [certificate.certificate_id],
+            ).fetchone()
+            if existing is not None and existing[0] != certificate.certificate_hash:
+                raise ValueError("Conflicting immutable FINAL_OOS provenance certificate")
+            if existing is None:
+                self.conn.execute(
+                    f"INSERT INTO final_oos_provenance_certificates ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [values[column] for column in columns],
+                )
+        return str(certificate.certificate_id)
+
+    def load_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM final_oos_provenance_certificates WHERE certificate_id=?", [certificate_id]
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown FINAL_OOS provenance certificate {certificate_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        for field in (
+            "dataset_ids", "dataset_content_hashes", "evidence_hashes",
+            "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
+            "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
+            "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
+            "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
+        ):
+            result[field] = json.loads(str(result[field] or "[]"))
+        return result
+
+    def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+        certificate = self.load_final_oos_provenance_certificate(certificate_id)
+        if str(certificate.get("certificate_id")) != str(certificate.get("certificate_hash", ""))[:32]:
+            raise ValueError("FINAL_OOS provenance certificate ID/hash mismatch")
+        payload = {
+            key: certificate[key]
+            for key in (
+                "meta_run_id", "frozen_policy_id", "frozen_policy_hash", "selected_trial_id",
+                "experiment_family_id",
+                "selector_policy_hash", "meta_policy_hash", "scorecard_policy_hash",
+                "dataset_ids", "dataset_content_hashes", "evidence_hashes", "resolver_hash",
+                "execution_hash", "final_oos_start", "final_oos_end", "materialized_at",
+                "cost_model_version", "cost_model_hash", "purge_periods", "embargo_periods",
+                "acceptance_policy_version", "acceptance_policy_hash", "universe_snapshot_id",
+                "regime_snapshot_ids", "asset_state_snapshot_ids", "risk_snapshot_ids",
+                "risk_snapshot_hashes", "dataset_certification_ids", "evidence_ids",
+                "outcome_series_ids", "outcome_series_bindings", "execution_bar_hashes", "execution_bar_ids",
+                "scorecard_ids", "conditional_evidence_ids", "dataset_certification_bindings", "dataset_bindings",
+                "knowledge_cutoff",
+            )
+        }
+        for field in ("final_oos_start", "final_oos_end", "materialized_at", "knowledge_cutoff"):
+            if payload.get(field) is None:
+                continue
+            payload[field] = pd.Timestamp(payload[field]).tz_convert("UTC").to_pydatetime()
+        expected_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
+        if expected_hash != certificate["certificate_hash"]:
+            raise ValueError("FINAL_OOS provenance certificate hash mismatch")
+        if str(certificate["certificate_id"]) != str(certificate["certificate_hash"])[:32]:
+            raise ValueError("FINAL_OOS provenance certificate ID binding mismatch")
+        artifact = self.load_frozen_meta_policy(str(certificate["frozen_policy_id"]))
+        artifact_payload = {
+            "selector_policy_version": artifact["selector_policy_version"],
+            "selector_policy_hash": artifact["selector_policy_hash"],
+            "scorecard_policy_hash": artifact["scorecard_policy_hash"],
+            "meta_policy_version": artifact["meta_policy_version"],
+            "meta_policy_hash": artifact["meta_policy_hash"],
+            "candidate_trial_ids": tuple(sorted(artifact["candidate_trial_ids"])),
+            "selected_trial_id": artifact["selected_trial_id"],
+            "data_hash": artifact["data_hash"],
+            "b2_strategy": artifact.get("b2_strategy"),
+            "universe_lineage": tuple(sorted(artifact["universe_lineage"])),
+            "cost_model_version": artifact["cost_model_version"],
+            "cost_model_hash": artifact["cost_model_hash"],
+            "purge_periods": artifact["purge_periods"],
+            "embargo_periods": artifact["embargo_periods"],
+            "frozen_at": pd.Timestamp(artifact["frozen_at"]).tz_convert("UTC").to_pydatetime(),
+            "selection_rule": artifact["selection_rule"],
+            "selection_result": artifact.get("selection_result"),
+            "selector_policy_payload": artifact.get("selector_policy_payload") or {},
+            "meta_policy_payload": artifact.get("meta_policy_payload") or {},
+            "scorecard_policy_payload": artifact.get("scorecard_policy_payload") or {},
+            "acceptance_policy_version": artifact.get("acceptance_policy_version"),
+            "acceptance_policy_hash": artifact.get("acceptance_policy_hash"),
+            "experiment_family_id": artifact.get("experiment_family_id"),
+            "universe_snapshot_id": artifact.get("universe_snapshot_id"),
+        }
+        expected_artifact_hash = hashlib.sha256(json.dumps(artifact_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+        if expected_artifact_hash != artifact.get("artifact_hash"):
+            raise ValueError("FINAL_OOS frozen artifact hash mismatch")
+        if artifact.get("artifact_hash") != certificate["frozen_policy_hash"]:
+            raise ValueError("FINAL_OOS certificate frozen artifact binding mismatch")
+        if artifact.get("experiment_family_id") != certificate["experiment_family_id"] or artifact.get("universe_snapshot_id") != certificate["universe_snapshot_id"]:
+            raise ValueError("FINAL_OOS certificate frozen universe/family binding mismatch")
+        for field_name in ("selector_policy_hash", "meta_policy_hash", "scorecard_policy_hash"):
+            if str(artifact.get(field_name)) != str(certificate[field_name]):
+                raise ValueError(f"FINAL_OOS certificate {field_name} binding mismatch")
+        if artifact.get("selected_trial_id") != certificate["selected_trial_id"]:
+            raise ValueError("FINAL_OOS certificate selected trial binding mismatch")
+        if str(artifact.get("acceptance_policy_version")) != str(certificate["acceptance_policy_version"]):
+            raise ValueError("FINAL_OOS certificate acceptance policy version mismatch")
+        if str(artifact.get("acceptance_policy_hash")) != str(certificate["acceptance_policy_hash"]):
+            raise ValueError("FINAL_OOS certificate acceptance policy hash mismatch")
+        meta_policy_payload = artifact.get("meta_policy_payload") or {}
+        if meta_policy_payload.get("schema_version") == "meta-replay-policy-v1":
+            acceptance_gate_names = (
+                "min_final_oos_duration_days", "min_final_oos_observations",
+                "min_independent_trades", "max_switch_rate", "max_drawdown",
+                "min_net_edge", "require_robustness_certification",
+                "require_selector_stability", "require_causal_verification",
+                "min_selector_stability", "selector_stability_perturbation",
+                "required_stress_scenarios", "stress_thresholds",
+            )
+            required_stress_scenarios = sorted(
+                str(value) for value in meta_policy_payload.get("required_stress_scenarios", ())
+            )
+            stress_thresholds = {
+                str(row[0]): {
+                    "min_return": float(row[1]),
+                    "max_drawdown": float(row[2]),
+                }
+                for row in meta_policy_payload.get("stress_thresholds", ())
+            }
+            acceptance_payload = {
+                "acceptance_policy_version": certificate["acceptance_policy_version"],
+                "gates": {
+                    **{name: meta_policy_payload[name] for name in acceptance_gate_names if name in meta_policy_payload and name not in {"required_stress_scenarios", "stress_thresholds"}},
+                    "required_stress_scenarios": required_stress_scenarios,
+                    "stress_thresholds": stress_thresholds,
+                },
+            }
+            expected_acceptance_policy_hash = hashlib.sha256(
+                json.dumps(acceptance_payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+            ).hexdigest()
+            if expected_acceptance_policy_hash != str(certificate["acceptance_policy_hash"]):
+                raise ValueError("FINAL_OOS certificate acceptance policy payload mismatch")
+        if certificate.get("dataset_ids"):
+            historical_trial_rows = self.list_research_trials_at(
+                pd.Timestamp(certificate["final_oos_start"]).to_pydatetime(),
+                family_id=str(certificate["experiment_family_id"]),
+                knowledge_cutoff=(
+                    pd.Timestamp(certificate["knowledge_cutoff"]).to_pydatetime()
+                    if certificate.get("knowledge_cutoff") is not None
+                    else pd.Timestamp(certificate["final_oos_start"]).to_pydatetime()
+                ),
+            )
+            trial = next(
+                (row for row in historical_trial_rows if row.get("trial_id") == certificate["selected_trial_id"]),
+                None,
+            )
+        else:
+            trial = self.get_research_trial(str(certificate["selected_trial_id"]))
+        if trial is None or trial.get("experiment_family_id") != certificate["experiment_family_id"]:
+            raise ValueError("FINAL_OOS certificate trial binding mismatch")
+        if str(trial.get("status")) != "SUCCEEDED":
+            raise ValueError("FINAL_OOS certificate trial is not SUCCEEDED")
+        status_effective_at = trial.get("status_effective_at")
+        if status_effective_at is not None and pd.Timestamp(status_effective_at) >= pd.Timestamp(certificate["final_oos_start"]):
+            raise ValueError("FINAL_OOS certificate trial succeeded after FINAL_OOS started")
+        if str(certificate["selected_trial_id"]) not in set(artifact.get("candidate_trial_ids") or ()):
+            raise ValueError("FINAL_OOS certificate candidate binding mismatch")
+        if artifact.get("selection_result") != (trial.get("parameters") or {}).get("candidate_id"):
+            raise ValueError("FINAL_OOS certificate winner binding mismatch")
+        trial_created_at = trial.get("created_at")
+        frozen_at = pd.Timestamp(artifact["frozen_at"])
+        final_oos_start = pd.Timestamp(certificate["final_oos_start"])
+        if trial_created_at is None or pd.Timestamp(trial_created_at) >= frozen_at or pd.Timestamp(trial_created_at) >= final_oos_start:
+            raise ValueError("FINAL_OOS certificate trial was created after the frozen policy")
+        trial_parameters = dict(trial.get("parameters") or {})
+        trial_bindings = {
+            "selector_policy_version": artifact.get("selector_policy_version"),
+            "selector_policy_hash": artifact.get("selector_policy_hash"),
+            "scorecard_policy_hash": artifact.get("scorecard_policy_hash"),
+            "meta_replay_policy_version": artifact.get("meta_policy_version"),
+            "meta_replay_policy_hash": artifact.get("meta_policy_hash"),
+            "data_hash": artifact.get("data_hash"),
+            "purge_periods": artifact.get("purge_periods"),
+            "embargo_periods": artifact.get("embargo_periods"),
+            "cost_model_version": artifact.get("cost_model_version"),
+            "b2_strategy": artifact.get("b2_strategy"),
+            "meta_split": "FINAL_OOS",
+        }
+        for field_name, expected in trial_bindings.items():
+            if str(trial_parameters.get(field_name)) != str(expected):
+                raise ValueError(f"FINAL_OOS certificate trial {field_name} binding mismatch")
+        if sorted(map(str, trial_parameters.get("strategy_universe") or ())) != sorted(map(str, artifact.get("universe_lineage") or ())):
+            raise ValueError("FINAL_OOS certificate trial strategy-universe binding mismatch")
+        for field_name in ("data_hash", "cost_model_version", "cost_model_hash", "universe_snapshot_id"):
+            artifact_field = "data_hash" if field_name == "data_hash" else field_name
+            if str(trial.get(field_name)) != str(artifact.get(artifact_field)):
+                raise ValueError(f"FINAL_OOS certificate trial {field_name} binding mismatch")
+        if not trial.get("frame_certification_id"):
+            raise ValueError("FINAL_OOS certificate trial lacks frame certification")
+        if not certificate.get("universe_snapshot_id"):
+            raise ValueError("FINAL_OOS certificate is missing universe snapshot binding")
+        family = self.get_experiment_family(str(certificate["experiment_family_id"]))
+        if family is None or family.get("universe_snapshot_id") != certificate["universe_snapshot_id"]:
+            raise ValueError("FINAL_OOS certificate universe binding mismatch")
+        walk_forward_design = dict(family.get("walk_forward_design") or {})
+        if int(walk_forward_design.get("purge_periods", -1)) != int(artifact.get("purge_periods", -2)) or int(walk_forward_design.get("embargo_periods", -1)) != int(artifact.get("embargo_periods", -2)):
+            raise ValueError("FINAL_OOS certificate family split binding mismatch")
+        historical_trials = (
+            [trial]
+            if not certificate.get("dataset_ids")
+            else self.list_research_trials_at(
+                pd.Timestamp(certificate["final_oos_start"]).to_pydatetime(),
+                family_id=str(certificate["experiment_family_id"]),
+                knowledge_cutoff=(
+                    pd.Timestamp(certificate["knowledge_cutoff"]).to_pydatetime()
+                    if certificate.get("knowledge_cutoff") is not None
+                    else pd.Timestamp(certificate["final_oos_start"]).to_pydatetime()
+                ),
+            )
+        )
+        if not any(row.get("trial_id") == certificate["selected_trial_id"] for row in historical_trials):
+            raise ValueError("FINAL_OOS certificate trial was not SUCCEEDED before FINAL_OOS")
+        if certificate.get("dataset_ids"):
+            dataset_rows = self.conn.execute(
+                "SELECT dataset_id, COALESCE(transformation_hash, raw_hash) FROM market_datasets WHERE dataset_id IN (" + ",".join("?" for _ in certificate["dataset_ids"]) + ")",
+                list(certificate["dataset_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in dataset_rows} != {str(value) for value in certificate["dataset_ids"]}:
+                raise ValueError("FINAL_OOS certificate dataset ID binding mismatch")
+            if {str(row[1]) for row in dataset_rows} != {str(value) for value in certificate["dataset_content_hashes"]}:
+                raise ValueError("FINAL_OOS certificate dataset content-hash binding mismatch")
+            bindings = {(str(pair[0]), str(pair[1])) for pair in certificate.get("dataset_bindings", []) if len(pair) == 2}
+            actual_bindings = {(str(row[0]), str(row[1])) for row in dataset_rows}
+            if actual_bindings != bindings:
+                raise ValueError("FINAL_OOS certificate dataset ID/content-hash pair binding mismatch")
+            artifact_content_hash = str(artifact.get("data_hash") or "")
+            if artifact_content_hash not in {str(row[1]) for row in dataset_rows}:
+                raise ValueError("FINAL_OOS frozen artifact data hash is not certified")
+        if certificate.get("risk_snapshot_ids"):
+            placeholders = ",".join("?" for _ in certificate["risk_snapshot_ids"])
+            risk_rows = self.conn.execute(
+                f"SELECT snapshot_id, snapshot_hash FROM phase2_10_causal_risk_snapshots WHERE snapshot_id IN ({placeholders})",
+                list(certificate["risk_snapshot_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in risk_rows} != {str(value) for value in certificate["risk_snapshot_ids"]} or {str(row[1]) for row in risk_rows} != {str(value) for value in certificate["risk_snapshot_hashes"]}:
+                raise ValueError("FINAL_OOS certificate risk snapshot binding mismatch")
+            for snapshot_id, snapshot_hash in risk_rows:
+                snapshot = self.load_phase2_10_causal_risk_snapshot(str(snapshot_id))
+                if str(snapshot.get("snapshot_hash")) != str(snapshot_hash):
+                    raise ValueError("FINAL_OOS certificate risk snapshot content mismatch")
+        for table, column, field_name in (
+            ("market_regime_snapshots", "regime_id", "regime_snapshot_ids"),
+            ("asset_state_snapshots", "asset_state_id", "asset_state_snapshot_ids"),
+        ):
+            identifiers = certificate.get(field_name) or []
+            if identifiers:
+                placeholders = ",".join("?" for _ in identifiers)
+                rows = self.conn.execute(
+                    f"SELECT {column} FROM {table} WHERE {column} IN ({placeholders})",
+                    list(identifiers),
+                ).fetchall()
+                if {str(row[0]) for row in rows} != {str(value) for value in identifiers}:
+                    raise ValueError(f"FINAL_OOS certificate {field_name} binding mismatch")
+        if certificate.get("dataset_certification_ids"):
+            placeholders = ",".join("?" for _ in certificate["dataset_certification_ids"])
+            certification_query = (
+                f"SELECT certification_id, dataset_id, checks_json, completed_at FROM data_quality_certifications "
+                f"WHERE certification_id IN ({placeholders}) AND status='CERTIFIED' AND issue_count=0"
+            )
+            certification_params: list[Any] = list(certificate["dataset_certification_ids"])
+            if certificate.get("knowledge_cutoff") is not None:
+                certification_query += " AND completed_at <= ?"
+                certification_params.append(certificate["knowledge_cutoff"])
+            certification_rows = self.conn.execute(certification_query, certification_params).fetchall()
+            if {str(row[0]) for row in certification_rows} != {str(value) for value in certificate["dataset_certification_ids"]}:
+                raise ValueError("FINAL_OOS certificate dataset-certification binding mismatch")
+            actual_cert_bindings = {(str(row[1]), str(row[0])) for row in certification_rows}
+            expected_cert_bindings = {(str(pair[0]), str(pair[1])) for pair in certificate.get("dataset_certification_bindings", []) if len(pair) == 2}
+            if actual_cert_bindings != expected_cert_bindings:
+                raise ValueError("FINAL_OOS certificate dataset-certification pair binding mismatch")
+            certified_hashes: dict[str, str] = {}
+            for _, dataset_id, checks_json, _completed_at in certification_rows:
+                try:
+                    certified_hashes[str(dataset_id)] = str(json.loads(str(checks_json or "{}")).get("dataset_content_hash") or "")
+                except (TypeError, json.JSONDecodeError):
+                    certified_hashes[str(dataset_id)] = ""
+            if any(
+                certified_hashes.get(str(dataset_id)) != str(content_hash)
+                for dataset_id, content_hash in certificate.get("dataset_bindings", [])
+            ):
+                raise ValueError("FINAL_OOS certificate certification content-hash mismatch")
+        if certificate.get("conditional_evidence_ids"):
+            placeholders = ",".join("?" for _ in certificate["conditional_evidence_ids"])
+            evidence_rows = self.conn.execute(
+                f"SELECT evidence_id, evidence_hash FROM strategy_conditional_evidence WHERE evidence_id IN ({placeholders})",
+                list(certificate["conditional_evidence_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in evidence_rows} != {str(value) for value in certificate["conditional_evidence_ids"]}:
+                raise ValueError("FINAL_OOS certificate conditional-evidence binding mismatch")
+            if certificate.get("evidence_ids") and set(map(str, certificate["evidence_ids"])) != {str(row[0]) for row in evidence_rows}:
+                raise ValueError("FINAL_OOS certificate evidence ID binding mismatch")
+            if {str(row[1]) for row in evidence_rows} != {str(value) for value in certificate.get("evidence_hashes", [])}:
+                raise ValueError("FINAL_OOS certificate evidence content-hash binding mismatch")
+        elif certificate.get("evidence_ids"):
+            raise ValueError("FINAL_OOS certificate evidence IDs lack typed conditional-evidence bindings")
+        if certificate["materialized_at"] <= certificate["final_oos_end"]:
+            raise ValueError("FINAL_OOS provenance certificate materialized before completion")
+        result = self.conn.execute(
+            "SELECT final_oos_execution_hash FROM meta_selector_runs WHERE meta_run_id = ? AND final_oos_execution_hash = ?",
+            [certificate["meta_run_id"], certificate["execution_hash"]],
+        ).fetchone()
+        if result is None:
+            raise ValueError("FINAL_OOS provenance certificate has no persisted execution result")
+        self.validate_meta_selector_result_execution_hash(str(certificate["meta_run_id"]))
+        result_row = self.conn.execute(
+            "SELECT meta_split, available_at, verdict, orders_json FROM meta_selector_runs WHERE meta_run_id=?",
+            [certificate["meta_run_id"]],
+        ).fetchone()
+        if result_row is None or result_row[0] != "FINAL_OOS" or result_row[2] != "PHASE 2.10 IMPLEMENTATION READY":
+            raise ValueError("FINAL_OOS certificate result is not an immutable pre-verdict result")
+        if result_row[1] is not None and certificate["materialized_at"] <= result_row[1]:
+            raise ValueError("FINAL_OOS certificate materialized before result persistence")
+        if certificate.get("execution_bar_hashes"):
+            orders = json.loads(str(result_row[3] or "[]"))
+            actual_bar_hashes = {
+                str(order.get("execution_lineage", {}).get("historical_bar_hash"))
+                for order in orders if order.get("execution_lineage", {}).get("historical_bar_hash")
+            }
+            if actual_bar_hashes != {str(value) for value in certificate["execution_bar_hashes"]}:
+                raise ValueError("FINAL_OOS certificate execution-bar binding mismatch")
+            actual_bar_ids = {
+                str(order.get("execution_lineage", {}).get("historical_bar_id"))
+                for order in orders if order.get("execution_lineage", {}).get("historical_bar_id")
+            }
+            expected_bar_ids = {str(value) for value in certificate.get("execution_bar_ids", [])}
+            if expected_bar_ids and actual_bar_ids != expected_bar_ids:
+                raise ValueError("FINAL_OOS certificate execution-bar ID binding mismatch")
+        if certificate.get("scorecard_ids"):
+            placeholders = ",".join("?" for _ in certificate["scorecard_ids"])
+            scorecard_rows = self.conn.execute(
+                f"SELECT scorecard_id, evidence_hash, conditional_evidence_id FROM strategy_scorecards WHERE scorecard_id IN ({placeholders})",
+                list(certificate["scorecard_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in scorecard_rows} != {str(value) for value in certificate["scorecard_ids"]}:
+                raise ValueError("FINAL_OOS certificate scorecard binding mismatch")
+            declared_conditional_ids = {str(value) for value in certificate.get("conditional_evidence_ids", [])}
+            if declared_conditional_ids and not {str(row[2]) for row in scorecard_rows if row[2]} <= declared_conditional_ids:
+                raise ValueError("FINAL_OOS certificate scorecard evidence binding mismatch")
+        if certificate.get("outcome_series_ids"):
+            placeholders = ",".join("?" for _ in certificate["outcome_series_ids"])
+            series_rows = self.conn.execute(
+                f"SELECT DISTINCT series_id, content_hash FROM phase2_10_outcome_series WHERE series_id IN ({placeholders})",
+                list(certificate["outcome_series_ids"]),
+            ).fetchall()
+            if {str(row[0]) for row in series_rows} != {str(value) for value in certificate["outcome_series_ids"]}:
+                raise ValueError("FINAL_OOS certificate outcome-series binding mismatch")
+            actual_bindings = {(str(row[0]), str(row[1])) for row in series_rows}
+            expected_bindings = {
+                (str(pair[0]), str(pair[1]))
+                for pair in certificate.get("outcome_series_bindings", [])
+                if len(pair) == 2
+            }
+            if actual_bindings != expected_bindings:
+                raise ValueError("FINAL_OOS certificate outcome-series content-hash mismatch")
+        return certificate
+
+    def load_meta_selector_result_record(self, meta_run_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM meta_selector_runs WHERE meta_run_id=?", [meta_run_id]
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown meta selector run {meta_run_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        for field in ("metrics_json", "baselines_json", "stress_results_json", "attribution_json", "orders_json", "fills_json", "risk_decisions_json", "costs_json", "execution_payload_json", "pre_verdict_result_payload_json"):
+            result[field[:-5]] = json.loads(str(result[field] or "{}"))
+        return result
+
+    def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+        """Reload and verify the immutable pre-verdict execution payload."""
+        result = self.load_meta_selector_result_record(meta_run_id)
+        payload = result.get("execution_payload") or {}
+        if not payload:
+            raise ValueError("FINAL_OOS result has no canonical execution payload")
+        expected_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
+        if expected_hash != str(result.get("final_oos_execution_hash") or ""):
+            raise ValueError("FINAL_OOS result execution hash mismatch")
+        result_payload = result.get("pre_verdict_result_payload") or {}
+        result_hash = str(result.get("pre_verdict_result_hash") or "")
+        if not result_payload or not result_hash:
+            raise ValueError("FINAL_OOS result has no canonical pre-verdict result payload")
+        expected_result_hash = hashlib.sha256(
+            json.dumps(result_payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
+        if expected_result_hash != result_hash:
+            raise ValueError("FINAL_OOS result pre-verdict hash mismatch")
+        if result_payload.get("final_oos_execution_hash") != result.get("final_oos_execution_hash"):
+            raise ValueError("FINAL_OOS result payload execution binding mismatch")
+        stored_bindings = {
+            "metrics": result.get("metrics"),
+            "baselines": result.get("baselines"),
+            "stress": result.get("stress_results"),
+            "attribution": result.get("attribution"),
+            "orders": result.get("orders"),
+            "fills": result.get("fills"),
+            "risk_decisions": result.get("risk_decisions"),
+            "costs": result.get("costs"),
+        }
+        for field, stored_value in stored_bindings.items():
+            if field in result_payload and hashlib.sha256(
+                json.dumps(result_payload[field], sort_keys=True, default=str, separators=(",", ":")).encode()
+            ).hexdigest() != hashlib.sha256(
+                json.dumps(stored_value, sort_keys=True, default=str, separators=(",", ":")).encode()
+            ).hexdigest():
+                raise ValueError(f"FINAL_OOS result {field} diverges from its canonical payload")
+        execution_bindings = {
+            "orders": result.get("orders"),
+            "fills": result.get("fills"),
+            "costs": result.get("costs"),
+            "risk_decisions": result.get("risk_decisions"),
+        }
+        for field, stored_value in execution_bindings.items():
+            if hashlib.sha256(
+                json.dumps(payload.get(field, []), sort_keys=True, default=str, separators=(",", ":")).encode()
+            ).hexdigest() != hashlib.sha256(
+                json.dumps(stored_value, sort_keys=True, default=str, separators=(",", ":")).encode()
+            ).hexdigest():
+                raise ValueError(f"FINAL_OOS execution payload {field} diverges from persisted artifacts")
+        if result.get("meta_split") != "FINAL_OOS":
+            raise ValueError("execution-hash validation requires a FINAL_OOS result")
+        if result.get("verdict") != "PHASE 2.10 IMPLEMENTATION READY":
+            raise ValueError("FINAL_OOS result is not an immutable pre-verdict result")
+        return result
+
+    def persist_phase2_10_causal_risk_snapshot(self, snapshot: Any) -> str:
+        values = asdict(snapshot)
+        for field in ("sector_exposure", "var_inputs", "open_positions", "instrument_liquidity", "rolling_returns"):
+            values[field] = json.dumps(values[field], sort_keys=True, default=str)
+        columns = tuple(values)
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT snapshot_hash FROM phase2_10_causal_risk_snapshots WHERE snapshot_id=?",
+                [values["snapshot_id"]],
+            ).fetchone()
+            if existing is not None and existing[0] != values["snapshot_hash"]:
+                raise ValueError("Conflicting immutable causal risk snapshot")
+            if existing is None:
+                self.conn.execute(
+                    f"INSERT INTO phase2_10_causal_risk_snapshots ({', '.join(columns)}) VALUES ({', '.join('?' for _ in columns)})",
+                    [values[column] for column in columns],
+                )
+        return str(values["snapshot_id"])
+
+    def load_phase2_10_causal_risk_snapshot(self, snapshot_id: str) -> dict[str, Any]:
+        row = self.conn.execute(
+            "SELECT * FROM phase2_10_causal_risk_snapshots WHERE snapshot_id=?", [snapshot_id]
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Unknown causal risk snapshot {snapshot_id}")
+        columns = [item[0] for item in self.conn.description]
+        result = dict(zip(columns, row))
+        for field in ("sector_exposure", "var_inputs", "open_positions", "instrument_liquidity", "rolling_returns"):
+            result[field] = json.loads(str(result[field]))
+        payload = {
+            "snapshot_id": result["snapshot_id"], "as_of": pd.Timestamp(result["as_of"]).tz_convert("UTC").to_pydatetime(),
+            "exposure": result["exposure"], "sector_exposure": dict(sorted(result["sector_exposure"].items())),
+            "daily_pnl": result["daily_pnl"], "drawdown": result["drawdown"],
+            "var_inputs": tuple(result["var_inputs"]), "var_result": result["var_result"],
+            "open_positions": dict(sorted(result["open_positions"].items())),
+            "instrument_liquidity": dict(sorted(result["instrument_liquidity"].items())),
+            "rolling_returns": tuple(result["rolling_returns"]),
+            "rolling_volatility": result["rolling_volatility"], "data_hash": result["data_hash"],
+        }
+        expected_hash = hashlib.sha256(json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+        if expected_hash != result["snapshot_hash"]:
+            raise ValueError("Causal risk snapshot hash mismatch")
+        return result
+
+    def persist_phase2_10_empirical_acceptance(self, *, acceptance_id: str, meta_run_id: str,
+                                                certificate_id: str, certificate_hash: str,
+                                                execution_hash: str, verdict: str,
+                                                accepted_at: datetime, acceptance_hash: str,
+                                                acceptance_policy_version: str = "phase2-10-acceptance-v1",
+                                                acceptance_policy_hash: str = "") -> str:
+        if verdict not in {
+            "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED",
+            "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE",
+        }:
+            raise ValueError("empirical acceptance records may contain only contractual COMPLETE verdicts")
+        if not acceptance_policy_version or not acceptance_policy_hash:
+            raise ValueError("empirical acceptance requires an immutable acceptance policy binding")
+        certificate = self.validate_final_oos_provenance_certificate(certificate_id)
+        if (
+            str(certificate["meta_run_id"]) != str(meta_run_id)
+            or str(certificate["certificate_hash"]) != str(certificate_hash)
+            or str(certificate["execution_hash"]) != str(execution_hash)
+            or str(certificate["acceptance_policy_version"]) != str(acceptance_policy_version)
+            or str(certificate["acceptance_policy_hash"]) != str(acceptance_policy_hash)
+        ):
+            raise ValueError("empirical acceptance certificate binding mismatch")
+        if pd.Timestamp(accepted_at) <= pd.Timestamp(certificate["materialized_at"]):
+            raise ValueError("empirical acceptance must materialize after the provenance certificate")
+        acceptance_payload = {
+            "meta_run_id": meta_run_id,
+            "certificate_id": certificate_id,
+            "certificate_hash": certificate_hash,
+            "execution_hash": execution_hash,
+            "acceptance_policy_version": acceptance_policy_version,
+            "acceptance_policy_hash": acceptance_policy_hash,
+            "verdict": verdict,
+        }
+        expected_acceptance_hash = hashlib.sha256(
+            json.dumps(acceptance_payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
+        if acceptance_hash != expected_acceptance_hash or acceptance_id != expected_acceptance_hash[:32]:
+            raise ValueError("empirical acceptance hash or ID mismatch")
+        values = (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash, acceptance_policy_version, acceptance_policy_hash)
+        with self._write_lock:
+            existing = self.conn.execute(
+                "SELECT acceptance_hash FROM phase2_10_empirical_acceptance WHERE acceptance_id=?", [acceptance_id]
+            ).fetchone()
+            if existing is not None and existing[0] != acceptance_hash:
+                raise ValueError("Conflicting immutable empirical acceptance")
+            certificate_acceptance = self.conn.execute(
+                "SELECT acceptance_id, acceptance_hash FROM phase2_10_empirical_acceptance WHERE certificate_id=?",
+                [certificate_id],
+            ).fetchone()
+            if certificate_acceptance is not None and (
+                certificate_acceptance[0] != acceptance_id or certificate_acceptance[1] != acceptance_hash
+            ):
+                raise ValueError("Conflicting immutable empirical acceptance for certificate")
+            if existing is None:
+                self.conn.execute(
+                    "INSERT INTO phase2_10_empirical_acceptance (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash, acceptance_policy_version, acceptance_policy_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values
+                )
+        return acceptance_id
+
+    def list_research_trials_at(
+        self,
+        cutoff: datetime,
+        *,
+        family_id: str | None = None,
+        knowledge_cutoff: datetime | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.list_research_trials_at_bitemporal(
+            cutoff,
+            knowledge_cutoff=knowledge_cutoff or cutoff,
+            family_id=family_id,
+        )
+
+    def list_research_trials_at_bitemporal(
+        self, effective_cutoff: datetime, *, knowledge_cutoff: datetime,
+        family_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if pd.Timestamp(effective_cutoff).tzinfo is None or pd.Timestamp(knowledge_cutoff).tzinfo is None:
+            raise ValueError("cutoffs must be timezone-aware")
+        trials = self.list_research_trials(family_id=family_id)
+        result: list[dict[str, Any]] = []
+        for trial in trials:
+            events = self.conn.execute(
+                "SELECT status, effective_at, recorded_at, event_id FROM research_trial_lifecycle_events WHERE trial_id=? AND effective_at < ? AND recorded_at <= ? ORDER BY effective_at DESC, recorded_at DESC, event_id DESC",
+                [trial["trial_id"], effective_cutoff, knowledge_cutoff],
+            ).fetchall()
+            if events and str(events[0][0]) == "SUCCEEDED":
+                candidate = dict(trial)
+                candidate["status"] = "SUCCEEDED"
+                candidate["status_effective_at"] = events[0][1]
+                candidate["status_recorded_at"] = events[0][2]
+                candidate["status_event_id"] = events[0][3]
+                result.append(candidate)
+        return result

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 import json
 from typing import TYPE_CHECKING, Any, Iterable
@@ -472,6 +472,7 @@ class ConditionalEvidenceService:
             digest,
             evidence_available_at,
             trial["cost_model_hash"],
+            datetime.now(timezone.utc),
         ]
         existing = self.db.conn.execute(
             "SELECT evidence_hash FROM strategy_conditional_evidence WHERE evidence_id=?", [evidence_id]
@@ -479,7 +480,7 @@ class ConditionalEvidenceService:
         if existing and existing[0] != digest:
             raise ValueError("Conflicting immutable conditional evidence")
         if not existing:
-            columns = "evidence_id,aggregation_level,strategy_name,strategy_version,run_id,trial_id,market_regime,asset_cluster,timeframe,universe,observation_count,trade_count,fold_count,first_observation,last_observation,net_return,gross_return,total_cost,sharpe,sortino,calmar,max_drawdown,profit_factor,win_rate,expectancy,turnover,cost_ratio,evidence_status,raw_conditional_metric,global_metric,effective_sample_size,shrinkage_weight,shrunk_metric,sample_policy_version,sample_policy_hash,cost_model_version,lineage_json,evidence_hash,available_at,cost_model_hash"
+            columns = "evidence_id,aggregation_level,strategy_name,strategy_version,run_id,trial_id,market_regime,asset_cluster,timeframe,universe,observation_count,trade_count,fold_count,first_observation,last_observation,net_return,gross_return,total_cost,sharpe,sortino,calmar,max_drawdown,profit_factor,win_rate,expectancy,turnover,cost_ratio,evidence_status,raw_conditional_metric,global_metric,effective_sample_size,shrinkage_weight,shrunk_metric,sample_policy_version,sample_policy_hash,cost_model_version,lineage_json,evidence_hash,available_at,cost_model_hash,recorded_at"
             self.db.conn.execute(
                 f"INSERT INTO strategy_conditional_evidence ({columns}) VALUES ({','.join('?' for _ in result)})",
                 result,

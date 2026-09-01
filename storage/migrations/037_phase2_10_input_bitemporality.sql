@@ -1,0 +1,2 @@
+ALTER TABLE strategy_conditional_evidence ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ DEFAULT NULL;
+ALTER TABLE strategy_scorecards ADD COLUMN IF NOT EXISTS recorded_at TIMESTAMPTZ DEFAULT NULL;

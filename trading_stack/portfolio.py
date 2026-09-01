@@ -253,6 +253,45 @@ class PortfolioEventBacktester:
             exclusions=getattr(dataset, "exclusions", pd.DataFrame()),
         )
 
+    def execute_historical_rebalance(
+        self,
+        *,
+        run_id: str,
+        date: pd.Timestamp,
+        day: pd.DataFrame,
+        targets: pd.DataFrame,
+        cash: float,
+        quantities: dict[str, float],
+        average_cost: dict[str, float],
+        entry_timestamps: dict[str, pd.Timestamp],
+        entry_reasons: dict[str, str],
+        entry_cost_pools: dict[str, float],
+        entry_execution_cost_pools: dict[str, float],
+        last_prices: dict[str, float],
+        mode: str = "event-driven",
+        execution_mode: str = "EOD_BATCH",
+        cost_schedule: IndianDeliveryCostSchedule | None = None,
+    ) -> tuple[float, dict[str, Any]]:
+        """Execute one historical rebalance with the authoritative portfolio primitive."""
+
+        return self._rebalance(
+            run_id=run_id,
+            date=date,
+            day=day,
+            targets=targets,
+            cash=cash,
+            quantities=quantities,
+            average_cost=average_cost,
+            entry_timestamps=entry_timestamps,
+            entry_reasons=entry_reasons,
+            entry_cost_pools=entry_cost_pools,
+            entry_execution_cost_pools=entry_execution_cost_pools,
+            last_prices=last_prices,
+            mode=mode,
+            execution_mode=execution_mode,
+            cost_schedule=cost_schedule,
+        )
+
     def _rebalance(
         self,
         *,
@@ -270,6 +309,7 @@ class PortfolioEventBacktester:
         last_prices: dict[str, float],
         mode: str,
         execution_mode: str = "EOD_BATCH",
+        cost_schedule: IndianDeliveryCostSchedule | None = None,
     ) -> tuple[float, dict[str, Any]]:
         target_frame = targets.copy()
         if "target_weight" in target_frame.columns:
@@ -406,7 +446,7 @@ class PortfolioEventBacktester:
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
             requested_abs = float(abs(requested_quantity))
             sched_date = execution_timestamp.tz_convert("Asia/Kolkata").date() if hasattr(execution_timestamp, "tz_convert") and execution_timestamp.tzinfo else (execution_timestamp.date() if hasattr(execution_timestamp, "date") else date)
-            effective_schedule = get_cost_schedule(sched_date)
+            effective_schedule = cost_schedule or get_cost_schedule(sched_date)
             lagged_adv_raw = row.get("lagged_adv20")
             lagged_adv = float(lagged_adv_raw) if pd.notna(lagged_adv_raw) and float(lagged_adv_raw) > 0 else np.nan
             lagged_val_raw = row.get("lagged_traded_value")
@@ -463,7 +503,7 @@ class PortfolioEventBacktester:
                 "requested_at": execution_timestamp, "filled_at": execution_timestamp if filled_quantity > 0 else None,
                 "limit_price": None, "stop_price": None,
                 "average_fill_price": execution_price if filled_quantity > 0 else None,
-                "slippage_bps": self.cost_schedule.slippage_bps,
+                "slippage_bps": effective_schedule.slippage_bps,
                 "fees": breakdown.statutory_and_broker_fees if breakdown is not None else 0.0,
                 "metadata_json": json.dumps({
                     "reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason,
@@ -555,7 +595,7 @@ class PortfolioEventBacktester:
                 "fill_id": fill_id, "order_id": order_id, "run_id": run_id, "symbol": symbol,
                 "timestamp": execution_timestamp, "quantity": float(filled_quantity), "price": execution_price,
                 "side": side.value, "fill_type": "PAPER" if mode == "paper" else "BACKTEST",
-                "fees": stat_fees, "slippage_bps": self.cost_schedule.slippage_bps,
+                "fees": stat_fees, "slippage_bps": effective_schedule.slippage_bps,
                 "metadata_json": json.dumps({
                     "reason": reason, "participation": participation, "execution_mode": execution_mode,
                     "execution_source": execution_source,
