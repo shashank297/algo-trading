@@ -1043,6 +1043,57 @@ def test_t2_10_zh_certificate_reload_is_required_for_acceptance():
     assert runner.evaluate_final_oos_acceptance(certificate_id) == "PHASE 2.10 IMPLEMENTATION READY"
 
 
+def test_t2_10_zh_result_execution_payload_is_reloaded_and_tamper_evident():
+    db = DuckDBManager(":memory:")
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run(
+        [obs(datetime(2024, 4, 1, tzinfo=UTC), [card()], {"alpha": 0.01})]
+    )
+    db.persist_meta_selector_result(
+        result,
+        policy_version="meta-v1",
+        selector_policy_version="selector-v1",
+        selector_policy_hash="selector-hash",
+        available_at=datetime(2024, 4, 2, tzinfo=UTC),
+    )
+    assert db.validate_meta_selector_result_execution_hash(result.meta_run_id)["final_oos_execution_hash"] == result.final_oos_execution_hash
+    db.conn.execute(
+        "UPDATE meta_selector_runs SET execution_payload_json='{}' WHERE meta_run_id=?",
+        [result.meta_run_id],
+    )
+    with pytest.raises(ValueError, match="canonical execution payload"):
+        db.validate_meta_selector_result_execution_hash(result.meta_run_id)
+
+
+def test_t2_10_zh_result_metrics_tampering_fails_canonical_binding():
+    db = DuckDBManager(":memory:")
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run(
+        [obs(datetime(2024, 4, 1, tzinfo=UTC), [card()], {"alpha": 0.01})]
+    )
+    db.persist_meta_selector_result(
+        result,
+        policy_version="meta-v1",
+        selector_policy_version="selector-v1",
+        selector_policy_hash="selector-hash",
+        available_at=datetime(2024, 4, 2, tzinfo=UTC),
+    )
+    db.conn.execute(
+        "UPDATE meta_selector_runs SET metrics_json='{}' WHERE meta_run_id=?",
+        [result.meta_run_id],
+    )
+    with pytest.raises(ValueError, match="metrics diverges"):
+        db.validate_meta_selector_result_execution_hash(result.meta_run_id)
+
+
+def test_t2_10_zh_strategy_return_mutation_does_not_change_b5_execution_hash():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    first = obs(now, [card()], {"alpha": 0.01})
+    second = replace(first, strategy_returns={"alpha": -0.99})
+    baseline = MetaSelectorBacktest(AdaptiveStrategySelector()).run([first])
+    mutated = MetaSelectorBacktest(AdaptiveStrategySelector()).run([second])
+    assert mutated.final_oos_execution_hash == baseline.final_oos_execution_hash
+    assert mutated.pre_verdict_result_hash != baseline.pre_verdict_result_hash
+
+
 def test_t2_10_zi_acceptance_policy_substitution_fails_certificate_validation():
     start = datetime(2024, 4, 1, tzinfo=UTC)
     db = DuckDBManager(":memory:")
