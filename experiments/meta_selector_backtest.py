@@ -32,6 +32,20 @@ REDUCE_RISK = "REDUCE_RISK"
 CASH = "CASH"
 ABSTAIN_BEHAVIORS = frozenset({HOLD_CURRENT, REDUCE_RISK, CASH})
 IMPLEMENTATION_READY_VERDICT = "PHASE 2.10 IMPLEMENTATION READY"
+REQUIRED_STRESS_SCENARIOS = (
+    "1.5x_cost",
+    "2.0x_cost",
+    "switch_cost_stress",
+    "delayed_execution",
+    "reduced_liquidity",
+)
+DEFAULT_STRESS_THRESHOLDS = (
+    ("1.5x_cost", -0.25, 0.25),
+    ("2.0x_cost", -0.30, 0.25),
+    ("switch_cost_stress", -0.30, 0.25),
+    ("delayed_execution", -0.30, 0.25),
+    ("reduced_liquidity", -0.30, 0.25),
+)
 
 
 def _canonical_hash(payload: object) -> str:
@@ -41,16 +55,27 @@ def _canonical_hash(payload: object) -> str:
 
 
 def _acceptance_policy_hash(policy: MetaReplayPolicy) -> str:
+    thresholds = {
+        str(name): {
+            "min_return": float(min_return),
+            "max_drawdown": float(max_drawdown),
+        }
+        for name, min_return, max_drawdown in policy.stress_thresholds
+    }
     return _canonical_hash({"acceptance_policy_version": "phase2-10-acceptance-v1", "gates": {
         "min_final_oos_duration_days": policy.min_final_oos_duration_days,
         "min_final_oos_observations": policy.min_final_oos_observations,
         "min_independent_trades": policy.min_independent_trades,
         "max_switch_rate": policy.max_switch_rate,
+        "min_selector_stability": policy.min_selector_stability,
+        "selector_stability_perturbation": policy.selector_stability_perturbation,
         "max_drawdown": policy.max_drawdown,
         "min_net_edge": policy.min_net_edge,
         "require_robustness_certification": policy.require_robustness_certification,
         "require_selector_stability": policy.require_selector_stability,
         "require_causal_verification": policy.require_causal_verification,
+        "required_stress_scenarios": sorted(policy.required_stress_scenarios),
+        "stress_thresholds": thresholds,
     }})
 
 
@@ -65,6 +90,10 @@ class MetaReplayPolicy:
     min_net_edge: float = 0.0
     min_final_oos_duration_days: float = 1.0
     min_independent_trades: int = 1
+    min_selector_stability: float = 0.80
+    selector_stability_perturbation: float = 0.01
+    required_stress_scenarios: tuple[str, ...] = REQUIRED_STRESS_SCENARIOS
+    stress_thresholds: tuple[tuple[str, float, float], ...] = DEFAULT_STRESS_THRESHOLDS
     require_robustness_certification: bool = True
     require_selector_stability: bool = True
     require_causal_verification: bool = True
@@ -74,6 +103,26 @@ class MetaReplayPolicy:
             raise ValueError("abstain_behavior must be HOLD_CURRENT, REDUCE_RISK, or CASH")
         if not 0 <= self.risk_reduction_factor <= 1:
             raise ValueError("risk_reduction_factor must be bounded in [0, 1]")
+        required_scenarios = tuple(sorted(str(value) for value in self.required_stress_scenarios))
+        if not required_scenarios or len(set(required_scenarios)) != len(required_scenarios):
+            raise ValueError("required_stress_scenarios must contain unique scenario IDs")
+        if any(not value for value in required_scenarios):
+            raise ValueError("required_stress_scenarios cannot contain empty IDs")
+        if not set(required_scenarios).issubset(REQUIRED_STRESS_SCENARIOS):
+            raise ValueError("required_stress_scenarios contains an unsupported scenario")
+        thresholds = tuple(
+            sorted((str(name), float(min_return), float(max_drawdown)) for name, min_return, max_drawdown in self.stress_thresholds)
+        )
+        if {name for name, _, _ in thresholds} != set(required_scenarios):
+            raise ValueError("stress_thresholds must define every required stress scenario exactly once")
+        if any(not -1.0 <= min_return <= 10.0 or not 0.0 < max_drawdown < 1.0 for _, min_return, max_drawdown in thresholds):
+            raise ValueError("stress thresholds are out of bounds")
+        object.__setattr__(self, "required_stress_scenarios", required_scenarios)
+        object.__setattr__(self, "stress_thresholds", thresholds)
+        if not 0.0 < self.min_selector_stability <= 1.0:
+            raise ValueError("min_selector_stability must be in (0, 1]")
+        if not 0.0 < self.selector_stability_perturbation <= 1.0:
+            raise ValueError("selector_stability_perturbation must be in (0, 1]")
         if not (self.require_robustness_certification and self.require_selector_stability and self.require_causal_verification):
             raise ValueError("FINAL_OOS robustness, selector stability, and causal verification gates are mandatory")
         if self.min_final_oos_duration_days <= 0 or self.min_final_oos_observations <= 0 or self.min_independent_trades <= 0:
@@ -84,6 +133,108 @@ class MetaReplayPolicy:
     @property
     def policy_hash(self) -> str:
         return _canonical_hash(asdict(self))
+
+
+def _stress_threshold_map(policy: MetaReplayPolicy) -> dict[str, tuple[float, float]]:
+    return {
+        name: (min_return, max_drawdown)
+        for name, min_return, max_drawdown in policy.stress_thresholds
+    }
+
+
+def _stress_artifact_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: stress_result.get(field)
+        for field in (
+            "scenario_id", "scenario_config", "total_return", "max_drawdown",
+            "cost_model_version", "cost_model_hash", "execution_hash", "fill_count",
+            "execution_cost", "slippage", "switching_cost_drag", "switch_count",
+            "orders", "fills", "costs", "risk_decisions", "attribution",
+            "execution_lineage",
+        )
+    }
+
+
+def _stress_artifact_hash(stress_result: dict[str, Any]) -> str:
+    return _canonical_hash(_stress_artifact_payload(stress_result))
+
+
+def _recompute_stress_quality(
+    stress_results: dict[str, dict[str, Any]],
+    policy: MetaReplayPolicy,
+) -> bool:
+    thresholds = _stress_threshold_map(policy)
+    base = stress_results.get("1.0x_cost")
+    if not base or _stress_artifact_hash(base) != base.get("result_hash"):
+        return False
+    base_return = float(base.get("total_return", 0.0))
+    base_cost = float(base.get("execution_cost", 0.0))
+    base_lineage = _canonical_hash(base.get("execution_lineage", []))
+    for scenario_id in policy.required_stress_scenarios:
+        scenario = stress_results.get(scenario_id)
+        if not scenario or scenario.get("scenario_id") != scenario_id:
+            return False
+        if _stress_artifact_hash(scenario) != scenario.get("result_hash"):
+            return False
+        if not scenario.get("execution_hash") or not scenario.get("cost_model_hash"):
+            return False
+        if not all(field in scenario for field in ("orders", "fills", "costs", "risk_decisions", "execution_lineage")):
+            return False
+        min_return, max_drawdown = thresholds[scenario_id]
+        if float(scenario.get("total_return", 0.0)) < min_return:
+            return False
+        if float(scenario.get("max_drawdown", 0.0)) < -max_drawdown:
+            return False
+
+    if {"1.5x_cost", "2.0x_cost"}.issubset(policy.required_stress_scenarios):
+        cost_15 = stress_results.get("1.5x_cost")
+        cost_20 = stress_results.get("2.0x_cost")
+        if cost_15 is None or cost_20 is None:
+            return False
+        if base_cost > 0.0 and float(cost_15.get("execution_cost", 0.0)) <= base_cost:
+            return False
+        if float(cost_20.get("execution_cost", 0.0)) < float(cost_15.get("execution_cost", 0.0)):
+            return False
+        if float(cost_15.get("total_return", 0.0)) > base_return + 1e-12:
+            return False
+        if float(cost_20.get("total_return", 0.0)) > float(cost_15.get("total_return", 0.0)) + 1e-12:
+            return False
+
+    switch_stress = stress_results.get("switch_cost_stress", {})
+    if "switch_cost_stress" in policy.required_stress_scenarios and float(base.get("switch_count", 0.0)) > 0.0 and (
+        float(switch_stress.get("switch_count", 0.0)) == float(base.get("switch_count", 0.0))
+        and float(switch_stress.get("switching_cost_drag", 0.0)) == float(base.get("switching_cost_drag", 0.0))
+    ):
+        return False
+    delayed = stress_results.get("delayed_execution", {})
+    if "delayed_execution" in policy.required_stress_scenarios and delayed and _canonical_hash(delayed.get("execution_lineage", [])) == base_lineage:
+        return False
+    liquidity = stress_results.get("reduced_liquidity", {})
+    if "reduced_liquidity" in policy.required_stress_scenarios and liquidity and not any(
+        float(liquidity.get(field, 0.0)) != float(base.get(field, 0.0))
+        for field in ("fill_count", "execution_cost", "slippage", "total_return")
+    ):
+        return False
+    return True
+
+
+def _recompute_selector_stability(evidence: Iterable[dict[str, Any]]) -> dict[str, float]:
+    trials = [trial for item in evidence for trial in item.get("trials", [])]
+    if not trials:
+        return {"score": 0.0, "decision_agreement": 0.0, "strategy_agreement": 0.0, "weight_agreement": 0.0}
+    decision_matches = sum(1 for trial in trials if trial.get("decision") == trial.get("baseline_decision"))
+    strategy_matches = sum(1 for trial in trials if tuple(trial.get("selected_strategies", ())) == tuple(trial.get("baseline_selected_strategies", ())))
+    weight_matches = sum(1 for trial in trials if trial.get("weights") == trial.get("baseline_weights"))
+    total = float(len(trials))
+    decision_agreement = decision_matches / total
+    strategy_agreement = strategy_matches / total
+    weight_agreement = weight_matches / total
+    return {
+        "score": (decision_agreement + strategy_agreement + weight_agreement) / 3.0,
+        "decision_agreement": decision_agreement,
+        "strategy_agreement": strategy_agreement,
+        "weight_agreement": weight_agreement,
+    }
 
 
 @dataclass(frozen=True)
@@ -797,16 +948,21 @@ class MetaResearchRunner:
         metrics = dict(result["metrics"])
         baselines = dict(result["baselines"])
         stress = dict(result["stress_results"])
+        execution_payload = dict(result.get("execution_payload") or {})
+        stress_quality_pass = _recompute_stress_quality(stress, policy)
+        selector_stability = _recompute_selector_stability(
+            execution_payload.get("selector_stability_evidence", ())
+        )
         simple_best = max(float(baselines[name]["total_return"]) for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"))
         validity_gates_pass = (
             metrics.get("final_oos_duration_days", 0.0) >= policy.min_final_oos_duration_days
             and metrics.get("decision_count", 0.0) >= policy.min_final_oos_observations
             and metrics.get("trade_count", 0.0) >= policy.min_independent_trades
             and metrics.get("evidence_coverage", 0.0) >= 1.0
-            and metrics.get("robustness_certified", 0.0) >= 1.0
-            and metrics.get("selector_stable", 0.0) >= 1.0
+            and stress_quality_pass
+            and selector_stability["score"] >= policy.min_selector_stability
             and metrics.get("causal_verification", 0.0) >= 1.0
-            and all(scenario in stress for scenario in ("1.5x_cost", "2.0x_cost", "reduced_liquidity", "delayed_execution"))
+            and all(scenario in stress for scenario in policy.required_stress_scenarios)
         )
         if not validity_gates_pass:
             return "PHASE 2.10 IMPLEMENTATION READY"
@@ -1233,6 +1389,7 @@ class MetaSelectorBacktest:
         costs: list[dict[str, Any]] = []
         risk_rows: list[dict[str, Any]] = []
         target_records: list[dict[str, Any]] = []
+        selector_stability_evidence: list[dict[str, Any]] = []
         last_period_pnl = 0.0
 
         for index, item in enumerate(items):
@@ -1265,6 +1422,9 @@ class MetaSelectorBacktest:
                 evidence_cutoff_hash=cutoff_hash,
             )
             selected_target = self._selected_target(decision, candidate_targets)
+            selector_stability_evidence.append(
+                self._selector_stability_for_item(item, decision, candidate_targets)
+            )
             target_weights = self._apply_abstain_policy(decision, current_weights, selected_target)
             gated_targets, risk_batch = self._risk_gate_targets(
                 current_weights=current_weights,
@@ -1402,6 +1562,11 @@ class MetaSelectorBacktest:
         metrics["trade_count"] = float(len(fills))
         metrics["final_oos_duration_days"] = float((items[-1].decision_time - items[0].decision_time).total_seconds() / 86400.0) if len(items) > 1 else 0.0
         metrics["evidence_coverage"] = float(sum(any(card.available_at <= item.decision_time for card in item.scorecards) for item in items) / max(len(items), 1))
+        stability = _recompute_selector_stability(selector_stability_evidence)
+        metrics["selector_stability_score"] = stability["score"]
+        metrics["decision_agreement"] = stability["decision_agreement"]
+        metrics["selected_strategy_agreement"] = stability["strategy_agreement"]
+        metrics["target_weight_agreement"] = stability["weight_agreement"]
         baselines = self._baselines(items, initial_equity, metrics, frozen_b2_strategy=frozen_b2_strategy)
         def stress_result(scenario_id: str, **kwargs: Any) -> dict[str, Any]:
             scenario = self.run(
@@ -1416,11 +1581,15 @@ class MetaSelectorBacktest:
                 "scenario_id": scenario_id,
                 "scenario_config": dict(kwargs),
                 "total_return": scenario.metrics["total_return"],
+                "max_drawdown": scenario.metrics.get("max_drawdown", 0.0),
                 "cost_model_version": schedule.version,
                 "cost_model_hash": self._cost_model_hash(schedule),
                 "execution_hash": scenario.final_oos_execution_hash,
                 "fill_count": float(len(scenario.fills)),
                 "execution_cost": scenario.metrics["total_execution_cost"],
+                "slippage": scenario.metrics.get("slippage", 0.0),
+                "switching_cost_drag": scenario.metrics.get("switching_cost_drag", 0.0),
+                "switch_count": scenario.metrics.get("switch_count", 0.0),
                 "orders": scenario.orders,
                 "fills": scenario.fills,
                 "costs": scenario.costs,
@@ -1431,28 +1600,37 @@ class MetaSelectorBacktest:
             }
 
         stress_results = {
-            "1.0x_cost": {"scenario_id": "1.0x_cost", "scenario_config": {"cost_multiplier": 1.0}, "total_return": metrics["total_return"], "cost_model_version": self.execution_adapter.cost_schedule.version, "cost_model_hash": self._cost_model_hash(self.execution_adapter.cost_schedule), "execution_hash": _canonical_hash({"orders": orders, "fills": fills, "costs": costs, "risk_decisions": risk_rows, "equity_curve": equity_rows}), "result_hash": _canonical_hash({"orders": orders, "fills": fills, "costs": costs, "risk_decisions": risk_rows, "equity_curve": equity_rows}), "fill_count": float(len(fills)), "execution_cost": metrics["total_execution_cost"], "orders": tuple(orders), "fills": tuple(fills), "costs": tuple(costs), "risk_decisions": tuple(risk_rows), "execution_lineage": [order.get("execution_lineage") for order in orders]},
+            "1.0x_cost": {
+                "scenario_id": "1.0x_cost",
+                "scenario_config": {"cost_multiplier": 1.0},
+                "total_return": metrics["total_return"],
+                "max_drawdown": metrics["max_drawdown"],
+                "cost_model_version": self.execution_adapter.cost_schedule.version,
+                "cost_model_hash": self._cost_model_hash(self.execution_adapter.cost_schedule),
+                "execution_hash": _canonical_hash({"orders": orders, "fills": fills, "costs": costs, "risk_decisions": risk_rows, "equity_curve": equity_rows}),
+                "fill_count": float(len(fills)),
+                "execution_cost": metrics["total_execution_cost"],
+                "slippage": metrics["slippage"],
+                "switching_cost_drag": metrics["switching_cost_drag"],
+                "switch_count": metrics["switch_count"],
+                "orders": tuple(orders),
+                "fills": tuple(fills),
+                "costs": tuple(costs),
+                "risk_decisions": tuple(risk_rows),
+                "attribution": {},
+                "execution_lineage": [order.get("execution_lineage") for order in orders],
+            },
         }
         if include_stress:
             stress_results.update({
                 "1.5x_cost": stress_result("1.5x_cost", cost_multiplier=1.5),
                 "2.0x_cost": stress_result("2.0x_cost", cost_multiplier=2.0),
-                "switch_cost_stress": stress_result("switch_cost_stress", cost_multiplier=2.0),
+                "switch_cost_stress": stress_result("switch_cost_stress", cost_multiplier=3.0),
                 "delayed_execution": stress_result("delayed_execution", delay_periods=1),
                 "reduced_liquidity": stress_result("reduced_liquidity", liquidity_multiplier=0.5),
             })
-        required_stress_scenarios = ("1.5x_cost", "2.0x_cost", "reduced_liquidity", "delayed_execution")
-        metrics["robustness_certified"] = float(all(
-            stress_results.get(scenario, {}).get("scenario_id") == scenario
-            and stress_results.get(scenario, {}).get("result_hash")
-            and stress_results.get(scenario, {}).get("execution_hash")
-            and "orders" in stress_results.get(scenario, {})
-            and "fills" in stress_results.get(scenario, {})
-            and "costs" in stress_results.get(scenario, {})
-            for scenario in required_stress_scenarios
-        ))
         metrics["selector_stable"] = float(
-            metrics.get("switch_count", 0.0) / max(metrics.get("decision_count", 0.0), 1.0) <= self.replay_policy.max_switch_rate
+            stability["score"] >= self.replay_policy.min_selector_stability
         )
         metrics["causal_verification"] = float(all(
             row.get("risk_state_as_of") is not None for row in risk_rows
@@ -1470,6 +1648,11 @@ class MetaSelectorBacktest:
             "risk_avoided": metrics["risk_avoided"],
         }
         stress_results["1.0x_cost"]["attribution"] = attribution
+        for stress_artifact in stress_results.values():
+            stress_artifact["result_hash"] = _stress_artifact_hash(stress_artifact)
+        metrics["robustness_certified"] = float(
+            _recompute_stress_quality(stress_results, self.replay_policy)
+        )
         payload = {
             "policy_version": effective_policy_version,
             "replay_policy_hash": self.replay_policy.policy_hash,
@@ -1487,6 +1670,7 @@ class MetaSelectorBacktest:
             "stress": stress_results,
             "checkpoint": checkpoint_out.checkpoint_hash,
             "costs": costs,
+            "selector_stability_evidence": selector_stability_evidence,
         }
         evidence_hash = _canonical_hash(payload)
         execution_payload = {
@@ -1498,6 +1682,7 @@ class MetaSelectorBacktest:
             "fills": fills,
             "costs": costs,
             "risk_decisions": risk_rows,
+            "selector_stability_evidence": selector_stability_evidence,
             "cost_model_version": self._stressed_cost_schedule(cost_multiplier, items[0].decision_time if items else datetime.now(timezone.utc)).version,
             "cost_model_hash": effective_cost_model_hash,
             "equity_curve": equity_rows,
@@ -1786,6 +1971,59 @@ class MetaSelectorBacktest:
             return {}
         winner = sorted(eligible, key=lambda card: (-card.overall_score, card.strategy_name))[0]
         return targets.get(winner.strategy_name, {})
+
+    def _selector_stability_for_item(
+        self,
+        item: MetaSelectorObservation,
+        baseline: SelectorDecision,
+        targets: dict[str, dict[str, float]],
+    ) -> dict[str, Any]:
+        visible_cards = tuple(card for card in item.scorecards if card.available_at <= item.decision_time)
+        eligible_cards = tuple(card for card in visible_cards if getattr(card, "is_eligible", False))
+        baseline_target = self._selected_target(baseline, targets)
+        trials: list[dict[str, Any]] = []
+        for card in eligible_cards:
+            for direction in (-1.0, 1.0):
+                perturbed_cards = tuple(
+                    replace(
+                        candidate,
+                        overall_score=(
+                            float(candidate.overall_score)
+                            + (direction * self.replay_policy.selector_stability_perturbation if candidate is card else 0.0)
+                        ),
+                    )
+                    for candidate in visible_cards
+                )
+                perturbed = self.selector.select(
+                    decision_time=item.decision_time,
+                    symbol=item.symbol,
+                    horizon=item.horizon,
+                    market_regime=item.market_regime,
+                    regime_confidence=item.regime_confidence,
+                    asset_cluster=item.asset_cluster,
+                    scorecards=perturbed_cards,
+                    incumbent_strategy=baseline.current_incumbent_strategy,
+                    switching_cost=baseline.estimated_switch_cost,
+                    correlations=item.correlations,
+                    evidence_cutoff_hash=baseline.evidence_ids.get("evidence_cutoff_hash"),
+                )
+                trials.append(
+                    {
+                        "card_id": card.scorecard_id,
+                        "direction": direction,
+                        "baseline_decision": baseline.decision,
+                        "baseline_selected_strategies": tuple(baseline.selected_strategies),
+                        "baseline_weights": dict(sorted(baseline_target.items())),
+                        "decision": perturbed.decision,
+                        "selected_strategies": tuple(perturbed.selected_strategies),
+                        "weights": dict(sorted(self._selected_target(perturbed, targets).items())),
+                    }
+                )
+        return {
+            "decision_time": item.decision_time,
+            "baseline_target_weights": dict(sorted(baseline_target.items())),
+            "trials": trials,
+        }
 
     @staticmethod
     def _static_train_winner(items: tuple[MetaSelectorObservation, ...]) -> str | None:

@@ -4001,10 +4001,26 @@ class DuckDBManager:
                 "min_independent_trades", "max_switch_rate", "max_drawdown",
                 "min_net_edge", "require_robustness_certification",
                 "require_selector_stability", "require_causal_verification",
+                "min_selector_stability", "selector_stability_perturbation",
+                "required_stress_scenarios", "stress_thresholds",
             )
+            required_stress_scenarios = sorted(
+                str(value) for value in meta_policy_payload.get("required_stress_scenarios", ())
+            )
+            stress_thresholds = {
+                str(row[0]): {
+                    "min_return": float(row[1]),
+                    "max_drawdown": float(row[2]),
+                }
+                for row in meta_policy_payload.get("stress_thresholds", ())
+            }
             acceptance_payload = {
                 "acceptance_policy_version": certificate["acceptance_policy_version"],
-                "gates": {name: meta_policy_payload[name] for name in acceptance_gate_names if name in meta_policy_payload},
+                "gates": {
+                    **{name: meta_policy_payload[name] for name in acceptance_gate_names if name in meta_policy_payload and name not in {"required_stress_scenarios", "stress_thresholds"}},
+                    "required_stress_scenarios": required_stress_scenarios,
+                    "stress_thresholds": stress_thresholds,
+                },
             }
             expected_acceptance_policy_hash = hashlib.sha256(
                 json.dumps(acceptance_payload, sort_keys=True, default=str, separators=(",", ":")).encode()
@@ -4394,6 +4410,14 @@ class DuckDBManager:
             ).fetchone()
             if existing is not None and existing[0] != acceptance_hash:
                 raise ValueError("Conflicting immutable empirical acceptance")
+            certificate_acceptance = self.conn.execute(
+                "SELECT acceptance_id, acceptance_hash FROM phase2_10_empirical_acceptance WHERE certificate_id=?",
+                [certificate_id],
+            ).fetchone()
+            if certificate_acceptance is not None and (
+                certificate_acceptance[0] != acceptance_id or certificate_acceptance[1] != acceptance_hash
+            ):
+                raise ValueError("Conflicting immutable empirical acceptance for certificate")
             if existing is None:
                 self.conn.execute(
                     "INSERT INTO phase2_10_empirical_acceptance (acceptance_id, meta_run_id, certificate_id, certificate_hash, execution_hash, verdict, accepted_at, acceptance_hash, acceptance_policy_version, acceptance_policy_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", values

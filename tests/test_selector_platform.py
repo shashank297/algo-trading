@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
 from typing import Any, Iterable, cast
 
 import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _stress_artifact_hash
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -1317,3 +1318,213 @@ def test_meta_walk_forward_split_has_train_validation_final_oos_and_embargo():
         embargo_periods=1,
     )
     assert split.train_start < split.train_end < split.validation_start < split.validation_end < split.final_oos_start
+
+
+def test_t2_10_zl_acceptance_policy_canonicalizes_scenarios_and_thresholds():
+    policy = MetaReplayPolicy()
+    reordered = replace(
+        policy,
+        required_stress_scenarios=tuple(reversed(policy.required_stress_scenarios)),
+        stress_thresholds=tuple(reversed(policy.stress_thresholds)),
+    )
+    changed = replace(
+        policy,
+        stress_thresholds=tuple(
+            (name, min_return + (0.01 if name == "2.0x_cost" else 0.0), max_drawdown)
+            for name, min_return, max_drawdown in policy.stress_thresholds
+        ),
+    )
+    assert _acceptance_policy_hash(policy) == _acceptance_policy_hash(reordered)
+    assert _acceptance_policy_hash(policy) != _acceptance_policy_hash(changed)
+    with pytest.raises(ValueError, match="stress thresholds"):
+        MetaReplayPolicy(stress_thresholds=(("1.5x_cost", -2.0, 0.25),) + policy.stress_thresholds[1:])
+
+
+def test_t2_10_zm_acceptance_recomputes_stress_and_stability_and_is_idempotent():
+    policy = MetaReplayPolicy()
+
+    def scenario(
+        scenario_id: str,
+        total_return: float,
+        execution_cost: float,
+        *,
+        fill_count: float = 1.0,
+        slippage: float = 0.01,
+        switching_cost_drag: float = 0.01,
+        execution_lineage: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        result = {
+            "scenario_id": scenario_id,
+            "scenario_config": {"scenario": scenario_id},
+            "total_return": total_return,
+            "max_drawdown": -0.10,
+            "cost_model_version": "cost-v1",
+            "cost_model_hash": f"cost-{scenario_id}",
+            "execution_hash": f"execution-{scenario_id}",
+            "fill_count": fill_count,
+            "execution_cost": execution_cost,
+            "slippage": slippage,
+            "switching_cost_drag": switching_cost_drag,
+            "switch_count": 1.0,
+            "orders": [{"order_id": f"order-{scenario_id}"}],
+            "fills": [{"fill_id": f"fill-{scenario_id}"}],
+            "costs": [{"cost_id": f"cost-{scenario_id}"}],
+            "risk_decisions": [{"risk_id": f"risk-{scenario_id}"}],
+            "attribution": {},
+            "execution_lineage": execution_lineage or [{"bar": scenario_id}],
+        }
+        result["result_hash"] = _stress_artifact_hash(result)
+        return result
+
+    stress = {
+        "1.0x_cost": scenario("1.0x_cost", 0.10, 0.01, execution_lineage=[{"bar": "base"}]),
+        "1.5x_cost": scenario("1.5x_cost", 0.08, 0.015, execution_lineage=[{"bar": "base"}]),
+        "2.0x_cost": scenario("2.0x_cost", 0.06, 0.020, execution_lineage=[{"bar": "base"}]),
+        "switch_cost_stress": scenario("switch_cost_stress", 0.07, 0.030, switching_cost_drag=0.03, execution_lineage=[{"bar": "base"}]),
+        "delayed_execution": scenario("delayed_execution", 0.07, 0.012, execution_lineage=[{"bar": "delayed"}]),
+        "reduced_liquidity": scenario("reduced_liquidity", 0.05, 0.012, fill_count=0.5, execution_lineage=[{"bar": "base"}]),
+    }
+    stability_evidence = [{
+        "trials": [{
+            "baseline_decision": "SELECT",
+            "baseline_selected_strategies": ["alpha"],
+            "baseline_weights": {"ABC": 1.0},
+            "decision": "SELECT",
+            "selected_strategies": ["alpha"],
+            "weights": {"ABC": 1.0},
+        }],
+    }]
+    certificate = {
+        "certificate_id": "certificate-test",
+        "certificate_hash": "certificate-hash",
+        "meta_run_id": "run-test",
+        "frozen_policy_id": "frozen-test",
+        "execution_hash": "execution-test",
+        "acceptance_policy_version": "phase2-10-acceptance-v1",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "dataset_ids": ["dataset-test"],
+        "dataset_content_hashes": ["content-test"],
+        "universe_snapshot_id": "universe-test",
+        "dataset_certification_ids": ["certification-test"],
+        "risk_snapshot_ids": ["risk-test"],
+        "risk_snapshot_hashes": ["risk-hash"],
+        "evidence_ids": ["evidence-test"],
+        "outcome_series_ids": ["outcome-test"],
+        "execution_bar_hashes": ["bar-hash"],
+        "materialized_at": datetime(2024, 4, 5, tzinfo=UTC),
+    }
+    artifact = {
+        "frozen_policy_id": "frozen-test",
+        "acceptance_policy_version": certificate["acceptance_policy_version"],
+        "acceptance_policy_hash": certificate["acceptance_policy_hash"],
+        "meta_policy_payload": {"schema_version": "meta-replay-policy-v1", **asdict(policy)},
+    }
+    result = {
+        "final_oos_execution_hash": certificate["execution_hash"],
+        "metrics": {
+            "final_oos_duration_days": 2.0,
+            "decision_count": 2.0,
+            "trade_count": 2.0,
+            "evidence_coverage": 1.0,
+            "robustness_certified": 0.0,
+            "selector_stable": 0.0,
+            "causal_verification": 1.0,
+            "switch_count": 1.0,
+            "max_drawdown": -0.10,
+            "total_return": 0.10,
+        },
+        "baselines": {
+            "B2_static": {"total_return": 0.0},
+            "B3_equal_ensemble": {"total_return": 0.0},
+            "B4_risk_balanced": {"total_return": 0.0},
+        },
+        "stress_results": stress,
+        "execution_payload": {"selector_stability_evidence": stability_evidence},
+    }
+
+    class ControlledCertifiedDB:
+        def __init__(self) -> None:
+            self.acceptances: list[dict[str, Any]] = []
+
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            assert certificate_id == certificate["certificate_id"]
+            return certificate
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            assert frozen_policy_id == artifact["frozen_policy_id"]
+            return artifact
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            assert meta_run_id == result["meta_run_id"] if "meta_run_id" in result else True
+            return result
+
+        def persist_phase2_10_empirical_acceptance(self, **values: Any) -> str:
+            self.acceptances.append(values)
+            return values["acceptance_id"]
+
+    result["meta_run_id"] = certificate["meta_run_id"]
+    db = ControlledCertifiedDB()
+    runner = MetaResearchRunner(db)
+    assert runner.evaluate_final_oos_acceptance(certificate["certificate_id"]) == "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
+    assert runner.evaluate_final_oos_acceptance(certificate["certificate_id"]) == "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
+    assert len(db.acceptances) == 2
+    assert db.acceptances[0]["acceptance_hash"] == db.acceptances[1]["acceptance_hash"]
+
+    result["baselines"]["B2_static"]["total_return"] = 0.20
+    assert runner.evaluate_final_oos_acceptance(certificate["certificate_id"]) == "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
+
+
+def test_t2_10_zn_replay_verdict_cannot_produce_complete():
+    assert MetaSelectorBacktest._verdict(None, {}, {}, 0, {}, "FINAL_OOS") == "PHASE 2.10 IMPLEMENTATION READY"
+
+
+def test_t2_10_zo_acceptance_storage_is_idempotent_and_conflict_safe():
+    db = DuckDBManager(":memory:")
+    certificate = {
+        "certificate_id": "certificate-storage-test",
+        "certificate_hash": "certificate-storage-hash",
+        "meta_run_id": "run-storage-test",
+        "execution_hash": "execution-storage-hash",
+        "acceptance_policy_version": "phase2-10-acceptance-v1",
+        "acceptance_policy_hash": "policy-storage-hash",
+        "materialized_at": datetime(2024, 4, 5, tzinfo=UTC),
+    }
+    db.validate_final_oos_provenance_certificate = lambda certificate_id: certificate
+
+    def values(verdict: str) -> tuple[str, str]:
+        payload = {
+            "meta_run_id": certificate["meta_run_id"],
+            "certificate_id": certificate["certificate_id"],
+            "certificate_hash": certificate["certificate_hash"],
+            "execution_hash": certificate["execution_hash"],
+            "acceptance_policy_version": certificate["acceptance_policy_version"],
+            "acceptance_policy_hash": certificate["acceptance_policy_hash"],
+            "verdict": verdict,
+        }
+        acceptance_hash = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+        ).hexdigest()
+        return acceptance_hash[:32], acceptance_hash
+
+    verdict = "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
+    acceptance_id, acceptance_hash = values(verdict)
+    arguments = {
+        "acceptance_id": acceptance_id,
+        "meta_run_id": certificate["meta_run_id"],
+        "certificate_id": certificate["certificate_id"],
+        "certificate_hash": certificate["certificate_hash"],
+        "execution_hash": certificate["execution_hash"],
+        "verdict": verdict,
+        "accepted_at": datetime(2024, 4, 6, tzinfo=UTC),
+        "acceptance_hash": acceptance_hash,
+        "acceptance_policy_version": certificate["acceptance_policy_version"],
+        "acceptance_policy_hash": certificate["acceptance_policy_hash"],
+    }
+    db.persist_phase2_10_empirical_acceptance(**arguments)
+    db.persist_phase2_10_empirical_acceptance(**arguments)
+    simpler_verdict = "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
+    conflicting_id, conflicting_hash = values(simpler_verdict)
+    with pytest.raises(ValueError, match="certificate"):
+        db.persist_phase2_10_empirical_acceptance(
+            **{**arguments, "acceptance_id": conflicting_id, "acceptance_hash": conflicting_hash, "verdict": simpler_verdict}
+        )
