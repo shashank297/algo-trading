@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from dataclasses import asdict
 from datetime import date, datetime
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, PaperB
 from trading_stack.calendars import build_default_calendars
 from trading_stack.domain import AssetClass, OrderSide
 from trading_stack.features import FeatureFactory
+from trading_stack.economic import cost_schedule_identity, marked_to_market_equity
 from trading_stack.pipeline import StrategyPipeline
 from trading_stack.strategies import StrategyRegistry
 from utils.timezone import IST
@@ -411,8 +413,64 @@ class TradingStackTests(unittest.TestCase):
         self.assertAlmostEqual(sell_result["fill"]["price"], expected_sell_price, places=4)
         self.assertAlmostEqual(sell_result["order"]["fees"], expected_sell_breakdown.statutory_and_broker_fees, places=4)
 
+    def test_economic_conservation_across_trade_sequence(self) -> None:
+        """Fill-ledger cash and holdings must conserve account equity."""
+
+        from trading_stack.costs import IndianDeliveryCostSchedule
+
+        schedule = IndianDeliveryCostSchedule()
+        broker = PaperBroker(ExecutionModel(indian_delivery_costs=asdict(schedule)))
+        cash = 100_000.0
+        quantity = 0.0
+
+        def trade(side: OrderSide, requested: float, price: float, volume: float) -> dict:
+            nonlocal cash, quantity
+            result = broker.execute_order(
+                run_id="conservation",
+                symbol="TEST-EQ",
+                side=side,
+                quantity=requested,
+                price=price,
+                timestamp=datetime(2026, 8, 17, 10, 0, tzinfo=IST),
+                volume=volume,
+                close_price=price,
+                available_cash=cash if side == OrderSide.BUY else None,
+            )
+            fill = result["fill"]
+            if fill is not None:
+                notional = float(fill["quantity"]) * float(fill["price"])
+                fees = float(fill["fees"])
+                if side == OrderSide.BUY:
+                    cash -= notional + fees
+                    quantity += float(fill["quantity"])
+                else:
+                    cash += notional - fees
+                    quantity -= float(fill["quantity"])
+                self.assertGreaterEqual(cash, -1e-8)
+            return result
+
+        trade(OrderSide.BUY, 10.0, 100.0, 1_000.0)
+        self.assertAlmostEqual(marked_to_market_equity(cash, {"TEST-EQ": quantity}, {"TEST-EQ": 105.0}), cash + quantity * 105.0)
+        partial_buy = trade(OrderSide.BUY, 1_000.0, 101.0, 10_000.0)
+        self.assertEqual(partial_buy["order"]["status"], "PARTIALLY_FILLED")
+        trade(OrderSide.SELL, 3.0, 110.0, 1_000.0)
+        trade(OrderSide.SELL, quantity, 108.0, 10_000.0)
+        self.assertAlmostEqual(quantity, 0.0)
+        self.assertAlmostEqual(marked_to_market_equity(cash, {"TEST-EQ": quantity}, {"TEST-EQ": 108.0}), cash)
+
+    def test_cost_identity_binds_all_date_effective_regimes(self) -> None:
+        """Historical cost identity must change when a covered regime changes."""
+
+        from trading_stack.costs import get_cost_schedule
+
+        one_regime = cost_schedule_identity(
+            [date(2025, 1, 2), date(2025, 2, 3)], get_cost_schedule,
+        )
+        two_regimes = cost_schedule_identity(
+            [date(2025, 1, 2), date(2026, 8, 3)], get_cost_schedule,
+        )
+        self.assertNotEqual(one_regime, two_regimes)
+
 
 if __name__ == "__main__":
     unittest.main()
-
-

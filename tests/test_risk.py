@@ -4,6 +4,7 @@ import pytest
 
 from data_platform.contracts import OrderSide
 from risk.engine import RiskEngine
+from risk.factory import build_risk_engine, build_risk_policy
 from risk.models import RiskAction, RiskPolicy, TradeProposal
 
 
@@ -24,6 +25,16 @@ def make_proposal(**kwargs) -> TradeProposal:
     }
     defaults.update(kwargs)
     return TradeProposal(**defaults)
+
+
+def test_authoritative_risk_factory_uses_research_config_and_rejects_missing_section():
+    config = {"research": {"risk": {"max_position_pct": 0.05, "max_gross_exposure_pct": 0.20}}}
+    policy = build_risk_policy(config)
+    engine = build_risk_engine(config)
+    assert policy.max_position_pct == 0.05
+    assert engine.policy.model_dump() == policy.model_dump()
+    with pytest.raises(ValueError, match="research.risk"):
+        build_risk_engine({"research": {}})
 
 
 def test_baseline_engine_interception():
@@ -388,7 +399,6 @@ def test_turnover_liquidity_validator_allows_pure_reduction():
     approved_sell, reasons_sell = validator.evaluate(sell_proposal, policy)
     assert approved_sell == 50_000.0
     assert reasons_sell == []
-
 
 
 
