@@ -73,6 +73,7 @@ class PromotionEngine:
         if run is None:
             raise ValueError(f"Unknown run: {run_id}")
         strategy_name = str(run[0])
+        run_mode = str(run[1])
         run_data_hash = str(run[2])
         run_frame_certification_id = str(run[3]) if run[3] else None
         has_authoritative_frame = run_frame_certification_id is not None
@@ -183,6 +184,7 @@ class PromotionEngine:
                 maximum_correlation = float(correlation_row[0])
 
         checks = {
+            "authoritative_execution": run_mode != "vectorized",
             "sharpe": oos_sharpe is not None and oos_sharpe >= self.policy.minimum_sharpe,
             "sortino": oos_sortino is not None and oos_sortino >= self.policy.minimum_sortino,
             "profit_factor": oos_profit_factor is not None and oos_profit_factor >= self.policy.minimum_profit_factor,

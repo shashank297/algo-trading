@@ -18,6 +18,7 @@ from loguru import logger
 
 from main import apply_env_overrides, configured_nse_calendar, load_yaml, main, validate_config
 from storage import DuckDBManager
+from risk import build_risk_engine
 from trading_stack.pipeline import StrategyPipeline
 from utils import LoggerSetup
 from utils.timezone import IST
@@ -91,7 +92,9 @@ def advance_active_paper_sessions(config: dict[str, Any]) -> list[dict[str, Any]
                     if not universe:
                         raise ValueError(f"No eligible symbols for paper snapshot {universe_snapshot_id}.")
                 outcome = StrategyPipeline(
-                    db, india_calendar=configured_nse_calendar(config),
+                    db,
+                    risk_engine=build_risk_engine(config),
+                    india_calendar=configured_nse_calendar(config),
                 ).run_paper_session(
                     strategy_name=str(strategy_name),
                     approved_run_id=str(approved_run_id),

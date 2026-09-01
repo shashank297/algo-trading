@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from tqdm import tqdm
+from risk.engine import RiskEngine
 
 from experiments.manager import ExperimentManager, source_revision
 from experiments.models import ExperimentSpec, MassExperimentSpec
@@ -22,16 +23,22 @@ from trading_stack.strategies import StrategyRegistry
 class MassExperimentManager:
     """Expand a research request into deterministic, resumable jobs."""
 
-    def __init__(self, db: DuckDBManager, india_calendar: MarketCalendar | None = None) -> None:
+    def __init__(
+        self,
+        db: DuckDBManager,
+        india_calendar: MarketCalendar | None = None,
+        risk_engine: RiskEngine | None = None,
+    ) -> None:
         self.db = db
         self.india_calendar = india_calendar
+        self.risk_engine = risk_engine
 
     def run(self, spec: MassExperimentSpec, starting_capital: float = 100_000.0) -> dict[str, Any]:
         jobs: list[dict[str, Any]] = []
         self.db.recover_stale_research_work(
             datetime.now(timezone.utc) - timedelta(seconds=spec.stale_job_seconds)
         )
-        revision = source_revision(ExperimentManager(self.db).project_root)
+        revision = source_revision(ExperimentManager(self.db, risk_engine=self.risk_engine).project_root)
         data_revision = self.db.market_data_revision()
         self.db.cancel_superseded_experiment_jobs(revision, data_revision)
         for strategy_name in spec.strategy_names:
@@ -94,7 +101,7 @@ class MassExperimentManager:
     def _execute_isolated(self, job: dict[str, Any], spec: MassExperimentSpec, capital: float) -> dict[str, Any]:
         db = DuckDBManager(self.db.db_path)
         try:
-            return MassExperimentManager(db, self.india_calendar)._execute(job, spec, capital)
+            return MassExperimentManager(db, self.india_calendar, self.risk_engine)._execute(job, spec, capital)
         finally:
             db.close()
 
@@ -117,11 +124,19 @@ class MassExperimentManager:
                     require_authoritative_certification=spec.require_authoritative_certification,
                     experiment_family_id=spec.experiment_family_id,
                 )
-                result = ExperimentManager(self.db, india_calendar=self.india_calendar).run(
+                result = ExperimentManager(
+                    self.db,
+                    india_calendar=self.india_calendar,
+                    risk_engine=self.risk_engine,
+                ).run(
                     experiment_spec, starting_capital=capital,
                 )
                 run_id = result["outcome"]["result"].run_id
-                folds = WalkForwardEvaluator(self.db, india_calendar=self.india_calendar).evaluate(
+                folds = WalkForwardEvaluator(
+                    self.db,
+                    india_calendar=self.india_calendar,
+                    risk_engine=self.risk_engine,
+                ).evaluate(
                     run_id, experiment_spec, train_size=spec.walk_forward_train_size,
                     test_size=spec.walk_forward_test_size, starting_capital=capital,
                 )

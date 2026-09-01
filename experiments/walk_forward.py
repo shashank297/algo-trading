@@ -10,6 +10,7 @@ from typing import Any
 
 import pandas as pd
 from loguru import logger
+from risk.engine import RiskEngine
 
 from experiments.manager import source_revision
 from experiments.models import ExperimentSpec
@@ -24,7 +25,7 @@ from experiments.trials import (
 from storage import DuckDBManager
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, _compute_metrics
 from trading_stack.calendars import MarketCalendar
-from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.datasets import ResearchDataset, SynchronizedPanelBuilder
 from trading_stack.domain import AssetClass, StrategyScope
 from trading_stack.features import FeatureFactory
@@ -42,10 +43,12 @@ class WalkForwardEvaluator:
         *,
         maximum_candidates: int = 32,
         india_calendar: MarketCalendar | None = None,
+        risk_engine: RiskEngine | None = None,
     ) -> None:
         self.db = db
         self.maximum_candidates = maximum_candidates
         self.india_calendar = india_calendar
+        self.risk_engine = risk_engine
 
     def evaluate(
         self,
@@ -305,7 +308,7 @@ class WalkForwardEvaluator:
                 key: value for key, value in spec.cost_model.items() if key in allowed
             }
             schedule = IndianDeliveryCostSchedule(**schedule_values)
-            return PortfolioEventBacktester(schedule).run(
+            return PortfolioEventBacktester(schedule, risk_engine=self.risk_engine).run(
                 strategy,
                 source,
                 starting_capital=capital,
@@ -323,7 +326,11 @@ class WalkForwardEvaluator:
         }
         if indian:
             execution_values["indian_delivery_costs"] = indian
-        return EventDrivenBacktester(ExecutionModel(**execution_values)).run(
+        else:
+            execution_values["indian_delivery_costs"] = asdict(get_cost_schedule())
+        return EventDrivenBacktester(
+            ExecutionModel(**execution_values), risk_engine=self.risk_engine,
+        ).run(
             strategy,
             source.panel,
             starting_capital=capital,

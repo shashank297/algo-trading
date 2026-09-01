@@ -1,6 +1,7 @@
 import hashlib
 import json
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any
 
@@ -14,7 +15,7 @@ from risk.engine import RiskEngine
 from risk.models import RiskAction, RiskDecision, TradeProposal
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, VectorizedBacktester
 from trading_stack.calendars import MarketCalendar, build_default_calendars
-from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.domain import AssetClass, OpeningTickObservation, PaperExecutionMode, StrategyScope, infer_asset_class
 from trading_stack.features import FeatureFactory
 from trading_stack.strategies import StrategyRegistry
@@ -64,7 +65,7 @@ class StrategyPipeline:
         self.require_authoritative_certification = require_authoritative_certification
         self._last_frame_certification_id: str | None = None
         self.vector_backtester = VectorizedBacktester()
-        self.event_backtester = EventDrivenBacktester()
+        self.event_backtester = EventDrivenBacktester(risk_engine=self.risk_engine)
 
     def load_candles(
         self,
@@ -253,7 +254,7 @@ class StrategyPipeline:
         featured = self.feature_factory.build(raw_bars, timezone_name=self.calendars[asset_class].spec.timezone)
         self._persist_features(featured, symbol=symbol, timeframe=timeframe)
         strategy = StrategyRegistry.create(strategy_name, **parameters)
-        execution_model = self._execution_model(cost_model)
+        execution_model = self._execution_model(cost_model, market_asset_class=asset_class)
         if mode == "vectorized":
             result = VectorizedBacktester(execution_model=execution_model).run(
                 strategy=strategy,
@@ -354,7 +355,7 @@ class StrategyPipeline:
             calendar=self.calendars[asset_class],
             risk_engine=self.risk_engine,
             feature_factory=self.feature_factory,
-            execution_model=self._execution_model(cost_model),
+            execution_model=self._execution_model(cost_model, market_asset_class=asset_class),
         )
         open_tick = (opening_ticks.get(symbol) if opening_ticks else None)
         open_ts = (open_tick_timestamps.get(symbol) if open_tick_timestamps else None)
@@ -374,7 +375,12 @@ class StrategyPipeline:
         )
         return {"forward_result": result, "paper_summary": result.paper_summary}
 
-    def _execution_model(self, cost_model: dict[str, Any] | None) -> ExecutionModel:
+    def _execution_model(
+        self,
+        cost_model: dict[str, Any] | None,
+        *,
+        market_asset_class: AssetClass | None = None,
+    ) -> ExecutionModel:
         allowed = set(ExecutionModel.__dataclass_fields__)
         values: dict[str, Any] = {
             key: value for key, value in (cost_model or {}).items() if key in allowed
@@ -387,6 +393,8 @@ class StrategyPipeline:
             values["indian_delivery_costs"] = {
                 key: value for key, value in (cost_model or {}).items() if key in indian_fields
             }
+        elif market_asset_class in {AssetClass.INDIA_EQUITY, AssetClass.INDIA_INDEX}:
+            values["indian_delivery_costs"] = asdict(get_cost_schedule())
         return ExecutionModel(**values)
 
     def _apply_paper_risk(self, result: Any, starting_capital: float) -> None:
@@ -440,6 +448,16 @@ class StrategyPipeline:
         starting_capital: float = 100_000.0,
         frame_certification_id: str | None = None,
     ) -> None:
+        notes: dict[str, Any] = {}
+        if result.notes:
+            try:
+                parsed_notes = json.loads(result.notes)
+                if isinstance(parsed_notes, dict):
+                    notes.update(parsed_notes)
+            except (TypeError, json.JSONDecodeError):
+                notes["result_notes"] = str(result.notes)
+        if frame_certification_id:
+            notes["frame_certification_id"] = frame_certification_id
         with self.db.transaction():
             self.db.clear_backtest_artifacts(result.run_id)
             self.db.log_strategy_run(
@@ -456,7 +474,7 @@ class StrategyPipeline:
                     "status": "COMPLETED",
                     "started_at": datetime.now(tz=timezone.utc),
                     "finished_at": datetime.now(tz=timezone.utc),
-                    "notes": json.dumps({"frame_certification_id": frame_certification_id}) if frame_certification_id else None,
+                    "notes": json.dumps(notes, sort_keys=True) if notes else None,
                     "frame_certification_id": frame_certification_id,
                 },
                 result.metrics,

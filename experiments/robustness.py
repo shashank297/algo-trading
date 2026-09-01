@@ -18,6 +18,7 @@ import pandas as pd
 from loguru import logger
 from pydantic import BaseModel, Field
 import scipy.stats
+from risk.engine import RiskEngine
 
 from experiments.manager import source_revision
 from experiments.models import ExperimentSpec
@@ -43,7 +44,7 @@ from experiments.trials import (
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, _compute_metrics
 from trading_stack.calendars import MarketCalendar
-from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.datasets import ResearchDataset, SynchronizedPanelBuilder
 from trading_stack.domain import AssetClass, StrategyScope
 from trading_stack.features import FeatureFactory
@@ -1087,11 +1088,13 @@ class RobustnessEvaluator:
         policy: RobustnessPolicy | None = None,
         india_calendar: MarketCalendar | None = None,
         maximum_candidates: int = 32,
+        risk_engine: RiskEngine | None = None,
     ) -> None:
         self.db = db
         self.policy = policy or RobustnessPolicy()
         self.india_calendar = india_calendar
         self.maximum_candidates = maximum_candidates
+        self.risk_engine = risk_engine
         self.splitter = NestedWalkForwardSplitter()
         self.selector = ParameterRobustnessSelector(self.policy)
         self.stress_engine = StressScenarioEngine(self.policy)
@@ -1655,7 +1658,7 @@ class RobustnessEvaluator:
                 key: value for key, value in spec.cost_model.items() if key in allowed
             }
             schedule = IndianDeliveryCostSchedule(**schedule_values)
-            return PortfolioEventBacktester(schedule).run(
+            return PortfolioEventBacktester(schedule, risk_engine=self.risk_engine).run(
                 strategy,
                 source,
                 starting_capital=capital,
@@ -1673,7 +1676,13 @@ class RobustnessEvaluator:
         }
         if indian:
             execution_values["indian_delivery_costs"] = indian
-        return EventDrivenBacktester(ExecutionModel(**execution_values)).run(
+        else:
+            execution_values["indian_delivery_costs"] = {
+                key: value for key, value in get_cost_schedule().__dict__.items()
+            }
+        return EventDrivenBacktester(
+            ExecutionModel(**execution_values), risk_engine=self.risk_engine,
+        ).run(
             strategy,
             source.panel,
             starting_capital=capital,

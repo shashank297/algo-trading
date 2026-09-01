@@ -19,6 +19,7 @@ from experiments.trials import (
     canonical_hash,
 )
 from storage.duckdb_manager import DuckDBManager
+from risk.engine import RiskEngine
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.calendars import MarketCalendar
 from trading_stack.datasets import SynchronizedPanelBuilder
@@ -36,10 +37,12 @@ class ExperimentManager:
         db: DuckDBManager,
         project_root: Path | None = None,
         india_calendar: MarketCalendar | None = None,
+        risk_engine: RiskEngine | None = None,
     ) -> None:
         self.db = db
         self.project_root = project_root or Path(__file__).resolve().parent.parent
         self.india_calendar = india_calendar
+        self.risk_engine = risk_engine
 
     def run(self, spec: ExperimentSpec, starting_capital: float = 100_000.0) -> dict[str, Any]:
         """Persist, execute, and finalize one experiment against stored data."""
@@ -220,7 +223,7 @@ class ExperimentManager:
                     key: value for key, value in spec.cost_model.items() if key in allowed
                 }
                 schedule = IndianDeliveryCostSchedule(**schedule_values)
-                portfolio_result = PortfolioEventBacktester(schedule).run(
+                portfolio_result = PortfolioEventBacktester(schedule, risk_engine=self.risk_engine).run(
                     StrategyRegistry.create(spec.strategy_name, **spec.parameters),
                     dataset,
                     starting_capital=starting_capital,
@@ -235,6 +238,7 @@ class ExperimentManager:
             else:
                 outcome = StrategyPipeline(
                     self.db,
+                    risk_engine=self.risk_engine,
                     india_calendar=self.india_calendar,
                     require_authoritative_certification=authoritative_certification,
                 ).run(

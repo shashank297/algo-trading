@@ -20,6 +20,9 @@ from trading_stack.costs import (
     UnexecutableOrderError,
     get_cost_schedule,
 )
+from trading_stack.economic import cost_schedule_identity, economic_contract_hash, max_affordable_quantity
+from risk.engine import RiskEngine
+from risk.models import RiskAction, TradeProposal
 
 
 
@@ -77,8 +80,13 @@ class VectorizedBacktester:
 class EventDrivenBacktester:
     """Replay engine that models order creation and fills bar-by-bar."""
 
-    def __init__(self, execution_model: ExecutionModel | None = None) -> None:
+    def __init__(
+        self,
+        execution_model: ExecutionModel | None = None,
+        risk_engine: RiskEngine | None = None,
+    ) -> None:
         self.execution_model = execution_model or ExecutionModel()
+        self.risk_engine = risk_engine
 
     def run(
         self,
@@ -106,6 +114,7 @@ class EventDrivenBacktester:
             parameters=parameters or {},
             max_abs_position=max_abs_position,
             calendar=calendar,
+            risk_engine=self.risk_engine,
         )
 
 
@@ -132,6 +141,7 @@ class PaperBroker:
         risk_decision: Any | None = None,
         volume: float | None = None,
         close_price: float | None = None,
+        available_cash: float | None = None,
     ) -> dict[str, Any]:
         """Simulate a paper fill and store the lifecycle."""
 
@@ -168,6 +178,18 @@ class PaperBroker:
                 self.orders.append(order_row)
                 return {"order": order_row, "fill": None, "cost_components": None}
             quantity = min(requested_quantity, float(np.floor(float(volume) * schedule.max_volume_participation)))
+        if side == OrderSide.BUY and available_cash is not None and schedule is not None:
+            volume_for_participation = max(float(volume or 0.0), 1.0)
+
+            def quote(candidate: int) -> tuple[float, float]:
+                participation = candidate / volume_for_participation
+                candidate_price = schedule.execution_price(price, side, participation)
+                breakdown = schedule.calculate(
+                    candidate * candidate_price, side, participation,
+                )
+                return candidate_price, breakdown.statutory_and_broker_fees
+
+            quantity = float(max_affordable_quantity(quantity, available_cash, quote))
         order_row = {
             "order_id": order_id,
             "run_id": run_id,
@@ -264,6 +286,7 @@ def _run_backtest(
     parameters: dict[str, Any],
     max_abs_position: float | None = None,
     calendar: MarketCalendar | None = None,
+    risk_engine: RiskEngine | None = None,
 ) -> BacktestResult:
     if bars.empty:
         raise ValueError("Cannot backtest an empty bar frame.")
@@ -302,6 +325,12 @@ def _run_backtest(
         effective_parameters, execution_model,
     )
     positions = merged["target_position"].astype("float64")
+    cost_identity = None
+    if _indian_schedule(execution_model) is not None:
+        cost_identity = cost_schedule_identity(
+            [timestamp.date() for timestamp in frame["timestamp"]],
+            get_cost_schedule,
+        )
     if mode != "vectorized":
         orders, fills, equity_curve = _run_event_replay(
             merged,
@@ -312,6 +341,7 @@ def _run_backtest(
             starting_capital=starting_capital,
             timeframe=timeframe,
             market_asset_class=market_asset_class,
+            risk_engine=risk_engine,
         )
         metrics = _compute_metrics(
             equity_curve=equity_curve,
@@ -336,6 +366,11 @@ def _run_backtest(
             orders=orders,
             fills=fills,
             equity_curve=equity_curve,
+            notes=json.dumps({
+                "execution_authority": "AUTHORITATIVE_EVENT_DRIVEN",
+                "cost_schedule_identity": cost_identity,
+                "risk_policy_hash": economic_contract_hash(risk_engine.policy.model_dump()) if risk_engine else None,
+            }, sort_keys=True),
         )
 
     close_returns = merged["close"].pct_change().fillna(0.0)
@@ -385,6 +420,10 @@ def _run_backtest(
         orders=orders,
         fills=fills,
         equity_curve=equity_curve,
+        notes=json.dumps({
+            "execution_authority": "EXPLORATORY_VECTORIZED",
+            "cost_schedule_identity": cost_identity,
+        }, sort_keys=True),
     )
 
 
@@ -398,6 +437,7 @@ def _run_event_replay(
     starting_capital: float,
     timeframe: str,
     market_asset_class: AssetClass,
+    risk_engine: RiskEngine | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Replay target changes into actual fills, cash, holdings, and equity."""
 
@@ -409,6 +449,7 @@ def _run_event_replay(
     cumulative_cost = 0.0
     previous_equity = float(starting_capital)
     previous_gross_equity = float(starting_capital)
+    peak_equity = float(starting_capital)
     pending_target: float | None = None
     pending_time: datetime | None = None
     intraday = str(timeframe).lower().endswith(("m", "h"))
@@ -416,16 +457,48 @@ def _run_event_replay(
     indian_schedule = _indian_schedule(execution_model)
 
     def execute(target: float, source_price: float, source_close: float, source_volume: float, fill_time: datetime, requested_at: datetime) -> None:
-        nonlocal cash, quantity, cumulative_cost
+        nonlocal cash, quantity, cumulative_cost, peak_equity
         fill_date = fill_time.date() if isinstance(fill_time, datetime) else pd.Timestamp(fill_time).date()
         effective_schedule = get_cost_schedule(fill_date) if indian_schedule is not None else None
         fill_price_hint = max(float(source_price), 1e-9)
-        desired_quantity = target * starting_capital / fill_price_hint
+        current_equity = cash + quantity * source_close
+        target_notional = target * current_equity
+        desired_quantity = target_notional / fill_price_hint
         requested_quantity = desired_quantity - quantity
         if abs(requested_quantity) <= 1e-12:
             return
         side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
         requested_abs = abs(requested_quantity)
+        decision = None
+        if risk_engine is not None and current_equity > 0:
+            current_position_notional = abs(quantity * source_close)
+            requested_notional = requested_abs * source_close
+            decision = risk_engine.evaluate(TradeProposal(
+                symbol=str(frame.iloc[0].get("symbol", "")),
+                requested_notional=max(requested_notional, 1e-9),
+                capital=current_equity,
+                current_position_notional=quantity * source_close,
+                order_side=side,
+                current_gross_exposure=current_position_notional,
+                current_sector_exposure=current_position_notional,
+                daily_pnl=current_equity - previous_equity,
+                current_drawdown=max((peak_equity - current_equity) / max(peak_equity, 1e-9), 0.0),
+                open_position_count=1 if quantity else 0,
+                daily_turnover_crore=(
+                    source_close * source_volume / 10_000_000.0
+                    if source_close > 0 and source_volume > 0 else 0.0
+                ),
+                estimated_portfolio_var_pct=0.0,
+            ))
+            if decision.action == RiskAction.REJECT:
+                requested_abs = 0.0
+            else:
+                approved_quantity = float(decision.approved_notional) / max(source_close, 1e-9)
+                requested_abs = min(requested_abs, approved_quantity)
+                requested_quantity = requested_abs if side == OrderSide.BUY else -requested_abs
+                desired_quantity = quantity + requested_quantity
+        if requested_abs <= 0:
+            return
         initial_participation = requested_abs / max(source_volume, 1.0)
         order_id = str(uuid.uuid4())
         try:
@@ -444,8 +517,7 @@ def _run_event_replay(
             })
             return
 
-        desired_quantity = target * starting_capital / max(fill_price, 1e-9)
-        requested_quantity = desired_quantity - quantity
+        desired_quantity = quantity + requested_quantity
         requested_abs = abs(requested_quantity)
         filled_quantity = requested_abs
         if effective_schedule is not None:
@@ -491,10 +563,27 @@ def _run_event_replay(
             fee = filled_quantity * fill_price * fee_rate
             cost_components = None
         if side == OrderSide.BUY and quantity >= 0:
-            affordable = max(cash - fee, 0.0) / max(fill_price, 1e-9)
-            if market_asset_class == AssetClass.INDIA_EQUITY:
-                affordable = float(np.floor(affordable))
-            filled_quantity = min(filled_quantity, affordable)
+            available = max(cash, 0.0)
+            if effective_schedule is not None:
+                volume_for_participation = max(float(source_volume), 1.0)
+
+                def quote(candidate: int) -> tuple[float, float]:
+                    participation = candidate / volume_for_participation
+                    candidate_price = effective_schedule.execution_price(
+                        fill_price_hint, side, participation,
+                    )
+                    candidate_breakdown = effective_schedule.calculate(
+                        candidate * candidate_price, side, participation,
+                    )
+                    return candidate_price, candidate_breakdown.statutory_and_broker_fees
+
+                filled_quantity = min(
+                    filled_quantity,
+                    float(max_affordable_quantity(filled_quantity, available, quote)),
+                )
+            else:
+                affordable = max(available - fee, 0.0) / max(fill_price, 1e-9)
+                filled_quantity = min(filled_quantity, affordable)
         if filled_quantity <= 0:
             if effective_schedule is not None:
                 orders.append({
@@ -559,6 +648,7 @@ def _run_event_replay(
             execute(0.0, float(row["close"]), float(row["close"]), float(row["volume"]), fill_time, fill_time)
 
         equity = cash + quantity * float(row["close"])
+        peak_equity = max(peak_equity, equity)
         gross_equity = equity + cumulative_cost
         curve.append({
             "timestamp": timestamp,

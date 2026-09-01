@@ -428,6 +428,7 @@ class ForwardPaperSessionEngine:
             risk_decision=decision,
             volume=float(bar.get("lagged_adv20") or bar.get("prior_volume") or bar.get("volume") or 0.0),
             close_price=float(bar.get("prior_close") or bar.get("open") or price),
+            available_cash=cash if side == OrderSide.BUY else None,
         ) if (abs(delta) >= 1 or decision.action == RiskAction.REJECT) else None
         if execution is None:
             return (
@@ -669,6 +670,6 @@ class ForwardPaperSessionEngine:
         }
         payload = json.dumps(
             [strategy, version, approved_run_id, symbol, timeframe, parameters, starting_capital, execution, risk_policy.model_dump()],
-            sort_keys=True,
+            sort_keys=True, default=str,
         )
         return f"paper-forward:{strategy}:{symbol}:{timeframe}:{hashlib.sha256(payload.encode()).hexdigest()[:12]}"

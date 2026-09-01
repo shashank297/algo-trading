@@ -12,6 +12,8 @@ import numpy as np
 import pandas as pd
 from loguru import logger
 
+from risk.engine import RiskEngine
+from risk.models import RiskAction, TradeProposal
 from trading_stack.backtest import _compute_metrics
 from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.datasets import ResearchDataset
@@ -72,12 +74,14 @@ class PortfolioEventBacktester:
         max_gross_exposure: float = 0.20,
         max_sector_exposure: float = 0.10,
         db: Any = None,
+        risk_engine: RiskEngine | None = None,
     ) -> None:
         self.cost_schedule = cost_schedule or IndianDeliveryCostSchedule()
         self.max_position_weight = max_position_weight
         self.max_gross_exposure = max_gross_exposure
         self.max_sector_exposure = max_sector_exposure
         self.db = db
+        self.risk_engine = risk_engine
 
     def run(
         self,
@@ -445,6 +449,40 @@ class PortfolioEventBacktester:
                 continue
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
             requested_abs = float(abs(requested_quantity))
+            if self.risk_engine is not None:
+                mark_price = float(last_prices.get(symbol, base_price))
+                decision = self.risk_engine.evaluate(TradeProposal(
+                    symbol=symbol,
+                    requested_notional=max(requested_abs * max(mark_price, 1e-9), 1e-9),
+                    capital=max(equity, 1e-9),
+                    current_position_notional=current_quantity * mark_price,
+                    order_side=side,
+                    current_gross_exposure=sum(
+                        abs(qty * last_prices.get(name, 0.0))
+                        for name, qty in quantities.items()
+                    ),
+                    current_sector_exposure=0.0,
+                    daily_pnl=0.0,
+                    current_drawdown=0.0,
+                    open_position_count=sum(abs(qty) > 0 for qty in quantities.values()),
+                    daily_turnover_crore=(
+                        float(row.get("lagged_traded_value")) / 10_000_000.0
+                        if pd.notna(row.get("lagged_traded_value"))
+                        else 0.0
+                    ),
+                    estimated_portfolio_var_pct=0.0,
+                ))
+                if decision.action == RiskAction.REJECT:
+                    requested_abs = 0.0
+                else:
+                    requested_abs = min(
+                        requested_abs,
+                        float(decision.approved_notional) / max(mark_price, 1e-9),
+                    )
+                requested_quantity = requested_abs if side == OrderSide.BUY else -requested_abs
+                target_quantity = current_quantity + requested_quantity
+            if requested_abs < 1:
+                continue
             sched_date = execution_timestamp.tz_convert("Asia/Kolkata").date() if hasattr(execution_timestamp, "tz_convert") and execution_timestamp.tzinfo else (execution_timestamp.date() if hasattr(execution_timestamp, "date") else date)
             effective_schedule = cost_schedule or get_cost_schedule(sched_date)
             lagged_adv_raw = row.get("lagged_adv20")

@@ -26,8 +26,7 @@ from experiments import (
 )
 
 from data_platform.universe import PointInTimeUniverseManager
-from risk.engine import RiskEngine
-from risk.models import RiskPolicy
+from risk import build_risk_engine
 from storage import DuckDBManager
 from trading_stack.domain import StrategyScope
 from trading_stack.pipeline import StrategyPipeline
@@ -324,11 +323,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             universe = configured_equities
 
-        risk_policy_kwargs = research_config.get("risk", {})
+        risk_policy_kwargs = dict(research_config.get("risk", {}))
         if args.risk_override_max_pos is not None:
             risk_policy_kwargs["max_position_pct"] = args.risk_override_max_pos
 
-        risk_engine = RiskEngine(RiskPolicy(**risk_policy_kwargs))
+        runtime_config = dict(config)
+        runtime_research = dict(runtime_config.get("research", {}))
+        runtime_research["risk"] = risk_policy_kwargs
+        runtime_config["research"] = runtime_research
+        risk_engine = build_risk_engine(runtime_config)
         india_calendar = configured_nse_calendar(config)
         pipeline = StrategyPipeline(db, risk_engine=risk_engine, india_calendar=india_calendar)
         universe_service = UniverseResearchService(db)
@@ -809,7 +812,9 @@ def main(argv: list[str] | None = None) -> int:
 
             rob_policy_dict = research_config.get("statistical_robustness", {})
             policy = RobustnessPolicy(**rob_policy_dict) if rob_policy_dict else RobustnessPolicy()
-            rob_evaluator = RobustnessEvaluator(db, policy=policy, india_calendar=india_calendar)
+            rob_evaluator = RobustnessEvaluator(
+                db, policy=policy, india_calendar=india_calendar, risk_engine=risk_engine,
+            )
 
             experiment_universe = (
                 universe
@@ -889,7 +894,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "mass-research":
             strategy_names = [value.strip() for value in args.strategies.split(",") if value.strip()] or [args.strategy]
-            mass_result = MassExperimentManager(db, india_calendar).run(
+            mass_result = MassExperimentManager(db, india_calendar, risk_engine).run(
                 MassExperimentSpec(
                     strategy_names=strategy_names,
                     universe=universe,
@@ -950,7 +955,9 @@ def main(argv: list[str] | None = None) -> int:
                 if args.command == "portfolio-experiment"
                 else research_config.get("costs", {})
             )
-            experiment = ExperimentManager(db, india_calendar=india_calendar).run(
+            experiment = ExperimentManager(
+                db, india_calendar=india_calendar, risk_engine=risk_engine,
+            ).run(
                 ExperimentSpec(
                     strategy_name=args.strategy,
                     universe=experiment_universe,
