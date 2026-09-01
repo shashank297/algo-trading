@@ -12,6 +12,7 @@ import pytest
 from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _BaselineSelector, _acceptance_policy_hash, _baseline_artifact_hash, _baseline_execution_payload, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _recompute_transition_stress_quality, _stress_artifact_hash, _stress_execution_hash, _validate_baseline_artifact
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
+from experiments.statistical_tests import EvidenceStatus
 from risk.engine import RiskEngine
 from risk.models import RiskPolicy
 from storage.duckdb_manager import DuckDBManager
@@ -1411,6 +1412,249 @@ def test_t2_10_statistical_bootstrap_is_recomputed_and_standalone():
             policy,
             strict=True,
         )
+
+
+def _statistical_validation_fixture(
+    policy: MetaReplayPolicy,
+    returns: list[float],
+    *,
+    independent_trades: int = 10,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    evidence = MetaSelectorBacktest(
+        AdaptiveStrategySelector(), replay_policy=policy,
+    )._statistical_evidence(
+        returns,
+        independent_trades=independent_trades,
+        meta_split="FINAL_OOS",
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    evidence["source_execution_hash"] = "statistical-fixture-execution"
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key != "evidence_hash"
+    })
+    evidence["statistical_evidence_id"] = evidence["evidence_hash"][:32]
+    return {
+        "metrics": {"statistical_evidence": evidence},
+        "equity_curve": equity_curve,
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "statistical-fixture-execution",
+    }, evidence
+
+
+def _rehash_statistical_evidence(evidence: dict[str, Any], **updates: Any) -> dict[str, Any]:
+    updated = {**evidence, **updates}
+    updated["evidence_hash"] = _canonical_hash({
+        key: value for key, value in updated.items()
+        if key not in {"evidence_hash", "statistical_evidence_id"}
+    })
+    updated["statistical_evidence_id"] = updated["evidence_hash"][:32]
+    return updated
+
+
+def test_t2_10_authentic_statistical_weakness_is_a_gate_failure():
+    cases = (
+        (
+            MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability"),
+            [0.01, -0.01] * 15,
+            10,
+        ),
+        (
+            MetaReplayPolicy(
+                required_statistical_tests=("BOOTSTRAP", "PSR"),
+                primary_statistical_criterion="psr_probability",
+                bootstrap_min_lower_bound=1.0,
+            ),
+            [0.01, -0.01] * 15,
+            10,
+        ),
+        (
+            MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability"),
+            [0.01, -0.01] * 10,
+            10,
+        ),
+        (
+            MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability"),
+            [0.01, -0.01] * 15,
+            0,
+        ),
+    )
+    for policy, returns, independent_trades in cases:
+        result, _ = _statistical_validation_fixture(
+            policy, returns, independent_trades=independent_trades,
+        )
+        assert _recompute_statistical_quality(result, policy, strict=True) is False
+
+
+def test_t2_10_matching_insufficient_psr_dsr_and_bootstrap_statuses_are_ready_gates():
+    psr_policy = MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability")
+    psr_result, _ = _statistical_validation_fixture(psr_policy, [0.01, -0.01] * 10)
+    assert _recompute_statistical_quality(psr_result, psr_policy, strict=True) is False
+
+    dsr_policy = MetaReplayPolicy(required_statistical_tests=("DSR",), primary_statistical_criterion="dsr_probability")
+    dsr_result, _ = _statistical_validation_fixture(dsr_policy, [0.01, -0.01] * 15)
+    assert _recompute_statistical_quality(dsr_result, dsr_policy, strict=True) is False
+
+    bootstrap_policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+    )
+    bootstrap_result, _ = _statistical_validation_fixture(bootstrap_policy, [0.01, -0.01] * 10)
+    assert _recompute_statistical_quality(bootstrap_result, bootstrap_policy, strict=True) is False
+
+
+@pytest.mark.parametrize(
+    ("test_name", "policy", "returns", "expected_error"),
+    [
+        (
+            "DSR",
+            MetaReplayPolicy(required_statistical_tests=("DSR",), primary_statistical_criterion="dsr_probability"),
+            [0.01, -0.01] * 15,
+            "statistical DSR status mismatch",
+        ),
+        (
+            "BOOTSTRAP",
+            MetaReplayPolicy(
+                required_statistical_tests=("BOOTSTRAP", "PSR"),
+                primary_statistical_criterion="psr_probability",
+            ),
+            [0.01, -0.01] * 10,
+            "statistical bootstrap status mismatch",
+        ),
+    ],
+)
+def test_t2_10_insufficient_status_contradictions_hard_fail(
+    test_name: str, policy: MetaReplayPolicy, returns: list[float], expected_error: str,
+):
+    result, evidence = _statistical_validation_fixture(policy, returns)
+    assert evidence["tests"][test_name]["status"] == EvidenceStatus.INSUFFICIENT_EVIDENCE.value
+    assert _recompute_statistical_quality(result, policy, strict=True) is False
+    tampered_test = {**evidence["tests"][test_name], "status": EvidenceStatus.VALID.value}
+    tampered = _rehash_statistical_evidence(
+        evidence,
+        tests={**evidence["tests"], test_name: tampered_test},
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        _recompute_statistical_quality(
+            {**result, "metrics": {"statistical_evidence": tampered}},
+            policy,
+            strict=True,
+        )
+
+
+def test_t2_10_observation_count_mismatch_is_integrity_but_low_matching_count_is_ready():
+    policy = MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability")
+    result, evidence = _statistical_validation_fixture(policy, [0.01, -0.01] * 10)
+    assert _recompute_statistical_quality(result, policy, strict=True) is False
+    mismatched = _rehash_statistical_evidence(evidence, observations=19)
+    with pytest.raises(ValueError, match="statistical observation count mismatch"):
+        _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": mismatched}}, policy, strict=True)
+
+
+@pytest.mark.parametrize(
+    ("returns", "persisted_status", "expected_error"),
+    [
+        ([0.01, -0.01] * 15, EvidenceStatus.INSUFFICIENT_EVIDENCE.value, "statistical PSR status mismatch"),
+        ([0.01, -0.01] * 10, EvidenceStatus.VALID.value, "statistical PSR status mismatch"),
+        ([0.01, -0.01] * 10, EvidenceStatus.INVALID_INPUT.value, "statistical PSR status mismatch"),
+    ],
+)
+def test_t2_10_persisted_statistical_status_must_match_recomputation(
+    returns: list[float], persisted_status: str, expected_error: str,
+):
+    policy = MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability")
+    result, evidence = _statistical_validation_fixture(policy, returns)
+    recomputed_status = evidence["tests"]["PSR"]["status"]
+    if persisted_status == recomputed_status:
+        assert _recompute_statistical_quality(result, policy, strict=True) is False
+        return
+    psr = {**evidence["tests"]["PSR"], "status": persisted_status}
+    tampered = _rehash_statistical_evidence(evidence, tests={**evidence["tests"], "PSR": psr})
+    with pytest.raises(ValueError, match=expected_error):
+        _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": tampered}}, policy, strict=True)
+
+
+def test_t2_10_psr_below_threshold_reaches_ready_acceptance(monkeypatch):
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("PSR",),
+        primary_statistical_criterion="psr_probability",
+    )
+    result, evidence = _statistical_validation_fixture(policy, [0.01, -0.01] * 15)
+    final_end = datetime(2024, 4, 1, tzinfo=UTC)
+    materialized_at = datetime(2024, 5, 1, tzinfo=UTC)
+    evidence.update({
+        "frozen_policy_id": "frozen-policy",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": materialized_at,
+    })
+    evidence = _rehash_statistical_evidence(evidence)
+    certificate = {
+        "certificate_id": "certificate-id",
+        "frozen_policy_id": "frozen-policy",
+        "acceptance_policy_version": "phase2-10-acceptance-v1",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "execution_hash": result["final_oos_execution_hash"],
+        "meta_run_id": "meta-run",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "statistical_evidence_id": evidence["statistical_evidence_id"],
+        "statistical_evidence_hash": evidence["evidence_hash"],
+        "final_oos_end": final_end,
+        "materialized_at": materialized_at + timedelta(days=1),
+        "dataset_ids": ("dataset",),
+        "dataset_content_hashes": ("dataset-hash",),
+        "universe_snapshot_id": "universe",
+        "dataset_certification_ids": ("certification",),
+        "risk_snapshot_ids": ("risk",),
+        "risk_snapshot_hashes": ("risk-hash",),
+        "evidence_ids": ("evidence",),
+        "outcome_series_ids": ("outcome",),
+        "execution_bar_hashes": ("bars",),
+    }
+    result["metrics"].update({
+        "final_oos_duration_days": 1.0,
+        "decision_count": 1.0,
+        "trade_count": 10.0,
+        "evidence_coverage": 1.0,
+        "causal_verification": 1.0,
+    })
+    result["baselines"] = {
+        name: {"total_return": 0.0}
+        for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
+    }
+    result["stress_results"] = {scenario: {} for scenario in policy.required_stress_scenarios}
+
+    class AcceptanceDb:
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            return certificate
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            payload = dict(policy.__dict__)
+            payload["schema_version"] = "meta-replay-policy-v1"
+            return {
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "meta_policy_payload": payload,
+                "simple_comparator": "B2_static",
+                "comparator_selection_rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            }
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            return result
+
+        def validate_phase2_10_statistical_evidence(self, evidence_id: str) -> dict[str, Any]:
+            return evidence
+
+    monkeypatch.setattr("experiments.meta_selector_backtest._validate_baseline_artifact", lambda artifact, strict=False: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_transition_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_selector_stability", lambda *args, **kwargs: {"score": 1.0})
+    assert MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id") == "PHASE 2.10 IMPLEMENTATION READY"
 
 
 def test_t2_10_supplied_statistical_artifact_has_exclusive_authority():
