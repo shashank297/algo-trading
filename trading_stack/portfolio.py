@@ -16,6 +16,11 @@ from risk.engine import RiskEngine
 from risk.models import RiskAction, TradeProposal
 from trading_stack.backtest import _compute_metrics
 from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
+from trading_stack.economic import (
+    calculate_projected_var_pct,
+    economic_contract_hash,
+    max_affordable_quantity,
+)
 from trading_stack.datasets import ResearchDataset
 from trading_stack.domain import (
     AssetClass,
@@ -77,9 +82,9 @@ class PortfolioEventBacktester:
         risk_engine: RiskEngine | None = None,
     ) -> None:
         self.cost_schedule = cost_schedule or IndianDeliveryCostSchedule()
-        self.max_position_weight = max_position_weight
-        self.max_gross_exposure = max_gross_exposure
-        self.max_sector_exposure = max_sector_exposure
+        self.max_position_weight = risk_engine.policy.max_position_pct if risk_engine else max_position_weight
+        self.max_gross_exposure = risk_engine.policy.max_gross_exposure_pct if risk_engine else max_gross_exposure
+        self.max_sector_exposure = risk_engine.policy.max_sector_exposure_pct if risk_engine else max_sector_exposure
         self.db = db
         self.risk_engine = risk_engine
 
@@ -148,9 +153,19 @@ class PortfolioEventBacktester:
         round_trip_rows: list[dict[str, Any]] = []
         cost_rows: list[dict[str, Any]] = []
         previous_equity = starting_capital
+        peak_equity = starting_capital
+        daily_start_equity = starting_capital
+        risk_state: dict[str, Any] = {"peak_equity": peak_equity, "daily_start_equity": daily_start_equity}
 
         for session_index, date in enumerate(dates, start=1):
             day = day_groups[pd.Timestamp(date)]
+            if session_index > 1:
+                daily_start_equity = cash + sum(
+                    quantity * float(day.loc[symbol, "open"])
+                    for symbol, quantity in quantities.items()
+                    if symbol in day.index
+                )
+                risk_state["daily_start_equity"] = daily_start_equity
             # Execute rebalancing orders at Day T+1 open using cash, Day T valuations and lagged ADV
             if date in executions:
                 for targets in executions[date]:
@@ -168,6 +183,7 @@ class PortfolioEventBacktester:
                         entry_execution_cost_pools=entry_execution_cost_pools,
                         last_prices=last_prices,
                         mode=mode,
+                        risk_state=risk_state,
                     )
                     orders.extend(generated["orders"])
                     fills.extend(generated["fills"])
@@ -181,6 +197,8 @@ class PortfolioEventBacktester:
                 last_prices[str(symbol)] = float(row["close"])
             market_value = sum(quantity * last_prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
             equity = cash + market_value
+            peak_equity = max(peak_equity, equity)
+            risk_state["peak_equity"] = peak_equity
             gross_exposure = market_value / equity if equity > 0 else 0.0
             daily_pnl = equity - previous_equity
             position_rows.append({
@@ -237,6 +255,22 @@ class PortfolioEventBacktester:
             notes=json.dumps({
                 "frame_certification_id": dataset.frame_certification_id,
                 "survivorship_bias": dataset.survivorship_bias,
+                "risk_policy_hash": economic_contract_hash(
+                    self.risk_engine.policy.model_dump() if self.risk_engine else {}
+                ),
+                "cost_schedule_identity": economic_contract_hash(asdict(self.cost_schedule)),
+                "economic_contract_hash": economic_contract_hash({
+                    "risk_policy": self.risk_engine.policy.model_dump() if self.risk_engine else {},
+                    "cost_schedule": asdict(self.cost_schedule),
+                    "starting_capital": starting_capital,
+                    "execution_mode": mode,
+                    "liquidity_policy": {
+                        "max_volume_participation": self.cost_schedule.max_volume_participation,
+                        "minimum_daily_traded_value": self.cost_schedule.minimum_daily_traded_value,
+                    },
+                    "sizing_semantics": "current_mark_to_market_equity_v1",
+                    "rounding_semantics": "floor_whole_share_v1",
+                }),
             }, sort_keys=True),
         )
         logger.bind(
@@ -275,6 +309,7 @@ class PortfolioEventBacktester:
         mode: str = "event-driven",
         execution_mode: str = "EOD_BATCH",
         cost_schedule: IndianDeliveryCostSchedule | None = None,
+        risk_state: dict[str, Any] | None = None,
     ) -> tuple[float, dict[str, Any]]:
         """Execute one historical rebalance with the authoritative portfolio primitive."""
 
@@ -294,6 +329,7 @@ class PortfolioEventBacktester:
             mode=mode,
             execution_mode=execution_mode,
             cost_schedule=cost_schedule,
+            risk_state=risk_state,
         )
 
     def _rebalance(
@@ -314,6 +350,7 @@ class PortfolioEventBacktester:
         mode: str,
         execution_mode: str = "EOD_BATCH",
         cost_schedule: IndianDeliveryCostSchedule | None = None,
+        risk_state: dict[str, Any] | None = None,
     ) -> tuple[float, dict[str, Any]]:
         target_frame = targets.copy()
         if "target_weight" in target_frame.columns:
@@ -450,27 +487,45 @@ class PortfolioEventBacktester:
             side = OrderSide.BUY if requested_quantity > 0 else OrderSide.SELL
             requested_abs = float(abs(requested_quantity))
             if self.risk_engine is not None:
-                mark_price = float(last_prices.get(symbol, base_price))
+                mark_price = float(base_price)
+                current_equity = cash + sum(
+                    qty * (mark_price if name == symbol else last_prices.get(name, 0.0))
+                    for name, qty in quantities.items()
+                )
+                current_gross = sum(
+                    abs(qty * (mark_price if name == symbol else last_prices.get(name, 0.0)))
+                    for name, qty in quantities.items()
+                )
+                daily_start = float((risk_state or {}).get("daily_start_equity", current_equity))
+                peak = float((risk_state or {}).get("peak_equity", current_equity))
+                volatility = None
+                if "volatility_20" in day.columns and pd.notna(row.get("volatility_20")):
+                    volatility = float(row["volatility_20"])
                 decision = self.risk_engine.evaluate(TradeProposal(
                     symbol=symbol,
                     requested_notional=max(requested_abs * max(mark_price, 1e-9), 1e-9),
-                    capital=max(equity, 1e-9),
+                    capital=max(current_equity, 1e-9),
                     current_position_notional=current_quantity * mark_price,
                     order_side=side,
-                    current_gross_exposure=sum(
-                        abs(qty * last_prices.get(name, 0.0))
+                    current_gross_exposure=current_gross,
+                    current_sector_exposure=sum(
+                        abs(qty * (mark_price if name == symbol else last_prices.get(name, 0.0)))
                         for name, qty in quantities.items()
+                        if "sector" in day.columns and name in day.index and day.loc[name, "sector"] == row.get("sector")
                     ),
-                    current_sector_exposure=0.0,
-                    daily_pnl=0.0,
-                    current_drawdown=0.0,
+                    daily_pnl=current_equity - daily_start,
+                    current_drawdown=max((peak - current_equity) / max(peak, 1e-9), 0.0),
                     open_position_count=sum(abs(qty) > 0 for qty in quantities.values()),
                     daily_turnover_crore=(
                         float(row.get("lagged_traded_value")) / 10_000_000.0
                         if pd.notna(row.get("lagged_traded_value"))
                         else 0.0
                     ),
-                    estimated_portfolio_var_pct=0.0,
+                    estimated_portfolio_var_pct=calculate_projected_var_pct(
+                        volatility=volatility,
+                        projected_gross=current_gross + requested_abs * mark_price,
+                        equity=current_equity,
+                    ),
                 ))
                 if decision.action == RiskAction.REJECT:
                     requested_abs = 0.0
@@ -524,10 +579,21 @@ class PortfolioEventBacktester:
             notional = filled_quantity * execution_price
             breakdown = effective_schedule.calculate(notional, side, participation) if filled_quantity > 0 else None
             if side == OrderSide.BUY and filled_quantity > 0:
-                fee = breakdown.statutory_and_broker_fees if breakdown else 0.0
-                affordable = np.floor(max(cash - fee, 0.0) / max(execution_price, 1e-12))
+                volume_for_participation = max(float(lagged_adv), 1.0)
+
+                def quote(candidate: int) -> tuple[float, float]:
+                    participation = candidate / volume_for_participation
+                    candidate_price = effective_schedule.execution_price(base_price, side, participation)
+                    candidate_breakdown = effective_schedule.calculate(
+                        candidate * candidate_price, side, participation,
+                    )
+                    return candidate_price, candidate_breakdown.statutory_and_broker_fees
+
+                affordable = max_affordable_quantity(
+                    int(np.floor(filled_quantity)), cash, quote,
+                )
                 if affordable < filled_quantity:
-                    filled_quantity = affordable
+                    filled_quantity = float(affordable)
                     participation = filled_quantity / max(lagged_adv, 1.0)
                     execution_price = effective_schedule.execution_price(base_price, side, participation)
                     notional = filled_quantity * execution_price
@@ -643,6 +709,9 @@ class PortfolioEventBacktester:
                     "source_stream_epoch": getattr(observation, "stream_epoch", None) if execution_source == "OBSERVED_TICK" else None,
                 }),
             })
+            if risk_state is not None:
+                updated_equity = cash + sum(qty * (execution_price if name == symbol else last_prices.get(name, 0.0)) for name, qty in quantities.items())
+                risk_state["peak_equity"] = max(float(risk_state.get("peak_equity", updated_equity)), updated_equity)
             costs.append({"run_id": run_id, "fill_id": fill_id, "timestamp": execution_timestamp, **(breakdown.__dict__ if breakdown else {}), "total_cost": total_costs})
             attribution.append({
                 "run_id": run_id, "timestamp": execution_timestamp, "symbol": symbol, "side": side.value,
@@ -673,5 +742,10 @@ class PortfolioEventBacktester:
             "max_position_weight": self.max_position_weight,
             "max_gross_exposure": self.max_gross_exposure,
             "max_sector_exposure": self.max_sector_exposure,
+            "risk_policy": self.risk_engine.policy.model_dump() if self.risk_engine else {},
+            "economic_contract": {
+                "starting_capital_semantics": "current_mark_to_market_equity_v1",
+                "rounding": "floor_whole_share_v1",
+            },
         }, sort_keys=True, default=str).encode()).hexdigest()[:12]
         return f"{strategy_name}:PORTFOLIO:{mode}:{data_hash[:12]}:{configuration_hash}"

@@ -20,7 +20,12 @@ from trading_stack.costs import (
     UnexecutableOrderError,
     get_cost_schedule,
 )
-from trading_stack.economic import cost_schedule_identity, economic_contract_hash, max_affordable_quantity
+from trading_stack.economic import (
+    calculate_projected_var_pct,
+    cost_schedule_identity,
+    economic_contract_hash,
+    max_affordable_quantity,
+)
 from risk.engine import RiskEngine
 from risk.models import RiskAction, TradeProposal
 
@@ -164,6 +169,7 @@ class PaperBroker:
                 quantity = min(float(quantity), float(approved_notional) / max(price, 1e-9))
         schedule = _indian_schedule(self.execution_model)
         requested_quantity = float(quantity)
+        affordability_rejected = False
         if schedule is not None and volume is not None:
             traded_value = float(volume) * float(close_price or price)
             if traded_value < schedule.minimum_daily_traded_value:
@@ -190,6 +196,7 @@ class PaperBroker:
                 return candidate_price, breakdown.statutory_and_broker_fees
 
             quantity = float(max_affordable_quantity(quantity, available_cash, quote))
+            affordability_rejected = quantity <= 0
         order_row = {
             "order_id": order_id,
             "run_id": run_id,
@@ -229,7 +236,10 @@ class PaperBroker:
         if quantity <= 0:
             order_row["status"] = OrderStatus.REJECTED.value
             order_row["filled_at"] = None
-            order_row["metadata_json"] = json.dumps({**metadata, "rejection_reason": "VOLUME_CAP_REJECTION"})
+            order_row["metadata_json"] = json.dumps({
+                **metadata,
+                "rejection_reason": "INSUFFICIENT_CASH" if affordability_rejected else "VOLUME_CAP_REJECTION",
+            })
             self.orders.append(order_row)
             return {"order": order_row, "fill": None, "cost_components": None}
         if quantity < requested_quantity:
@@ -456,12 +466,26 @@ def _run_event_replay(
     zone = ZoneInfo("Asia/Kolkata" if market_asset_class in {AssetClass.INDIA_EQUITY, AssetClass.INDIA_INDEX} else "UTC")
     indian_schedule = _indian_schedule(execution_model)
 
-    def execute(target: float, source_price: float, source_close: float, source_volume: float, fill_time: datetime, requested_at: datetime) -> None:
+    observed_volatility = (
+        frame["close"].pct_change().rolling(20, min_periods=2).std(ddof=1)
+        if "close" in frame.columns else pd.Series(dtype=float)
+    )
+
+    def execute(
+        target: float,
+        source_price: float,
+        source_close: float,
+        source_volume: float,
+        fill_time: datetime,
+        requested_at: datetime,
+        source_volatility: float | None,
+    ) -> None:
         nonlocal cash, quantity, cumulative_cost, peak_equity
         fill_date = fill_time.date() if isinstance(fill_time, datetime) else pd.Timestamp(fill_time).date()
         effective_schedule = get_cost_schedule(fill_date) if indian_schedule is not None else None
         fill_price_hint = max(float(source_price), 1e-9)
-        current_equity = cash + quantity * source_close
+        current_mark = fill_price_hint
+        current_equity = cash + quantity * current_mark
         target_notional = target * current_equity
         desired_quantity = target_notional / fill_price_hint
         requested_quantity = desired_quantity - quantity
@@ -471,13 +495,13 @@ def _run_event_replay(
         requested_abs = abs(requested_quantity)
         decision = None
         if risk_engine is not None and current_equity > 0:
-            current_position_notional = abs(quantity * source_close)
-            requested_notional = requested_abs * source_close
+            current_position_notional = abs(quantity * current_mark)
+            requested_notional = requested_abs * current_mark
             decision = risk_engine.evaluate(TradeProposal(
                 symbol=str(frame.iloc[0].get("symbol", "")),
                 requested_notional=max(requested_notional, 1e-9),
                 capital=current_equity,
-                current_position_notional=quantity * source_close,
+                current_position_notional=quantity * current_mark,
                 order_side=side,
                 current_gross_exposure=current_position_notional,
                 current_sector_exposure=current_position_notional,
@@ -488,12 +512,16 @@ def _run_event_replay(
                     source_close * source_volume / 10_000_000.0
                     if source_close > 0 and source_volume > 0 else 0.0
                 ),
-                estimated_portfolio_var_pct=0.0,
+                estimated_portfolio_var_pct=calculate_projected_var_pct(
+                    volatility=source_volatility,
+                    projected_gross=current_position_notional + requested_notional,
+                    equity=current_equity,
+                ),
             ))
             if decision.action == RiskAction.REJECT:
                 requested_abs = 0.0
             else:
-                approved_quantity = float(decision.approved_notional) / max(source_close, 1e-9)
+                approved_quantity = float(decision.approved_notional) / max(current_mark, 1e-9)
                 requested_abs = min(requested_abs, approved_quantity)
                 requested_quantity = requested_abs if side == OrderSide.BUY else -requested_abs
                 desired_quantity = quantity + requested_quantity
@@ -592,7 +620,7 @@ def _run_event_replay(
                     "time_in_force": TimeInForce.DAY.value, "status": OrderStatus.REJECTED.value,
                     "requested_at": requested_at, "filled_at": None, "limit_price": None, "stop_price": None,
                     "average_fill_price": None, "slippage_bps": effective_schedule.slippage_bps, "fees": 0.0,
-                    "metadata_json": json.dumps({"mode": mode, "rejection_reason": "VOLUME_OR_CASH_REJECTION"}),
+                    "metadata_json": json.dumps({"mode": mode, "rejection_reason": "INSUFFICIENT_CASH"}),
                 })
             return
         if effective_schedule is not None:
@@ -637,7 +665,15 @@ def _run_event_replay(
         fill_time = timestamp.to_pydatetime()
         if pending_target is not None and pending_time is not None:
             # Capacity and liquidity use close and volume known at bar t (signal bar), NOT bar t+1's future volume
-            execute(pending_target, float(row["open"]), last_known_close, last_known_volume, fill_time, pending_time)
+            prior_volatility = (
+                float(observed_volatility.iloc[max(index - 1, 0)])
+                if not observed_volatility.empty and pd.notna(observed_volatility.iloc[max(index - 1, 0)])
+                else None
+            )
+            execute(
+                pending_target, float(row["open"]), last_known_close, last_known_volume,
+                fill_time, pending_time, prior_volatility,
+            )
 
         is_last = index == len(frame) - 1
         next_session = False
@@ -645,7 +681,15 @@ def _run_event_replay(
             next_timestamp = pd.Timestamp(frame.iloc[index + 1]["timestamp"])
             next_session = timestamp.tz_convert(zone).date() != next_timestamp.tz_convert(zone).date()
         if execution_model.exit_on_session_close and quantity != 0 and (is_last or next_session):
-            execute(0.0, float(row["close"]), float(row["close"]), float(row["volume"]), fill_time, fill_time)
+            current_volatility = (
+                float(observed_volatility.iloc[index])
+                if not observed_volatility.empty and pd.notna(observed_volatility.iloc[index])
+                else None
+            )
+            execute(
+                0.0, float(row["close"]), float(row["close"]), float(row["volume"]),
+                fill_time, fill_time, current_volatility,
+            )
 
         equity = cash + quantity * float(row["close"])
         peak_equity = max(peak_equity, equity)

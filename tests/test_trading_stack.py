@@ -36,6 +36,18 @@ class TradingStackTests(unittest.TestCase):
         self.assertTrue(crypto_window.start < crypto_window.end)
         self.assertTrue(calendars[AssetClass.CRYPTO].is_trading_day(date(2026, 8, 16)))
 
+    def test_authoritative_pipeline_requires_injected_risk_engine(self) -> None:
+        pipeline = StrategyPipeline(
+            db=DuckDBManager(":memory:"),
+            require_authoritative_certification=True,
+        )
+        with self.assertRaisesRegex(ValueError, "injected configured RiskEngine"):
+            pipeline.run(
+                strategy_name="trend_following",
+                symbol="NIFTY",
+                timeframe="1d",
+                mode="event-driven",
+            )
     def test_vectorized_backtester_generates_metrics(self) -> None:
         """A trend strategy on rising prices should backtest cleanly."""
 

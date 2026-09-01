@@ -613,6 +613,7 @@ def test_p0_3_live_opening_tick_portfolio_paper_integration(tmp_path):
         benchmark_symbol="RELIANCE",
         timeframe="1d",
         parameters=params,
+        execution_mode="TRUE_NEXT_OPEN",
         as_of=datetime(2025, 12, 31, 16, 0, tzinfo=timezone.utc),
     )
     assert res1.status == "BOOTSTRAPPED"

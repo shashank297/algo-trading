@@ -1669,7 +1669,7 @@ def test_promotion_engine_all_permission_and_review_branches(tmp_path):
 
 def test_pipeline_single_asset_attribution_and_composed_frame_validation(tmp_path):
     db = DuckDBManager(str(tmp_path / "pipe_attr.duckdb"))
-    pipeline = StrategyPipeline(db=db)
+    pipeline = StrategyPipeline(db=db, risk_engine=RiskEngine())
 
     # Insert valid dataset, dq cert, and 1 historical candle
     db.conn.execute("INSERT INTO market_datasets (dataset_id, symbol, canonical_symbol, timeframe, exchange, provider_name, raw_hash, transformation_hash, status, lifecycle_status, declared_adjustment, adjustment) VALUES ('ds_dup', 'RELIANCE', 'RELIANCE', '1d', 'NSE', 'TEST', 'h_raw', 'h_trans', 'VERIFIED', 'CANONICAL_PROMOTED', 'SPLIT_ADJUSTED', 'SPLIT_ADJUSTED');")
@@ -2320,7 +2320,7 @@ def test_pipeline_single_asset_attribution_and_paper_risk_extra(tmp_path):
     from trading_stack.domain import AssetClass
 
     db = DuckDBManager(str(tmp_path / "pipe_attr_extra.duckdb"))
-    pipeline = StrategyPipeline(db=db)
+    pipeline = StrategyPipeline(db=db, risk_engine=RiskEngine())
 
     # 1. Test _apply_paper_risk with orders DataFrame
     orders_df = pd.DataFrame([

@@ -27,7 +27,7 @@ class ResearchWorkflow:
         self.llm = llm
         self.risk_engine = risk_engine or RiskEngine()
         self.tasks = TaskOrchestrator(db)
-        self.experiments = ExperimentManager(db)
+        self.experiments = ExperimentManager(db, risk_engine=self.risk_engine)
 
     def run(self, goal: ResearchGoal, starting_capital: float = 100_000.0) -> dict[str, Any]:
         """Run manager, technical, quant, and risk roles with a complete audit trail."""

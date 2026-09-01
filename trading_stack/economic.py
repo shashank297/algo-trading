@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Mapping
+from statistics import NormalDist
 from typing import Any
 
 
@@ -71,6 +72,23 @@ def economic_contract_hash(payload: Mapping[str, Any]) -> str:
 
     encoded = json.dumps(dict(payload), sort_keys=True, default=str, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def calculate_projected_var_pct(
+    *,
+    volatility: float | None,
+    projected_gross: float,
+    equity: float,
+) -> float | None:
+    """Calculate the shared causal one-day projected portfolio VaR input."""
+
+    if volatility is None or not math.isfinite(float(volatility)) or float(volatility) <= 0:
+        return None
+    if not math.isfinite(float(projected_gross)) or projected_gross < 0:
+        return None
+    if not math.isfinite(float(equity)) or equity <= 0:
+        return None
+    return NormalDist().inv_cdf(0.95) * float(volatility) * float(projected_gross) / float(equity)
 
 
 def cost_schedule_identity(

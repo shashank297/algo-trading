@@ -7,7 +7,6 @@ import json
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
@@ -18,6 +17,7 @@ from storage import DuckDBManager
 from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.datasets import SynchronizedPanelBuilder
+from trading_stack.economic import calculate_projected_var_pct, economic_contract_hash
 from trading_stack.domain import (
     OpeningTickObservation,
     PaperExecutionMode,
@@ -122,8 +122,20 @@ class ForwardPortfolioPaperSessionEngine:
             strategy_name, strategy.metadata.version, approved_run_id, universe_snapshot_id,
             benchmark_symbol, timeframe, parameters, starting_capital,
         )
+        economic_hash = self._economic_contract_hash(
+            starting_capital=starting_capital,
+            execution_mode=execution_mode,
+        )
         latest_timestamp = pd.Timestamp(panel["timestamp"].max()).tz_convert("UTC")
         state = self._load_state(session_id)
+        if state is not None:
+            try:
+                persisted_parameters = json.loads(str(state.get("parameters_json") or "{}"))
+            except json.JSONDecodeError as exc:
+                raise RuntimeError("SESSION ECONOMIC CONTRACT MISMATCH: malformed session parameters") from exc
+            persisted_hash = persisted_parameters.get("_economic_contract_hash")
+            if persisted_hash != economic_hash:
+                raise RuntimeError("SESSION ECONOMIC CONTRACT MISMATCH")
         now = pd.Timestamp(as_of).tz_convert("UTC").to_pydatetime()
         if state is None:
             pending = self._targets_at_or_before(signals, latest_timestamp)
@@ -140,7 +152,7 @@ class ForwardPortfolioPaperSessionEngine:
                     [
                         session_id, approved_run_id, strategy_name, strategy.metadata.version,
                         universe_snapshot_id, benchmark_symbol, timeframe,
-                        json.dumps(parameters, sort_keys=True), float(starting_capital),
+                        json.dumps({**parameters, "_economic_contract_hash": economic_hash}, sort_keys=True), float(starting_capital),
                         float(starting_capital), float(starting_capital),
                         latest_timestamp.tz_convert(self.calendar.zone).date(),
                         float(starting_capital), latest_timestamp.to_pydatetime(), "ACTIVE", now, now,
@@ -383,10 +395,14 @@ class ForwardPortfolioPaperSessionEngine:
             str(k): (0.0 if pd.isna(v) else float(v))
             for k, v in zip(adjusted["symbol"].astype(str), adjusted["target_weight"])
         }
-        current_gross = sum(
-            min(abs(quantity * prices.get(symbol, 0.0)), target_weights.get(symbol, 0.0) * equity)
-            for symbol, quantity in quantities.items()
-        )
+        current_gross = sum(abs(quantity * prices.get(symbol, 0.0)) for symbol, quantity in quantities.items())
+        sector_exposure: dict[str, float] = {}
+        if "sector" in day.columns:
+            for held_symbol, held_quantity in quantities.items():
+                sector = str(day.loc[held_symbol, "sector"]) if held_symbol in day.index else "UNKNOWN"
+                sector_exposure[sector] = sector_exposure.get(sector, 0.0) + abs(
+                    held_quantity * prices.get(held_symbol, 0.0)
+                )
         decisions: list[RiskDecision] = []
         for symbol, quantity in quantities.items():
             current_notional = abs(quantity * prices.get(symbol, 0.0))
@@ -415,9 +431,10 @@ class ForwardPortfolioPaperSessionEngine:
             turnover_crore = (lagged_val / 10_000_000.0) if lagged_val > 0 else None
             vol_val = float(day.loc[symbol, "volatility_20"]) if (symbol in day.index and "volatility_20" in day.columns and pd.notna(day.loc[symbol, "volatility_20"])) else None
             projected_gross = current_gross + requested_delta
-            est_port_var = (
-                NormalDist().inv_cdf(0.95) * vol_val * projected_gross / max(equity, 1e-9)
-                if vol_val is not None and vol_val > 0 and equity > 0 else None
+            est_port_var = calculate_projected_var_pct(
+                volatility=vol_val,
+                projected_gross=projected_gross,
+                equity=equity,
             )
 
             decision = self.risk_engine.evaluate(TradeProposal(
@@ -431,11 +448,9 @@ class ForwardPortfolioPaperSessionEngine:
                 open_position_count=len([q for q in quantities.values() if abs(q) > 0]),
                 daily_turnover_crore=turnover_crore,
                 estimated_portfolio_var_pct=est_port_var,
-                current_sector_exposure=sum(
-                    abs(quantities.get(s, 0.0) * prices.get(s, 0.0))
-                    for s in quantities
-                    if (s in day.index and symbol in day.index and "sector" in day.columns and day.loc[s, "sector"] == day.loc[symbol, "sector"])
-                ) if ("sector" in day.columns and symbol in day.index) else 0.0,
+                current_sector_exposure=sector_exposure.get(
+                    str(row.get("sector", "UNKNOWN")), 0.0
+                ),
             ))
             decisions.append(decision)
             if decision.action == RiskAction.REJECT:
@@ -445,6 +460,8 @@ class ForwardPortfolioPaperSessionEngine:
                     current_notional + decision.approved_notional
                 ) / max(equity, 1e-12)
                 current_gross += decision.approved_notional
+                sector = str(row.get("sector", "UNKNOWN"))
+                sector_exposure[sector] = sector_exposure.get(sector, 0.0) + decision.approved_notional
         return adjusted, decisions
 
     def _load_state(self, session_id: str) -> dict[str, Any] | None:
@@ -618,7 +635,24 @@ class ForwardPortfolioPaperSessionEngine:
             "strategy": strategy, "version": version, "approved_run_id": approved_run_id,
             "snapshot": snapshot, "benchmark": benchmark, "timeframe": timeframe,
             "parameters": parameters, "capital": capital,
-            "cost_schedule": self.cost_schedule.__dict__,
-            "risk_policy": self.risk_engine.policy.model_dump(),
         }, sort_keys=True, default=str)
         return f"paper-forward:{strategy}:PORTFOLIO:{hashlib.sha256(payload.encode()).hexdigest()[:12]}"
+
+    def _economic_contract_hash(self, *, starting_capital: float, execution_mode: str) -> str:
+        return economic_contract_hash({
+            "risk_policy": self.risk_engine.policy.model_dump(),
+            "cost_schedule": self.cost_schedule.__dict__,
+            "starting_capital": starting_capital,
+            "execution_mode": execution_mode,
+            "liquidity_policy": {
+                "max_volume_participation": self.cost_schedule.max_volume_participation,
+                "minimum_daily_traded_value": self.cost_schedule.minimum_daily_traded_value,
+            },
+            "position_constraints": {
+                "max_position": self.risk_engine.policy.max_position_pct,
+                "max_gross": self.risk_engine.policy.max_gross_exposure_pct,
+                "max_sector": self.risk_engine.policy.max_sector_exposure_pct,
+            },
+            "sizing_semantics": "current_mark_to_market_equity_v1",
+            "rounding_semantics": "floor_whole_share_v1",
+        })

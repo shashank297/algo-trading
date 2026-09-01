@@ -28,13 +28,51 @@ def make_proposal(**kwargs) -> TradeProposal:
 
 
 def test_authoritative_risk_factory_uses_research_config_and_rejects_missing_section():
-    config = {"research": {"risk": {"max_position_pct": 0.05, "max_gross_exposure_pct": 0.20}}}
+    config = {"research": {"risk": {
+        "max_position_pct": 0.05,
+        "max_gross_exposure_pct": 0.20,
+        "max_daily_loss_pct": 0.03,
+        "max_drawdown_pct": 0.15,
+        "max_sector_exposure_pct": 0.40,
+        "max_open_positions": 20,
+        "max_var_pct": 0.02,
+        "min_liquidity_crore": 0.0,
+    }}}
     policy = build_risk_policy(config)
     engine = build_risk_engine(config)
     assert policy.max_position_pct == 0.05
     assert engine.policy.model_dump() == policy.model_dump()
     with pytest.raises(ValueError, match="research.risk"):
         build_risk_engine({"research": {}})
+
+
+@pytest.mark.parametrize("missing", [
+    "max_position_pct", "max_gross_exposure_pct", "max_daily_loss_pct",
+    "max_drawdown_pct", "max_sector_exposure_pct", "max_open_positions",
+    "max_var_pct", "min_liquidity_crore",
+])
+def test_authoritative_risk_factory_rejects_missing_material_fields(missing):
+    config = {"research": {"risk": {
+        "max_position_pct": 0.05, "max_gross_exposure_pct": 0.20,
+        "max_daily_loss_pct": 0.03, "max_drawdown_pct": 0.15,
+        "max_sector_exposure_pct": 0.40, "max_open_positions": 20,
+        "max_var_pct": 0.02, "min_liquidity_crore": 0.0,
+    }}}
+    del config["research"]["risk"][missing]
+    with pytest.raises(ValueError, match=missing):
+        build_risk_policy(config)
+
+
+def test_authoritative_risk_factory_rejects_unknown_fields():
+    config = {"research": {"risk": {
+        "max_position_pct": 0.05, "max_gross_exposure_pct": 0.20,
+        "max_daily_loss_pct": 0.03, "max_drawdown_pct": 0.15,
+        "max_sector_exposure_pct": 0.40, "max_open_positions": 20,
+        "max_var_pct": 0.02, "min_liquidity_crore": 0.0,
+        "max_var_pcts": 0.02,
+    }}}
+    with pytest.raises(ValueError, match="unknown fields"):
+        build_risk_policy(config)
 
 
 def test_baseline_engine_interception():
@@ -399,6 +437,3 @@ def test_turnover_liquidity_validator_allows_pure_reduction():
     approved_sell, reasons_sell = validator.evaluate(sell_proposal, policy)
     assert approved_sell == 50_000.0
     assert reasons_sell == []
-
-
-

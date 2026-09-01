@@ -168,7 +168,9 @@ class ResearchPlatformTests(unittest.TestCase):
         self.assertEqual(rejected.action.value, "REJECT")
 
     def test_experiment_persists_reproducibility_inputs(self) -> None:
-        outcome = ExperimentManager(self.db, Path(__file__).resolve().parent.parent).run(
+        outcome = ExperimentManager(
+            self.db, Path(__file__).resolve().parent.parent, risk_engine=RiskEngine()
+        ).run(
             ExperimentSpec(strategy_name="trend_following", universe=["NIFTY"], timeframe="1d"),
         )
 

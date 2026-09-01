@@ -323,15 +323,20 @@ def main(argv: list[str] | None = None) -> int:
         else:
             universe = configured_equities
 
-        risk_policy_kwargs = dict(research_config.get("risk", {}))
-        if args.risk_override_max_pos is not None:
-            risk_policy_kwargs["max_position_pct"] = args.risk_override_max_pos
-
-        runtime_config = dict(config)
-        runtime_research = dict(runtime_config.get("research", {}))
-        runtime_research["risk"] = risk_policy_kwargs
-        runtime_config["research"] = runtime_research
-        risk_engine = build_risk_engine(runtime_config)
+        risk_required = args.command in {
+            "experiment", "portfolio-experiment", "paper", "mass-research",
+            "agent-research", "robustness",
+        } or args.mode == "paper"
+        risk_engine = None
+        if risk_required:
+            risk_policy_kwargs = dict(research_config.get("risk", {}))
+            if args.risk_override_max_pos is not None:
+                risk_policy_kwargs["max_position_pct"] = args.risk_override_max_pos
+            runtime_config = dict(config)
+            runtime_research = dict(runtime_config.get("research", {}))
+            runtime_research["risk"] = risk_policy_kwargs
+            runtime_config["research"] = runtime_research
+            risk_engine = build_risk_engine(runtime_config)
         india_calendar = configured_nse_calendar(config)
         pipeline = StrategyPipeline(db, risk_engine=risk_engine, india_calendar=india_calendar)
         universe_service = UniverseResearchService(db)

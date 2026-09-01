@@ -16,6 +16,7 @@ from risk.models import RiskAction, RiskDecision, TradeProposal
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, VectorizedBacktester
 from trading_stack.calendars import MarketCalendar, build_default_calendars
 from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
+from trading_stack.economic import calculate_projected_var_pct
 from trading_stack.domain import AssetClass, OpeningTickObservation, PaperExecutionMode, StrategyScope, infer_asset_class
 from trading_stack.features import FeatureFactory
 from trading_stack.strategies import StrategyRegistry
@@ -60,12 +61,23 @@ class StrategyPipeline:
         else:
             self.strict_calendar = strict_calendar
         self.feature_factory = feature_factory or FeatureFactory()
-        self.risk_engine = risk_engine or RiskEngine()
+        # Exploratory vectorized pipelines may use the legacy permissive engine;
+        # authoritative execution must be explicitly configured and injected.
+        self.risk_engine = risk_engine if risk_engine is not None else (
+            None if require_authoritative_certification else RiskEngine()
+        )
         self.promotion_engine = PromotionEngine(self.db)
         self.require_authoritative_certification = require_authoritative_certification
         self._last_frame_certification_id: str | None = None
         self.vector_backtester = VectorizedBacktester()
         self.event_backtester = EventDrivenBacktester(risk_engine=self.risk_engine)
+
+    def _require_authoritative_risk(self) -> RiskEngine:
+        if self.risk_engine is None:
+            raise ValueError(
+                "Authoritative execution requires an explicitly injected configured RiskEngine."
+            )
+        return self.risk_engine
 
     def load_candles(
         self,
@@ -242,6 +254,8 @@ class StrategyPipeline:
         """Run a strategy and persist the result bundle."""
 
         parameters = parameters or {}
+        if mode != "vectorized":
+            self._require_authoritative_risk()
         certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
         raw_bars = self.load_candles(
             symbol, timeframe, adjustment=adjustment, require_authoritative_certification=certify,
@@ -315,6 +329,8 @@ class StrategyPipeline:
     ) -> dict[str, Any]:
         """Advance a persisted forward-only paper session by newly observed bars."""
 
+        risk_engine = self._require_authoritative_risk()
+
         PromotionEngine(self.db).assert_paper_authorized(approved_run_id, strategy_name)
         metadata = StrategyRegistry.metadata(strategy_name)
         if metadata.scope == StrategyScope.CROSS_SECTIONAL:
@@ -326,7 +342,7 @@ class StrategyPipeline:
             })
             portfolio_result = ForwardPortfolioPaperSessionEngine(
                 self.db, calendar=self.calendars[AssetClass.INDIA_EQUITY],
-                risk_engine=self.risk_engine, cost_schedule=schedule,
+                risk_engine=risk_engine, cost_schedule=schedule,
                 require_authoritative_certification=self.require_authoritative_certification,
             ).run(
                 strategy_name=strategy_name, approved_run_id=approved_run_id,
@@ -353,7 +369,7 @@ class StrategyPipeline:
         engine = ForwardPaperSessionEngine(
             self.db,
             calendar=self.calendars[asset_class],
-            risk_engine=self.risk_engine,
+            risk_engine=risk_engine,
             feature_factory=self.feature_factory,
             execution_model=self._execution_model(cost_model, market_asset_class=asset_class),
         )
@@ -402,7 +418,12 @@ class StrategyPipeline:
 
         if result.orders.empty:
             return
+        risk_engine = self._require_authoritative_risk()
         gross_exposure = 0.0
+        peak_equity = float(starting_capital)
+        daily_start_equity = float(starting_capital)
+        equity = float(starting_capital)
+        positions: dict[str, float] = {}
         for _, order in result.orders.sort_values("requested_at").iterrows():
             price = float(order.get("average_fill_price") or order.get("price") or 100.0)
             qty = abs(float(order["quantity"]))
@@ -414,27 +435,40 @@ class StrategyPipeline:
                     requested_notional=max(requested_notional, 1e-9),
                     approved_notional=max(requested_notional, 1e-9),
                     reasons=["risk_reducing_exit"],
-                    policy=self.risk_engine.policy,
+                    policy=risk_engine.policy,
                 )
                 gross_exposure = max(gross_exposure - requested_notional, 0.0)
+                positions[str(order["symbol"])] = max(
+                    positions.get(str(order["symbol"]), 0.0) - qty, 0.0
+                )
             else:
                 turnover_cr = (qty * price * 50.0 / 10_000_000.0) if (qty * price) > 0 else 10.0
-                est_var = 1.65 * 0.015 * (gross_exposure / max(starting_capital, 1e-9))
-                decision = self.risk_engine.evaluate(
+                est_var = calculate_projected_var_pct(
+                    volatility=0.015,
+                    projected_gross=gross_exposure + requested_notional,
+                    equity=equity,
+                )
+                decision = risk_engine.evaluate(
                     TradeProposal(
                         symbol=str(order["symbol"]),
                         requested_notional=max(requested_notional, 1e-9),
-                        capital=starting_capital,
+                        capital=equity,
                         current_gross_exposure=gross_exposure,
                         current_sector_exposure=0.0,
-                        daily_pnl=0.0,
-                        current_drawdown=0.0,
-                        open_position_count=0,
+                        daily_pnl=equity - daily_start_equity,
+                        current_drawdown=max((peak_equity - equity) / max(peak_equity, 1e-9), 0.0),
+                        open_position_count=sum(abs(value) > 0 for value in positions.values()),
                         daily_turnover_crore=turnover_cr,
                         estimated_portfolio_var_pct=est_var,
                     ),
                 )
                 gross_exposure += decision.approved_notional
+                positions[str(order["symbol"])] = positions.get(str(order["symbol"]), 0.0) + qty
+            if str(order["side"]).upper() == "BUY":
+                equity -= requested_notional
+            else:
+                equity += requested_notional
+            peak_equity = max(peak_equity, equity)
             self.db.log_risk_decision(decision.storage_payload(run_id=result.run_id))
 
     def _persist_result(
