@@ -111,7 +111,6 @@ class MetaSelectorObservation:
     known_at: datetime | None = None
     available_at: datetime | None = None
     meta_split: str = "FINAL_OOS"
-    future_trial_ids: tuple[str, ...] = ()
     historical_bars: tuple[dict[str, Any], ...] = ()
     prior_asset_returns: dict[str, float] = field(default_factory=dict)
     label_start: datetime | None = None

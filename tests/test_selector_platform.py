@@ -634,9 +634,50 @@ def test_t2_10_j_restart_replay_reproduces_uninterrupted_run(tmp_path):
 
 def test_t2_10_k_future_trial_does_not_change_earlier_replay():
     now = datetime(2024, 4, 1, tzinfo=UTC)
-    base = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01})])
-    changed = MetaSelectorBacktest(AdaptiveStrategySelector()).run([obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, future_trial_ids=("future",))])
-    assert base.evidence_hash == changed.evidence_hash
+    item = obs(now, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="TRAIN")
+    db = DuckDBManager(":memory:")
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), db=db)
+    before = replay.run([item], meta_split="TRAIN")
+    family = ExperimentFamilySpec(
+        experiment_family_id="future-trial-family",
+        hypothesis="future trial cutoff",
+        strategy_names=["meta_selector"],
+        strategy_versions=["v1"],
+        universe_snapshot_id="META",
+        timeframe="1d",
+        feature_versions=["v1"],
+        cost_model_version="cost-v1",
+        parameter_space={},
+        maximum_trials=10,
+        selection_metric="total_return",
+        walk_forward_design={},
+        source_revision="test",
+        created_at=now + timedelta(days=1),
+    )
+    db.register_experiment_family(family)
+    future_trial = ResearchTrial(
+        experiment_family_id=family.experiment_family_id,
+        strategy_name="meta_selector",
+        strategy_version="v1",
+        scope="META_SELECTOR",
+        timeframe="1d",
+        parameters={"candidate_id": "future"},
+        source_revision="test",
+        data_hash="synthetic",
+        cost_model_hash="future-cost",
+        frame_certification_id="future-frame",
+        created_at=now + timedelta(days=1),
+    )
+    future_trial_id = db.create_research_trial(future_trial)
+    db.transition_research_trial(
+        future_trial_id,
+        "SUCCEEDED",
+        effective_at=now + timedelta(days=2),
+        recorded_at=now + timedelta(days=2),
+    )
+    assert db.list_research_trials_at(now) == []
+    after = replay.run([item], meta_split="TRAIN")
+    assert before.final_oos_execution_hash == after.final_oos_execution_hash
 
 
 def test_t2_10_k2_final_oos_requires_pre_registered_trial():
