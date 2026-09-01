@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -9,7 +9,7 @@ from typing import Any, Iterable, cast
 import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _stress_artifact_hash
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _canonical_hash, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -1338,140 +1338,136 @@ def test_t2_10_zl_acceptance_policy_canonicalizes_scenarios_and_thresholds():
     assert _acceptance_policy_hash(policy) != _acceptance_policy_hash(changed)
     with pytest.raises(ValueError, match="stress thresholds"):
         MetaReplayPolicy(stress_thresholds=(("1.5x_cost", -2.0, 0.25),) + policy.stress_thresholds[1:])
+    for scenarios in (
+        (),
+        ("1.5x_cost",),
+        tuple(value for value in policy.required_stress_scenarios if value != "delayed_execution"),
+        (*policy.required_stress_scenarios, "extra"),
+    ):
+        with pytest.raises(ValueError):
+            MetaReplayPolicy(required_stress_scenarios=scenarios)
 
 
-def test_t2_10_zm_acceptance_recomputes_stress_and_stability_and_is_idempotent():
+@pytest.mark.parametrize(
+    ("simple_return", "expected_verdict"),
+    [
+        (0.0, "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"),
+        (0.30, "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"),
+    ],
+)
+def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, expected_verdict: str):
+    start = datetime.now(UTC) - timedelta(days=1)
+    train = [obs(start, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="TRAIN", data_hash="dataset-a", label_start=start, label_end=start, evidence_start=start, evidence_end=start)]
+    validation_time = start + timedelta(days=1)
+    validation = [obs(validation_time, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split="VALIDATION", data_hash="dataset-a", label_start=validation_time, label_end=validation_time, evidence_start=validation_time, evidence_end=validation_time)]
+    final = final_reference(start)
+    db = DuckDBManager(":memory:")
+    runner = MetaResearchRunner(db)
+    lifecycle = runner.run(
+        train, validation, final,
+        [("candidate-a", AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)), MetaReplayPolicy())],
+        data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
+    )
     policy = MetaReplayPolicy()
 
-    def scenario(
-        scenario_id: str,
-        total_return: float,
-        execution_cost: float,
-        *,
-        fill_count: float = 1.0,
-        slippage: float = 0.01,
-        switching_cost_drag: float = 0.01,
-        execution_lineage: list[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
-        result = {
-            "scenario_id": scenario_id,
-            "scenario_config": {"scenario": scenario_id},
-            "total_return": total_return,
-            "max_drawdown": -0.10,
-            "cost_model_version": "cost-v1",
-            "cost_model_hash": f"cost-{scenario_id}",
-            "execution_hash": f"execution-{scenario_id}",
-            "fill_count": fill_count,
-            "execution_cost": execution_cost,
-            "slippage": slippage,
-            "switching_cost_drag": switching_cost_drag,
-            "switch_count": 1.0,
-            "orders": [{"order_id": f"order-{scenario_id}"}],
-            "fills": [{"fill_id": f"fill-{scenario_id}"}],
-            "costs": [{"cost_id": f"cost-{scenario_id}"}],
-            "risk_decisions": [{"risk_id": f"risk-{scenario_id}"}],
-            "attribution": {},
-            "execution_lineage": execution_lineage or [{"bar": scenario_id}],
+    def scenario(scenario_id: str, total_return: float, execution_cost: float, *, fill_count: float = 1.0, slippage: float = 0.01, switching_cost_drag: float = 0.01, bar: str = "base") -> dict[str, Any]:
+        artifact = {
+            "scenario_id": scenario_id, "scenario_config": {"scenario": scenario_id},
+            "total_return": total_return, "max_drawdown": -0.10,
+            "cost_model_version": "cost-v1", "cost_model_hash": f"cost-{scenario_id}",
+            "execution_hash": "", "fill_count": fill_count, "execution_cost": execution_cost,
+            "slippage": slippage, "switching_cost_drag": switching_cost_drag, "switch_count": 0.0,
+            "orders": [{"order_id": f"order-{scenario_id}"}], "fills": [{"fill_id": f"fill-{scenario_id}"}],
+            "costs": [{"cost_id": f"cost-{scenario_id}"}], "risk_decisions": [{"risk_id": f"risk-{scenario_id}"}],
+            "attribution": {}, "execution_lineage": [{"bar": bar}],
         }
-        result["result_hash"] = _stress_artifact_hash(result)
-        return result
+        artifact["execution_hash"] = _stress_execution_hash(artifact)
+        artifact["result_hash"] = _stress_artifact_hash(artifact)
+        return artifact
 
     stress = {
-        "1.0x_cost": scenario("1.0x_cost", 0.10, 0.01, execution_lineage=[{"bar": "base"}]),
-        "1.5x_cost": scenario("1.5x_cost", 0.08, 0.015, execution_lineage=[{"bar": "base"}]),
-        "2.0x_cost": scenario("2.0x_cost", 0.06, 0.020, execution_lineage=[{"bar": "base"}]),
-        "switch_cost_stress": scenario("switch_cost_stress", 0.07, 0.030, switching_cost_drag=0.03, execution_lineage=[{"bar": "base"}]),
-        "delayed_execution": scenario("delayed_execution", 0.07, 0.012, execution_lineage=[{"bar": "delayed"}]),
-        "reduced_liquidity": scenario("reduced_liquidity", 0.05, 0.012, fill_count=0.5, execution_lineage=[{"bar": "base"}]),
+        "1.0x_cost": scenario("1.0x_cost", 0.10, 0.01),
+        "1.5x_cost": scenario("1.5x_cost", 0.08, 0.015),
+        "2.0x_cost": scenario("2.0x_cost", 0.06, 0.020),
+        "switch_cost_stress": scenario("switch_cost_stress", 0.07, 0.030, switching_cost_drag=0.03),
+        "delayed_execution": scenario("delayed_execution", 0.07, 0.012, bar="delayed"),
+        "reduced_liquidity": scenario("reduced_liquidity", 0.05, 0.012, fill_count=0.5),
     }
-    stability_evidence = [{
-        "trials": [{
-            "baseline_decision": "SELECT",
-            "baseline_selected_strategies": ["alpha"],
-            "baseline_weights": {"ABC": 1.0},
-            "decision": "SELECT",
-            "selected_strategies": ["alpha"],
-            "weights": {"ABC": 1.0},
-        }],
-    }]
-    certificate = {
-        "certificate_id": "certificate-test",
-        "certificate_hash": "certificate-hash",
-        "meta_run_id": "run-test",
-        "frozen_policy_id": "frozen-test",
-        "execution_hash": "execution-test",
-        "acceptance_policy_version": "phase2-10-acceptance-v1",
-        "acceptance_policy_hash": _acceptance_policy_hash(policy),
-        "dataset_ids": ["dataset-test"],
-        "dataset_content_hashes": ["content-test"],
-        "universe_snapshot_id": "universe-test",
-        "dataset_certification_ids": ["certification-test"],
-        "risk_snapshot_ids": ["risk-test"],
-        "risk_snapshot_hashes": ["risk-hash"],
-        "evidence_ids": ["evidence-test"],
-        "outcome_series_ids": ["outcome-test"],
-        "execution_bar_hashes": ["bar-hash"],
-        "materialized_at": datetime(2024, 4, 5, tzinfo=UTC),
+    tampered_stress = dict(stress)
+    tampered_stress["1.5x_cost"] = {
+        **stress["1.5x_cost"], "fills": [{"fill_id": "tampered-fill"}],
     }
-    artifact = {
-        "frozen_policy_id": "frozen-test",
-        "acceptance_policy_version": certificate["acceptance_policy_version"],
-        "acceptance_policy_hash": certificate["acceptance_policy_hash"],
-        "meta_policy_payload": {"schema_version": "meta-replay-policy-v1", **asdict(policy)},
-    }
-    result = {
-        "final_oos_execution_hash": certificate["execution_hash"],
-        "metrics": {
-            "final_oos_duration_days": 2.0,
-            "decision_count": 2.0,
-            "trade_count": 2.0,
-            "evidence_coverage": 1.0,
-            "robustness_certified": 0.0,
-            "selector_stable": 0.0,
-            "causal_verification": 1.0,
-            "switch_count": 1.0,
-            "max_drawdown": -0.10,
-            "total_return": 0.10,
-        },
-        "baselines": {
-            "B2_static": {"total_return": 0.0},
-            "B3_equal_ensemble": {"total_return": 0.0},
-            "B4_risk_balanced": {"total_return": 0.0},
-        },
-        "stress_results": stress,
-        "execution_payload": {"selector_stability_evidence": stability_evidence},
-    }
-
-    class ControlledCertifiedDB:
-        def __init__(self) -> None:
-            self.acceptances: list[dict[str, Any]] = []
-
-        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
-            assert certificate_id == certificate["certificate_id"]
-            return certificate
-
-        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
-            assert frozen_policy_id == artifact["frozen_policy_id"]
-            return artifact
-
-        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
-            assert meta_run_id == result["meta_run_id"] if "meta_run_id" in result else True
-            return result
-
-        def persist_phase2_10_empirical_acceptance(self, **values: Any) -> str:
-            self.acceptances.append(values)
-            return values["acceptance_id"]
-
-    result["meta_run_id"] = certificate["meta_run_id"]
-    db = ControlledCertifiedDB()
-    runner = MetaResearchRunner(db)
-    assert runner.evaluate_final_oos_acceptance(certificate["certificate_id"]) == "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
-    assert runner.evaluate_final_oos_acceptance(certificate["certificate_id"]) == "PHASE 2.10 COMPLETE — META-SELECTOR CAUSALLY VERIFIED"
-    assert len(db.acceptances) == 2
-    assert db.acceptances[0]["acceptance_hash"] == db.acceptances[1]["acceptance_hash"]
-
-    result["baselines"]["B2_static"]["total_return"] = 0.20
-    assert runner.evaluate_final_oos_acceptance(certificate["certificate_id"]) == "PHASE 2.10 COMPLETE — ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
+    assert not _recompute_stress_quality(tampered_stress, policy)
+    stability_evidence = [{"trials": [{
+        "baseline_decision": "SELECT", "baseline_selected_strategies": ["alpha"], "baseline_weights": {"ABC": 1.0},
+        "decision": "SELECT", "selected_strategies": ["alpha"], "weights": {"ABC": 1.0},
+    }]}]
+    fixture_order = {"order_id": "fixture-order", "symbol": "ABC", "side": "BUY", "execution_lineage": {"historical_bar_hash": "fixture-bar-hash", "historical_bar_id": "fixture-bar-id"}}
+    base_result = lifecycle.final_oos_result
+    metrics = dict(base_result.metrics)
+    metrics.update({"final_oos_duration_days": 2.0, "decision_count": 2.0, "trade_count": 2.0, "evidence_coverage": 1.0, "causal_verification": 1.0, "switch_count": 0.0, "max_drawdown": -0.10, "total_return": 0.20, "robustness_certified": 0.0, "selector_stable": 0.0})
+    baselines = dict(base_result.baselines)
+    for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"):
+        baselines[name] = {**baselines.get(name, {}), "total_return": simple_return}
+    execution_payload = {**base_result.execution_payload, "orders": [fixture_order], "selector_stability_evidence": stability_evidence}
+    execution_hash = hashlib.sha256(json.dumps(execution_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+    pre_payload = {**base_result.pre_verdict_result_payload, "metrics": metrics, "baselines": baselines, "stress": stress, "execution_payload": execution_payload, "final_oos_execution_hash": execution_hash}
+    fixture_result = replace(
+        base_result, meta_run_id=f"fixture-final-{simple_return}", metrics=metrics, baselines=baselines, stress_results=stress,
+        orders=(fixture_order,), final_oos_execution_hash=execution_hash, execution_payload=execution_payload,
+        pre_verdict_result_payload=pre_payload, pre_verdict_result_hash=_canonical_hash(pre_payload),
+    )
+    db.persist_meta_selector_result(
+        fixture_result, policy_version=policy.version, selector_policy_version=lifecycle.frozen_policy.selector_policy_version,
+        selector_policy_hash=lifecycle.frozen_policy.selector_policy_hash, meta_split="FINAL_OOS", available_at=start + timedelta(days=3),
+    )
+    db.conn.execute(
+        "INSERT INTO market_datasets (dataset_id, exchange, timeframe, provider_name, raw_hash, transformation_hash, lifecycle_status, status, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["fixture-dataset", "NSE", "1m", "test-fixture", "dataset-a", "dataset-a", "CANONICAL_PROMOTED", "VERIFIED", "{}"],
+    )
+    db.conn.execute(
+        "INSERT INTO data_quality_certifications (certification_id, dataset_id, validator_version, check_count, issue_count, checks_json, status, started_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["fixture-certification", "fixture-dataset", "test-fixture", 1, 0, json.dumps({"dataset_content_hash": "dataset-a"}), "CERTIFIED", start, start],
+    )
+    risk_snapshot = CausalRiskSnapshot.create(
+        snapshot_id="fixture-risk", as_of=start, exposure=0.0, sector_exposure={}, daily_pnl=0.0, drawdown=0.0,
+        var_inputs=(0.0,), var_result=0.0, open_positions={}, instrument_liquidity={"ABC": 1_000_000.0},
+        rolling_returns=(0.0,), rolling_volatility=0.0, data_hash="dataset-a",
+    )
+    db.persist_phase2_10_causal_risk_snapshot(risk_snapshot)
+    db.conn.execute(
+        "INSERT INTO strategy_conditional_evidence (evidence_id, aggregation_level, strategy_name, strategy_version, run_id, timeframe, universe, observation_count, trade_count, fold_count, first_observation, last_observation, net_return, gross_return, total_cost, evidence_status, raw_conditional_metric, global_metric, effective_sample_size, shrinkage_weight, shrunk_metric, sample_policy_version, sample_policy_hash, lineage_json, evidence_hash, available_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["fixture-evidence", "GLOBAL", "alpha", "1", "fixture-run", "1d", "META", 40, 40, 3, start, start, 0.1, 0.1, 0.0, "ELIGIBLE", 0.1, 0.1, 40.0, 1.0, 0.1, "v1", "fixture-policy", "{}", "fixture-evidence-hash", start],
+    )
+    db.conn.execute(
+        "INSERT INTO phase2_10_outcome_series (series_id, series_type, strategy_name, symbol, universe_snapshot_id, timeframe, observation_time, holding_end, value, available_at, content_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        ["fixture-outcome", "BENCHMARK", None, "ABC", "META", "1d", start + timedelta(days=2), start + timedelta(days=3), 0.0, start + timedelta(days=3), "fixture-outcome-hash"],
+    )
+    certificate = FinalOOSProvenanceCertificate.create(
+        meta_run_id=fixture_result.meta_run_id, frozen_policy_id=lifecycle.frozen_policy.frozen_policy_id,
+        frozen_policy_hash=lifecycle.frozen_policy.artifact_hash, selected_trial_id=lifecycle.frozen_policy.selected_trial_id,
+        selector_policy_hash=lifecycle.frozen_policy.selector_policy_hash, meta_policy_hash=lifecycle.frozen_policy.meta_policy_hash,
+        scorecard_policy_hash=lifecycle.frozen_policy.scorecard_policy_hash, dataset_ids=("fixture-dataset",),
+        dataset_content_hashes=("dataset-a",), evidence_hashes=("fixture-evidence-hash",), resolver_hash="fixture-resolver",
+        execution_hash=execution_hash, final_oos_start=start + timedelta(days=2), final_oos_end=start + timedelta(days=2),
+        materialized_at=start + timedelta(days=4), cost_model_version=lifecycle.frozen_policy.cost_model_version,
+        cost_model_hash=lifecycle.frozen_policy.cost_model_hash, purge_periods=0, embargo_periods=0,
+        acceptance_policy_hash=_acceptance_policy_hash(policy), experiment_family_id=lifecycle.frozen_policy.experiment_family_id,
+        universe_snapshot_id=lifecycle.frozen_policy.universe_snapshot_id, risk_snapshot_ids=("fixture-risk",),
+        risk_snapshot_hashes=(risk_snapshot.snapshot_hash,), dataset_certification_ids=("fixture-certification",),
+        evidence_ids=("fixture-evidence",), conditional_evidence_ids=("fixture-evidence",), outcome_series_ids=("fixture-outcome",),
+        outcome_series_bindings=(("fixture-outcome", "fixture-outcome-hash"),), execution_bar_hashes=("fixture-bar-hash",),
+        execution_bar_ids=("fixture-bar-id",), dataset_certification_bindings=(("fixture-dataset", "fixture-certification"),),
+        dataset_bindings=(("fixture-dataset", "dataset-a"),), knowledge_cutoff=start + timedelta(days=2),
+    )
+    db.persist_final_oos_provenance_certificate(certificate)
+    assert db.validate_final_oos_provenance_certificate(certificate.certificate_id)["certificate_id"] == certificate.certificate_id
+    first_verdict = runner.evaluate_final_oos_acceptance(certificate.certificate_id)
+    first_row = db.conn.execute("SELECT acceptance_id, acceptance_hash, verdict FROM phase2_10_empirical_acceptance WHERE certificate_id=?", [certificate.certificate_id]).fetchone()
+    assert first_verdict == expected_verdict and first_row is not None
+    second_verdict = runner.evaluate_final_oos_acceptance(certificate.certificate_id)
+    second_rows = db.conn.execute("SELECT acceptance_id, acceptance_hash, verdict FROM phase2_10_empirical_acceptance WHERE certificate_id=?", [certificate.certificate_id]).fetchall()
+    assert second_verdict == expected_verdict and len(second_rows) == 1 and tuple(second_rows[0]) == tuple(first_row)
 
 
 def test_t2_10_zn_replay_verdict_cannot_produce_complete():

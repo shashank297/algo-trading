@@ -108,8 +108,8 @@ class MetaReplayPolicy:
             raise ValueError("required_stress_scenarios must contain unique scenario IDs")
         if any(not value for value in required_scenarios):
             raise ValueError("required_stress_scenarios cannot contain empty IDs")
-        if not set(required_scenarios).issubset(REQUIRED_STRESS_SCENARIOS):
-            raise ValueError("required_stress_scenarios contains an unsupported scenario")
+        if set(required_scenarios) != set(REQUIRED_STRESS_SCENARIOS):
+            raise ValueError("required_stress_scenarios must contain exactly the mandatory scenarios")
         thresholds = tuple(
             sorted((str(name), float(min_return), float(max_drawdown)) for name, min_return, max_drawdown in self.stress_thresholds)
         )
@@ -155,6 +155,22 @@ def _stress_artifact_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _stress_execution_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: stress_result.get(field)
+        for field in (
+            "scenario_id", "scenario_config", "orders", "fills", "costs",
+            "risk_decisions", "execution_lineage", "fill_count", "execution_cost",
+            "slippage", "switching_cost_drag", "switch_count", "total_return",
+            "max_drawdown",
+        )
+    }
+
+
+def _stress_execution_hash(stress_result: dict[str, Any]) -> str:
+    return _canonical_hash(_stress_execution_payload(stress_result))
+
+
 def _stress_artifact_hash(stress_result: dict[str, Any]) -> str:
     return _canonical_hash(_stress_artifact_payload(stress_result))
 
@@ -173,6 +189,8 @@ def _recompute_stress_quality(
     for scenario_id in policy.required_stress_scenarios:
         scenario = stress_results.get(scenario_id)
         if not scenario or scenario.get("scenario_id") != scenario_id:
+            return False
+        if _stress_execution_hash(scenario) != scenario.get("execution_hash"):
             return False
         if _stress_artifact_hash(scenario) != scenario.get("result_hash"):
             return False
@@ -661,7 +679,9 @@ class MetaResearchRunner:
                 universe_snapshot_id=final_oos.universe_snapshot_id,
             )
             replay = MetaSelectorBacktest(selector, replay_policy=replay_policy, db=self.db)
-            self.db.transition_research_trial(trial_ids[candidate_id], "RUNNING")
+            self.db.transition_research_trial(
+                trial_ids[candidate_id], "RUNNING", effective_at=validation_end,
+            )
             try:
                 train_results[candidate_id] = replay.run(train_items, meta_split="TRAIN", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
                 validation_results[candidate_id] = replay.run(validation_items, meta_split="VALIDATION", include_stress=False, data_hash=data_hash, purge_periods=purge_periods, embargo_periods=embargo_periods)
@@ -1577,14 +1597,14 @@ class MetaSelectorBacktest:
             )
             multiplier = float(kwargs.get("cost_multiplier", 1.0))
             schedule = self._stressed_cost_schedule(multiplier, items[0].decision_time if items else datetime.now(timezone.utc))
-            return {
+            artifact = {
                 "scenario_id": scenario_id,
                 "scenario_config": dict(kwargs),
                 "total_return": scenario.metrics["total_return"],
                 "max_drawdown": scenario.metrics.get("max_drawdown", 0.0),
                 "cost_model_version": schedule.version,
                 "cost_model_hash": self._cost_model_hash(schedule),
-                "execution_hash": scenario.final_oos_execution_hash,
+                "execution_hash": "",
                 "fill_count": float(len(scenario.fills)),
                 "execution_cost": scenario.metrics["total_execution_cost"],
                 "slippage": scenario.metrics.get("slippage", 0.0),
@@ -1596,8 +1616,10 @@ class MetaSelectorBacktest:
                 "risk_decisions": scenario.risk_decisions,
                 "attribution": scenario.attribution,
                 "execution_lineage": [order.get("execution_lineage") for order in scenario.orders],
-                "result_hash": scenario.final_oos_execution_hash,
             }
+            artifact["execution_hash"] = _stress_execution_hash(artifact)
+            artifact["result_hash"] = _stress_artifact_hash(artifact)
+            return artifact
 
         stress_results = {
             "1.0x_cost": {
@@ -1607,7 +1629,7 @@ class MetaSelectorBacktest:
                 "max_drawdown": metrics["max_drawdown"],
                 "cost_model_version": self.execution_adapter.cost_schedule.version,
                 "cost_model_hash": self._cost_model_hash(self.execution_adapter.cost_schedule),
-                "execution_hash": _canonical_hash({"orders": orders, "fills": fills, "costs": costs, "risk_decisions": risk_rows, "equity_curve": equity_rows}),
+                "execution_hash": "",
                 "fill_count": float(len(fills)),
                 "execution_cost": metrics["total_execution_cost"],
                 "slippage": metrics["slippage"],
@@ -1649,6 +1671,7 @@ class MetaSelectorBacktest:
         }
         stress_results["1.0x_cost"]["attribution"] = attribution
         for stress_artifact in stress_results.values():
+            stress_artifact["execution_hash"] = _stress_execution_hash(stress_artifact)
             stress_artifact["result_hash"] = _stress_artifact_hash(stress_artifact)
         metrics["robustness_certified"] = float(
             _recompute_stress_quality(stress_results, self.replay_policy)
