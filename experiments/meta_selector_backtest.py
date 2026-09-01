@@ -162,6 +162,11 @@ class FinalDatasetReference:
             raise ValueError("non-synthetic FINAL references require an explicit knowledge_cutoff")
         if self.dataset_id != "synthetic" and self.dataset_content_hash in {"", "synthetic"}:
             raise ValueError("non-synthetic FINAL references require a certified dataset content hash")
+        if self.dataset_id != "synthetic":
+            if self.outcome_materialization_cutoff is None:
+                raise ValueError("non-synthetic FINAL references require an outcome materialization cutoff")
+            if self.outcome_materialization_cutoff <= max(self.decision_times):
+                raise ValueError("outcome materialization must follow the FINAL observation interval")
 
 
 @dataclass(frozen=True)
@@ -478,7 +483,8 @@ class MetaResearchRunner:
         validation_end = max(item.decision_time for item in validation_items)
         final_start = min(item.decision_time for item in final_items)
         final_end = max(item.decision_time for item in final_items)
-        if frozen_at <= validation_end or frozen_at >= final_start or frozen_at <= train_start:
+        validation_complete_at = validation_end + pd.Timedelta(microseconds=1).to_pytimedelta()
+        if frozen_at <= validation_complete_at or frozen_at >= final_start or frozen_at <= train_start:
             raise ValueError("lifecycle timestamps must satisfy TRAIN < VALIDATION < frozen_at < FINAL_OOS")
         if materialized_at is None:
             materialized_at = final_end + pd.Timedelta(microseconds=1).to_pytimedelta()
@@ -550,88 +556,7 @@ class MetaResearchRunner:
         for candidate_id, result in validation_results.items():
             candidate_selector, candidate_policy = candidate_by_id[candidate_id]
             self.db.persist_meta_selector_result(result, policy_version=candidate_policy.version, selector_policy_version=candidate_selector.policy.version, selector_policy_hash=candidate_selector.policy.policy_hash, meta_split="VALIDATION", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=max(item.decision_time for item in validation_items) + pd.Timedelta(microseconds=1).to_pytimedelta())
-        final_result = MetaSelectorBacktest(
-            selector, replay_policy=replay_policy, resolver=HistoricalEvidenceResolver(self.db), db=self.db,
-        ).run(
-            final_items,
-            meta_split="FINAL_OOS",
-            registered_trial_id=frozen.selected_trial_id,
-            trial_created_at=frozen.frozen_at,
-            frozen_policy_id=frozen.frozen_policy_id,
-            frozen_b2_strategy=frozen.b2_strategy,
-            data_hash=data_hash,
-            purge_periods=purge_periods,
-            embargo_periods=embargo_periods,
-        )
-        self.db.persist_meta_selector_result(final_result, policy_version=replay_policy.version, selector_policy_version=selector.policy.version, selector_policy_hash=selector.policy.policy_hash, meta_split="FINAL_OOS", purge_periods=purge_periods, embargo_periods=embargo_periods, available_at=materialized_at)
-        certificate_materialized_at = materialized_at + pd.Timedelta(microseconds=1).to_pytimedelta()
-        certificate = FinalOOSProvenanceCertificate.create(
-            meta_run_id=final_result.meta_run_id,
-            frozen_policy_id=frozen.frozen_policy_id,
-            frozen_policy_hash=frozen.artifact_hash,
-            selected_trial_id=frozen.selected_trial_id,
-            selector_policy_hash=frozen.selector_policy_hash,
-            meta_policy_hash=frozen.meta_policy_hash,
-            scorecard_policy_hash=frozen.scorecard_policy_hash,
-            dataset_ids={item.execution_dataset_id for item in final_items if item.execution_dataset_id is not None},
-            dataset_content_hashes={str(row.get("dataset_hash")) for item in final_items for row in item.historical_bars if row.get("dataset_hash")},
-            evidence_hashes=[decision.evidence_hash for decision in final_result.decisions],
-            resolver_hash=_canonical_hash({"resolver": "HistoricalEvidenceResolver", "version": "phase2-10-v2"}),
-            execution_hash=final_result.final_oos_execution_hash,
-            final_oos_start=min(item.decision_time for item in final_items),
-            final_oos_end=max(item.decision_time for item in final_items),
-            materialized_at=certificate_materialized_at,
-            cost_model_version=frozen.cost_model_version,
-            cost_model_hash=frozen.cost_model_hash,
-            purge_periods=purge_periods,
-            embargo_periods=embargo_periods,
-            acceptance_policy_version=frozen.acceptance_policy_version,
-            acceptance_policy_hash=frozen.acceptance_policy_hash,
-            experiment_family_id="meta-selector-phase2-10",
-            universe_snapshot_id=final_oos.universe_snapshot_id,
-            knowledge_cutoff=final_oos.knowledge_cutoff,
-            regime_snapshot_ids=final_oos.regime_snapshot_ids,
-            asset_state_snapshot_ids=final_oos.asset_state_snapshot_ids,
-            risk_snapshot_ids=final_oos.risk_snapshot_ids,
-            risk_snapshot_hashes=[item.risk_snapshot_hash for item in final_items if item.risk_snapshot_hash],
-            dataset_certification_ids=[str(row["dataset_certification_id"]) for item in final_items for row in item.historical_bars if row.get("dataset_certification_id")],
-            evidence_ids=[
-                str(card.conditional_evidence_id) for item in final_items for card in item.scorecards
-                if card.available_at <= item.decision_time and card.conditional_evidence_id
-            ],
-            outcome_series_ids=tuple(series_id for series_id in (final_oos.benchmark_series_id, *final_oos.strategy_series_ids) if series_id),
-            execution_bar_hashes=[
-                str(order["execution_lineage"]["historical_bar_hash"])
-                for order in final_result.orders if order.get("execution_lineage")
-            ],
-            execution_bar_ids=[
-                str(order["execution_lineage"]["historical_bar_id"])
-                for order in final_result.orders
-                if order.get("execution_lineage", {}).get("historical_bar_id")
-            ],
-            scorecard_ids=[
-                str(card.scorecard_id) for item in final_items for card in item.scorecards
-                if card.available_at <= item.decision_time
-            ],
-            conditional_evidence_ids=[
-                str(card.conditional_evidence_id) for item in final_items for card in item.scorecards
-                if card.available_at <= item.decision_time and card.conditional_evidence_id
-            ],
-            outcome_series_bindings=[
-                binding for item in final_items for binding in item.outcome_series_bindings
-            ],
-            dataset_certification_bindings=[
-                (str(row["dataset_id"]), str(row["dataset_certification_id"]))
-                for item in final_items for row in item.historical_bars
-                if row.get("dataset_id") and row.get("dataset_certification_id")
-            ],
-            dataset_bindings=[
-                (str(row.get("dataset_id")), str(row.get("dataset_hash")))
-                for item in final_items for row in item.historical_bars
-                if row.get("dataset_id") and row.get("dataset_hash")
-            ],
-        )
-        self.db.persist_final_oos_provenance_certificate(certificate)
+        final_result = self.run_final_oos(frozen.frozen_policy_id, final_oos)
         return MetaResearchResult(frozen, train_results, validation_results, final_result)
 
     def run_final_oos(
@@ -698,6 +623,7 @@ class MetaResearchRunner:
             raise ValueError("frozen policy selected trial is not SUCCEEDED")
         if trial.get("parameters", {}).get("candidate_id") != artifact.get("selection_result"):
             raise ValueError("frozen policy selected trial candidate binding mismatch")
+        self._validate_stored_trial_binding(trial, artifact)
         family = self.db.get_experiment_family(str(trial["experiment_family_id"]))
         if family is None or family.get("universe_snapshot_id") != final_dataset_reference.universe_snapshot_id:
             raise ValueError("FINAL universe snapshot does not match registered experiment family")
@@ -734,6 +660,7 @@ class MetaResearchRunner:
             embargo_periods=int(artifact["embargo_periods"]), available_at=execution_materialized_at,
         )
         certificate_materialized_at = execution_materialized_at + pd.Timedelta(microseconds=1).to_pytimedelta()
+        final_evidence_bindings = resolver.conditional_evidence_bindings(items)
         certificate = FinalOOSProvenanceCertificate.create(
             meta_run_id=result.meta_run_id,
             frozen_policy_id=frozen_policy_id,
@@ -744,7 +671,7 @@ class MetaResearchRunner:
             scorecard_policy_hash=str(artifact["scorecard_policy_hash"]),
             dataset_ids={item.execution_dataset_id for item in items if item.execution_dataset_id},
             dataset_content_hashes={str(row["dataset_hash"]) for item in items for row in item.historical_bars if row.get("dataset_hash")},
-            evidence_hashes=[decision.evidence_hash for decision in result.decisions],
+            evidence_hashes=[content_hash for _, content_hash in final_evidence_bindings],
             resolver_hash=_canonical_hash({"resolver": "HistoricalEvidenceResolver", "version": "phase2-10-v2"}),
             execution_hash=result.final_oos_execution_hash,
             final_oos_start=min(item.decision_time for item in items),
@@ -803,6 +730,40 @@ class MetaResearchRunner:
         self.db.persist_final_oos_provenance_certificate(certificate)
         self.db.validate_final_oos_provenance_certificate(certificate.certificate_id)
         return result
+
+    @staticmethod
+    def _validate_stored_trial_binding(trial: dict[str, Any], artifact: dict[str, Any]) -> None:
+        parameters = dict(trial.get("parameters") or {})
+        expected_parameters = {
+            "selector_policy_version": artifact.get("selector_policy_version"),
+            "selector_policy_hash": artifact.get("selector_policy_hash"),
+            "scorecard_policy_hash": artifact.get("scorecard_policy_hash"),
+            "meta_replay_policy_version": artifact.get("meta_policy_version"),
+            "meta_replay_policy_hash": artifact.get("meta_policy_hash"),
+            "data_hash": artifact.get("data_hash"),
+            "purge_periods": artifact.get("purge_periods"),
+            "embargo_periods": artifact.get("embargo_periods"),
+            "strategy_universe": list(artifact.get("universe_lineage") or ()),
+            "cost_model_version": artifact.get("cost_model_version"),
+        }
+        for field_name, expected in expected_parameters.items():
+            actual = parameters.get(field_name)
+            if field_name == "strategy_universe":
+                if sorted(map(str, actual or ())) != sorted(map(str, expected or ())):
+                    raise ValueError("frozen policy selected trial strategy-universe binding mismatch")
+            elif str(actual) != str(expected):
+                raise ValueError(f"frozen policy selected trial {field_name} binding mismatch")
+        if str(trial.get("data_hash")) != str(artifact.get("data_hash")):
+            raise ValueError("frozen policy selected trial data binding mismatch")
+        if str(trial.get("cost_model_version")) != str(artifact.get("cost_model_version")):
+            raise ValueError("frozen policy selected trial cost-model version mismatch")
+        if str(trial.get("cost_model_hash")) != str(artifact.get("cost_model_hash")):
+            raise ValueError("frozen policy selected trial cost-model hash mismatch")
+        if str(trial.get("universe_snapshot_id")) != str(artifact.get("universe_snapshot_id")):
+            raise ValueError("frozen policy selected trial universe snapshot mismatch")
+        family = trial.get("experiment_family_id")
+        if family != artifact.get("experiment_family_id"):
+            raise ValueError("frozen policy selected trial experiment-family mismatch")
 
     def evaluate_final_oos_acceptance(self, certificate_id: str) -> str:
         """Reload persisted FINAL artifacts and issue the sole empirical verdict."""
@@ -1016,6 +977,28 @@ class HistoricalEvidenceResolver:
         if decision_time.tzinfo is None:
             raise ValueError("decision_time must be timezone-aware")
         return self.db.list_phase2_7_conditional_evidence_at(decision_time, strategy_name=strategy_name, knowledge_cutoff=knowledge_cutoff)
+
+    def conditional_evidence_bindings(
+        self, items: Iterable[MetaSelectorObservation],
+    ) -> tuple[tuple[str, str], ...]:
+        bindings: dict[str, str] = {}
+        for item in items:
+            visible_ids = {
+                str(card.conditional_evidence_id)
+                for card in item.scorecards
+                if card.available_at <= item.decision_time and card.conditional_evidence_id
+            }
+            if not visible_ids:
+                continue
+            evidence = self.conditional_evidence_at(
+                item.decision_time,
+                knowledge_cutoff=item.knowledge_cutoff or item.decision_time,
+            )
+            for row in evidence:
+                evidence_id = str(row.get("evidence_id"))
+                if evidence_id in visible_ids:
+                    bindings[evidence_id] = str(row.get("evidence_hash"))
+        return tuple(sorted(bindings.items()))
 
     def observation_at(self, decision_time: datetime, *, template: MetaSelectorObservation) -> MetaSelectorObservation:
         knowledge_cutoff = template.knowledge_cutoff or template.known_at or decision_time
@@ -1521,6 +1504,11 @@ class MetaSelectorBacktest:
             "dataset_ids": sorted({item.execution_dataset_id for item in items if item.execution_dataset_id}),
             "dataset_hashes": sorted({item.data_hash for item in items}),
             "evidence_ids": sorted({
+                str(card.conditional_evidence_id)
+                for item in items for card in item.scorecards
+                if card.available_at <= item.decision_time and card.conditional_evidence_id
+            }),
+            "evidence_hashes": sorted({
                 card.evidence_hash for item in items for card in item.scorecards
                 if card.available_at <= item.decision_time
             }),

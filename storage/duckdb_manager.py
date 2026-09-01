@@ -3921,6 +3921,8 @@ class DuckDBManager:
 
     def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
         certificate = self.load_final_oos_provenance_certificate(certificate_id)
+        if str(certificate.get("certificate_id")) != str(certificate.get("certificate_hash", ""))[:32]:
+            raise ValueError("FINAL_OOS provenance certificate ID/hash mismatch")
         payload = {
             key: certificate[key]
             for key in (
@@ -4027,15 +4029,53 @@ class DuckDBManager:
             trial = self.get_research_trial(str(certificate["selected_trial_id"]))
         if trial is None or trial.get("experiment_family_id") != certificate["experiment_family_id"]:
             raise ValueError("FINAL_OOS certificate trial binding mismatch")
+        if str(trial.get("status")) != "SUCCEEDED":
+            raise ValueError("FINAL_OOS certificate trial is not SUCCEEDED")
+        status_effective_at = trial.get("status_effective_at")
+        if status_effective_at is not None and pd.Timestamp(status_effective_at) >= pd.Timestamp(certificate["final_oos_start"]):
+            raise ValueError("FINAL_OOS certificate trial succeeded after FINAL_OOS started")
         if str(certificate["selected_trial_id"]) not in set(artifact.get("candidate_trial_ids") or ()):
             raise ValueError("FINAL_OOS certificate candidate binding mismatch")
         if artifact.get("selection_result") != (trial.get("parameters") or {}).get("candidate_id"):
             raise ValueError("FINAL_OOS certificate winner binding mismatch")
+        trial_created_at = trial.get("created_at")
+        frozen_at = pd.Timestamp(artifact["frozen_at"])
+        final_oos_start = pd.Timestamp(certificate["final_oos_start"])
+        if trial_created_at is None or pd.Timestamp(trial_created_at) >= frozen_at or pd.Timestamp(trial_created_at) >= final_oos_start:
+            raise ValueError("FINAL_OOS certificate trial was created after the frozen policy")
+        trial_parameters = dict(trial.get("parameters") or {})
+        trial_bindings = {
+            "selector_policy_version": artifact.get("selector_policy_version"),
+            "selector_policy_hash": artifact.get("selector_policy_hash"),
+            "scorecard_policy_hash": artifact.get("scorecard_policy_hash"),
+            "meta_replay_policy_version": artifact.get("meta_policy_version"),
+            "meta_replay_policy_hash": artifact.get("meta_policy_hash"),
+            "data_hash": artifact.get("data_hash"),
+            "purge_periods": artifact.get("purge_periods"),
+            "embargo_periods": artifact.get("embargo_periods"),
+            "cost_model_version": artifact.get("cost_model_version"),
+            "b2_strategy": artifact.get("b2_strategy"),
+            "meta_split": "FINAL_OOS",
+        }
+        for field_name, expected in trial_bindings.items():
+            if str(trial_parameters.get(field_name)) != str(expected):
+                raise ValueError(f"FINAL_OOS certificate trial {field_name} binding mismatch")
+        if sorted(map(str, trial_parameters.get("strategy_universe") or ())) != sorted(map(str, artifact.get("universe_lineage") or ())):
+            raise ValueError("FINAL_OOS certificate trial strategy-universe binding mismatch")
+        for field_name in ("data_hash", "cost_model_version", "cost_model_hash", "universe_snapshot_id"):
+            artifact_field = "data_hash" if field_name == "data_hash" else field_name
+            if str(trial.get(field_name)) != str(artifact.get(artifact_field)):
+                raise ValueError(f"FINAL_OOS certificate trial {field_name} binding mismatch")
+        if not trial.get("frame_certification_id"):
+            raise ValueError("FINAL_OOS certificate trial lacks frame certification")
         if not certificate.get("universe_snapshot_id"):
             raise ValueError("FINAL_OOS certificate is missing universe snapshot binding")
         family = self.get_experiment_family(str(certificate["experiment_family_id"]))
         if family is None or family.get("universe_snapshot_id") != certificate["universe_snapshot_id"]:
             raise ValueError("FINAL_OOS certificate universe binding mismatch")
+        walk_forward_design = dict(family.get("walk_forward_design") or {})
+        if int(walk_forward_design.get("purge_periods", -1)) != int(artifact.get("purge_periods", -2)) or int(walk_forward_design.get("embargo_periods", -1)) != int(artifact.get("embargo_periods", -2)):
+            raise ValueError("FINAL_OOS certificate family split binding mismatch")
         historical_trials = (
             [trial]
             if not certificate.get("dataset_ids")
@@ -4130,6 +4170,8 @@ class DuckDBManager:
                 raise ValueError("FINAL_OOS certificate conditional-evidence binding mismatch")
             if certificate.get("evidence_ids") and set(map(str, certificate["evidence_ids"])) != {str(row[0]) for row in evidence_rows}:
                 raise ValueError("FINAL_OOS certificate evidence ID binding mismatch")
+            if {str(row[1]) for row in evidence_rows} != {str(value) for value in certificate.get("evidence_hashes", [])}:
+                raise ValueError("FINAL_OOS certificate evidence content-hash binding mismatch")
         elif certificate.get("evidence_ids"):
             raise ValueError("FINAL_OOS certificate evidence IDs lack typed conditional-evidence bindings")
         if certificate["materialized_at"] <= certificate["final_oos_end"]:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+import json
 from typing import Any, Iterable, cast
 
 import pandas as pd
@@ -952,6 +953,17 @@ def test_t2_10_zc_resolver_requires_per_candle_availability_and_identity():
     assert rows[0]["known_at"] == decision + timedelta(minutes=1)
 
 
+def test_t2_10_zm_non_synthetic_reference_requires_post_interval_outcome_cutoff():
+    decision = datetime(2024, 4, 1, tzinfo=UTC)
+    with pytest.raises(ValueError, match="outcome materialization"):
+        FinalDatasetReference(
+            dataset_id="certified-dataset", dataset_content_hash="content-hash",
+            symbol="ABC", exchange="NSE", timeframe="1m", decision_times=(decision,),
+            universe_snapshot_id="META", knowledge_cutoff=decision,
+            outcome_materialization_cutoff=decision,
+        )
+
+
 def test_t2_10_zd_certificate_materializes_after_final_oos_and_is_persisted():
     start = datetime(2024, 4, 1, tzinfo=UTC)
     def make(split: str, offset: int) -> MetaSelectorObservation:
@@ -999,6 +1011,34 @@ def test_t2_10_ze_stored_policy_payload_hash_mismatch_fails_final_loading():
     db.conn.execute("UPDATE frozen_meta_policies SET selector_policy_payload='{}' WHERE frozen_policy_id=?", [result.frozen_policy.frozen_policy_id])
     with pytest.raises(ValueError, match="frozen policy artifact hash mismatch"):
         MetaResearchRunner(db).run_final_oos(result.frozen_policy.frozen_policy_id, cast(FinalDatasetReference, []))
+
+
+def test_t2_10_ze2_certificate_rejects_mutated_winner_trial_binding():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    def make(split: str, offset: int) -> MetaSelectorObservation:
+        timestamp = start + timedelta(days=offset)
+        return obs(timestamp, [card()], {"alpha": 0.01}, asset_returns={"ABC": 0.01}, meta_split=split, data_hash="dataset-a", label_start=timestamp, label_end=timestamp, evidence_start=timestamp, evidence_end=timestamp)
+    db = DuckDBManager(":memory:")
+    result = MetaResearchRunner(db).run(
+        [make("TRAIN", 0)], [make("VALIDATION", 1)], final_reference(start),
+        [("candidate-a", AdaptiveStrategySelector(), MetaReplayPolicy())],
+        data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
+    )
+    certificate_id = db.conn.execute(
+        "SELECT certificate_id FROM final_oos_provenance_certificates WHERE meta_run_id=?",
+        [result.final_oos_result.meta_run_id],
+    ).fetchone()[0]
+    trial_id = result.frozen_policy.selected_trial_id
+    trial_json = json.loads(db.conn.execute(
+        "SELECT trial_json FROM research_trials_log WHERE trial_id=?", [trial_id]
+    ).fetchone()[0])
+    trial_json["parameters"]["selector_policy_hash"] = "tampered"
+    db.conn.execute(
+        "UPDATE research_trials_log SET trial_json=? WHERE trial_id=?",
+        [json.dumps(trial_json, sort_keys=True), trial_id],
+    )
+    with pytest.raises(ValueError, match="trial selector_policy_hash binding"):
+        db.validate_final_oos_provenance_certificate(certificate_id)
 
 
 def test_t2_10_zf_trial_cutoff_excludes_future_registry_rows():
