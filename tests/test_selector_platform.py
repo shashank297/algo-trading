@@ -9,7 +9,7 @@ from typing import Any, Iterable, cast
 import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _baseline_artifact_hash, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _BaselineSelector, _acceptance_policy_hash, _baseline_artifact_hash, _baseline_execution_payload, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
 from risk.engine import RiskEngine
@@ -555,6 +555,27 @@ def test_t2_10_g2_b5_adaptive_included_in_benchmark_ladder():
     )
     assert "B5_adaptive" in result.baselines
     assert result.baselines["B5_adaptive"]["total_return"] == result.metrics["total_return"]
+
+
+def test_t2_10_b4_final_ignores_unproven_prior_return_values():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    replay = MetaSelectorBacktest(
+        _BaselineSelector(
+            AdaptiveStrategySelector(), "B4", None,
+            unavailable_action=CASH, volatility_lookback=20, min_history=10,
+        )
+    )
+    result = replay.run(
+        [obs(
+            now, [card()], {"alpha": 0.01},
+            prior_strategy_returns={"alpha": tuple([0.01] * 20)},
+            asset_returns={"ABC": 0.01},
+        )],
+        include_stress=False,
+        include_baselines=False,
+        _skip_final_oos_validation=True,
+    )
+    assert result.decisions[0].decision == ABSTAIN
 
 
 def test_t2_10_h_static_winner_can_beat_adaptive_without_forced_promotion():
@@ -1350,8 +1371,8 @@ def test_t2_10_zl_acceptance_policy_canonicalizes_scenarios_and_thresholds():
 
 def test_t2_10_statistical_bootstrap_is_recomputed_and_standalone():
     policy = MetaReplayPolicy(
-        required_statistical_tests=("BOOTSTRAP",),
-        primary_statistical_criterion="dsr_probability",
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
     )
     returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
     equity_curve = tuple(
@@ -1384,6 +1405,33 @@ def test_t2_10_statistical_bootstrap_is_recomputed_and_standalone():
     assert _recompute_statistical_quality(result, policy)
     tampered = {**evidence, "tests": {**evidence["tests"], "BOOTSTRAP": {**evidence["tests"]["BOOTSTRAP"], "metric": {**evidence["tests"]["BOOTSTRAP"]["metric"], "lower_bound": 0.5}}}}
     assert not _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": tampered}}, policy)
+
+
+def test_t2_10_supplied_statistical_artifact_has_exclusive_authority():
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("PSR",),
+        primary_statistical_criterion="psr_probability",
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)
+    standalone = replay._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    standalone.update({"source_execution_hash": "execution", "source_equity_hash": _canonical_hash(equity_curve)})
+    standalone["evidence_hash"] = _canonical_hash({key: value for key, value in standalone.items() if key != "evidence_hash"})
+    result = {
+        "metrics": {"statistical_evidence": {"tampered": True}},
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "execution",
+    }
+    assert _recompute_statistical_quality(result, policy, evidence=standalone)
 
 
 @pytest.mark.parametrize(
@@ -1446,7 +1494,7 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BULL"},
     ]
     transition["transition_lineage"] = [
-        {"timestamp": (start + timedelta(days=1)).isoformat(), "base_operational_regime": "BEAR", "perturbed_operational_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "base_operational_regime": "BEAR", "perturbed_operational_regime": "BULL", "selector_consumed_regime": "BULL"},
     ]
     transition["execution_hash"] = _stress_execution_hash(transition)
     transition["result_hash"] = _stress_artifact_hash(transition)
@@ -1467,6 +1515,7 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     baselines = dict(base_result.baselines)
     for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"):
         baseline = {**baselines.get(name, {}), "total_return": simple_return}
+        baseline["execution_hash"] = _canonical_hash(_baseline_execution_payload(baseline))
         baseline["result_hash"] = _baseline_artifact_hash(baseline)
         baselines[name] = baseline
     returns = [0.01 + (index % 3) * 0.001 for index in range(30)]

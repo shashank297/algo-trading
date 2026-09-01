@@ -200,8 +200,14 @@ class MetaReplayPolicy:
         if not required_statistical_tests or required_statistical_tests != tuple(self.required_statistical_tests):
             raise ValueError("required_statistical_tests must be sorted and non-empty")
         object.__setattr__(self, "required_statistical_tests", required_statistical_tests)
-        if self.primary_statistical_criterion not in {"dsr_probability", "psr_probability"}:
+        criterion_to_test = {
+            "dsr_probability": "DSR",
+            "psr_probability": "PSR",
+        }
+        if self.primary_statistical_criterion not in criterion_to_test:
             raise ValueError("unsupported primary statistical criterion")
+        if criterion_to_test[self.primary_statistical_criterion] not in required_statistical_tests:
+            raise ValueError("primary statistical criterion must be one of the required tests")
         if not 0.0 < self.min_statistical_probability <= 1.0:
             raise ValueError("min_statistical_probability must be in (0, 1]")
         if not 0.0 < self.min_psr_probability <= 1.0 or not 0.0 < self.min_dsr_probability <= 1.0:
@@ -255,6 +261,7 @@ def _stress_artifact_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
             "orders", "fills", "costs", "risk_decisions", "attribution",
             "execution_lineage", "informative", "transition_lineage",
             "base_transition_lineage", "regime_lineage",
+            "selector_consumed_regimes",
         )
     }
 
@@ -268,6 +275,7 @@ def _stress_execution_payload(stress_result: dict[str, Any]) -> dict[str, Any]:
             "slippage", "switching_cost_drag", "switch_count", "total_return",
             "max_drawdown", "informative", "transition_lineage",
             "base_transition_lineage", "regime_lineage",
+            "selector_consumed_regimes",
         )
     }
 
@@ -297,6 +305,20 @@ def _baseline_artifact_hash(artifact: dict[str, Any]) -> str:
     return _canonical_hash(_baseline_artifact_payload(artifact))
 
 
+def _baseline_execution_payload(artifact: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: artifact.get(key)
+        for key in (
+            "baseline_id", "selection", "policy_version", "policy_hash",
+            "eligible_strategies", "targets", "target_hash", "deltas",
+            "orders", "fills", "risk_decisions", "costs", "equity_curve",
+            "metrics", "total_return", "max_drawdown", "cvar", "turnover",
+            "total_execution_cost", "slippage", "cost_model_version", "cost_model_hash",
+            "equity_hash",
+        )
+    }
+
+
 def _validate_baseline_artifact(artifact: dict[str, Any]) -> bool:
     if not artifact or artifact.get("selection", "").startswith("UNAVAILABLE"):
         return False
@@ -305,6 +327,8 @@ def _validate_baseline_artifact(artifact: dict[str, Any]) -> bool:
     if artifact.get("target_hash") != _canonical_hash(artifact.get("targets", [])):
         return False
     if not artifact.get("execution_hash") or not artifact.get("equity_hash"):
+        return False
+    if artifact.get("execution_hash") != _canonical_hash(_baseline_execution_payload(artifact)):
         return False
     if artifact.get("equity_hash") != _canonical_hash(artifact.get("equity_curve", [])):
         return False
@@ -413,6 +437,12 @@ def _recompute_transition_stress_quality(
         transition_lineage = scenario.get("transition_lineage")
         if not isinstance(transition_lineage, list) or not any(
             row.get("base_operational_regime") != row.get("perturbed_operational_regime")
+            and row.get("selector_consumed_regime") == row.get("perturbed_operational_regime")
+            for row in transition_lineage if isinstance(row, dict)
+        ):
+            return False
+        if any(
+            row.get("selector_consumed_regime") != row.get("perturbed_operational_regime")
             for row in transition_lineage if isinstance(row, dict)
         ):
             return False
@@ -423,10 +453,20 @@ def _recompute_transition_stress_quality(
 
 def _recompute_statistical_quality(
     result: dict[str, Any], policy: MetaReplayPolicy, *, db: Any = None,
+    evidence: dict[str, Any] | None = None,
 ) -> bool:
-    evidence = (result.get("metrics") or {}).get("statistical_evidence")
+    supplied_evidence = evidence is not None
+    if evidence is None:
+        evidence = (result.get("metrics") or {}).get("statistical_evidence")
     if not isinstance(evidence, dict):
         return False
+    if supplied_evidence:
+        criterion_to_test = {
+            "dsr_probability": "DSR",
+            "psr_probability": "PSR",
+        }
+        if criterion_to_test.get(policy.primary_statistical_criterion) not in policy.required_statistical_tests:
+            return False
     persisted_equity_curve = (
         (result.get("execution_payload") or {}).get("equity_curve")
         or result.get("equity_curve", ())
@@ -605,6 +645,9 @@ class MetaSelectorObservation:
     asset_cluster: str | None
     scorecards: tuple[Any, ...]
     strategy_returns: dict[str, float]
+    strategy_return_provenance: dict[str, dict[str, Any]] = field(default_factory=dict)
+    prior_strategy_returns: dict[str, tuple[float, ...]] = field(default_factory=dict)
+    prior_strategy_return_provenance: dict[str, tuple[dict[str, Any], ...]] = field(default_factory=dict)
     outcome_series_bindings: tuple[tuple[str, str], ...] = ()
     target_portfolios: dict[str, dict[str, float]] = field(default_factory=dict)
     asset_returns: dict[str, float] = field(default_factory=dict)
@@ -1441,6 +1484,13 @@ class MetaResearchRunner:
         )
         if statistical_artifact.get("evidence_hash") != certificate.get("statistical_evidence_hash"):
             raise ValueError("certificate statistical evidence hash mismatch")
+        statistical_materialized_at = statistical_artifact.get("materialized_at")
+        if statistical_materialized_at is None:
+            return IMPLEMENTATION_READY_VERDICT
+        if pd.Timestamp(statistical_materialized_at) <= pd.Timestamp(certificate["final_oos_end"]):
+            return IMPLEMENTATION_READY_VERDICT
+        if pd.Timestamp(statistical_materialized_at) > pd.Timestamp(certificate["materialized_at"]):
+            raise ValueError("statistical evidence materializes after provenance certificate")
         if (
             str(statistical_artifact.get("frozen_policy_id")) != str(certificate["frozen_policy_id"])
             or str(statistical_artifact.get("selected_trial_id")) != str(certificate["selected_trial_id"])
@@ -1490,7 +1540,9 @@ class MetaResearchRunner:
         if not pd.notna(simple_best):
             raise ValueError("frozen simple comparator result is unavailable")
         transition_quality_pass = _recompute_transition_stress_quality(stress, policy)
-        statistical_quality_pass = _recompute_statistical_quality(result, policy, db=self.db)
+        statistical_quality_pass = _recompute_statistical_quality(
+            result, policy, db=self.db, evidence=statistical_artifact,
+        )
         validity_gates_pass = (
             metrics.get("final_oos_duration_days", 0.0) >= policy.min_final_oos_duration_days
             and metrics.get("decision_count", 0.0) >= policy.min_final_oos_observations
@@ -1628,13 +1680,72 @@ class HistoricalEvidenceResolver:
                 str(row["strategy_name"]): float(row["value"])
                 for row in outcome_rows if row.get("series_type") == "STRATEGY" and row.get("strategy_name")
             }
+            strategy_return_provenance = {
+                str(row["strategy_name"]): {
+                    "series_id": str(row["series_id"]),
+                    "content_hash": str(row["content_hash"]),
+                    "observation_time": row["observation_time"],
+                    "holding_end": row["holding_end"],
+                    "available_at": row["available_at"],
+                    "symbol": row.get("symbol"),
+                    "universe_snapshot_id": row.get("universe_snapshot_id"),
+                    "timeframe": row.get("timeframe"),
+                }
+                for row in outcome_rows
+                if row.get("series_type") == "STRATEGY" and row.get("strategy_name")
+            }
             benchmark_return = next(
                 (float(row["value"]) for row in outcome_rows if row.get("series_type") == "BENCHMARK"), 0.0
             )
+            prior_strategy_returns: dict[str, list[float]] = {}
+            prior_strategy_return_provenance: dict[str, list[dict[str, Any]]] = {}
+            for prior_time in reference.decision_times[:index]:
+                prior_rows = self.db.list_phase2_10_outcome_series_at(
+                    prior_time,
+                    evaluation_cutoff=decision_time,
+                    benchmark_series_id=None,
+                    strategy_series_ids=reference.strategy_series_ids,
+                )
+                for row in prior_rows:
+                    strategy_name = row.get("strategy_name")
+                    holding_end = row.get("holding_end")
+                    available_at = row.get("available_at")
+                    if (
+                        row.get("series_type") != "STRATEGY"
+                        or not strategy_name
+                        or not row.get("content_hash")
+                        or holding_end is None
+                        or available_at is None
+                        or pd.Timestamp(holding_end).to_pydatetime() > decision_time
+                        or pd.Timestamp(available_at).to_pydatetime() > decision_time
+                        or row.get("symbol") != reference.symbol
+                        or row.get("universe_snapshot_id") != reference.universe_snapshot_id
+                        or row.get("timeframe") != reference.timeframe
+                    ):
+                        continue
+                    prior_strategy_returns.setdefault(str(strategy_name), []).append(float(row["value"]))
+                    prior_strategy_return_provenance.setdefault(str(strategy_name), []).append({
+                        "value": float(row["value"]),
+                        "series_id": str(row["series_id"]),
+                        "content_hash": str(row["content_hash"]),
+                        "observation_time": row["observation_time"],
+                        "holding_end": row["holding_end"],
+                        "available_at": row["available_at"],
+                        "symbol": row.get("symbol"),
+                        "universe_snapshot_id": row.get("universe_snapshot_id"),
+                        "timeframe": row.get("timeframe"),
+                    })
             template = MetaSelectorObservation(
                 decision_time=decision_time, symbol=reference.symbol, horizon="1d",
                 market_regime=regime.get("raw_regime"), regime_confidence=float(regime.get("confidence", 1.0) or 1.0),
                 asset_cluster=asset.get("behavior_cluster"), scorecards=(), strategy_returns=strategy_returns,
+                strategy_return_provenance=strategy_return_provenance,
+                prior_strategy_returns={
+                    name: tuple(values) for name, values in prior_strategy_returns.items()
+                },
+                prior_strategy_return_provenance={
+                    name: tuple(values) for name, values in prior_strategy_return_provenance.items()
+                },
                 outcome_series_bindings=tuple(sorted((str(row["series_id"]), str(row["content_hash"])) for row in outcome_rows)),
                 benchmark_return=benchmark_return,
                 meta_split="FINAL_OOS", data_hash=str(reference.dataset_content_hash),
@@ -1988,7 +2099,7 @@ class MetaSelectorBacktest:
                 "decision_time": item.decision_time,
                 "symbol": item.symbol,
                 "horizon": item.horizon,
-                "market_regime": item.market_regime,
+                "market_regime": operational_regime,
                 "regime_confidence": item.regime_confidence,
                 "asset_cluster": item.asset_cluster,
                 "scorecards": visible_cards,
@@ -1998,8 +2109,23 @@ class MetaSelectorBacktest:
                 "evidence_cutoff_hash": cutoff_hash,
             }
             if isinstance(self.selector, _BaselineSelector):
+                baseline_history = trailing_strategy_returns
+                if item.meta_split == "FINAL_OOS":
+                    baseline_history = {
+                        name: [float(row["value"]) for row in rows]
+                        for name, rows in item.prior_strategy_return_provenance.items()
+                        if all(
+                            row.get("content_hash")
+                            and row.get("holding_end") is not None
+                            and row.get("available_at") is not None
+                            and pd.Timestamp(row["holding_end"]).to_pydatetime() <= item.decision_time
+                            and pd.Timestamp(row["available_at"]).to_pydatetime() <= item.decision_time
+                            for row in rows
+                        )
+                    }
                 selector_arguments["prior_strategy_returns"] = {
-                    name: tuple(values) for name, values in trailing_strategy_returns.items()
+                    name: tuple(values)
+                    for name, values in baseline_history.items()
                 }
             decision = self.selector.select(**selector_arguments)
             selected_target = self._selected_target(decision, candidate_targets)
@@ -2117,6 +2243,19 @@ class MetaSelectorBacktest:
             last_period_pnl = period_pnl
             peak_equity = max(peak_equity, ending_equity)
             for strategy_name, strategy_return in item.strategy_returns.items():
+                provenance = item.strategy_return_provenance.get(strategy_name)
+                if item.meta_split == "FINAL_OOS":
+                    if not provenance:
+                        continue
+                    holding_end = provenance.get("holding_end")
+                    available_at = provenance.get("available_at")
+                    if holding_end is None or available_at is None:
+                        continue
+                    if (
+                        pd.Timestamp(holding_end).to_pydatetime() > item.decision_time
+                        or pd.Timestamp(available_at).to_pydatetime() > item.decision_time
+                    ):
+                        continue
                 trailing_strategy_returns.setdefault(strategy_name, []).append(float(strategy_return))
 
         self._attach_drawdowns(equity_rows, initial_equity, peak_equity=max(peak_equity, initial_equity))
@@ -2217,6 +2356,7 @@ class MetaSelectorBacktest:
                 "transition_lineage": [],
                 "regime_lineage": scenario.execution_payload.get("regime_lineage", []),
                 "base_transition_lineage": scenario.execution_payload.get("base_regime_lineage", []),
+                "selector_consumed_regimes": scenario.execution_payload.get("selector_consumed_regimes", []),
             }
             artifact["execution_hash"] = _stress_execution_hash(artifact)
             artifact["result_hash"] = _stress_artifact_hash(artifact)
@@ -2242,6 +2382,9 @@ class MetaSelectorBacktest:
                 "risk_decisions": tuple(risk_rows),
                 "attribution": {},
                 "execution_lineage": [order.get("execution_lineage") for order in orders],
+                "selector_consumed_regimes": [
+                    item.operational_regime or item.market_regime for item in items
+                ],
             },
         }
         if include_stress:
@@ -2262,6 +2405,7 @@ class MetaSelectorBacktest:
                     "timestamp": item.decision_time,
                     "base_operational_regime": base_regime_lineage[index]["operational_regime"],
                     "perturbed_operational_regime": operational_regimes[index],
+                    "selector_consumed_regime": operational_regimes[index],
                 }
                 for index, item in enumerate(items)
             ]
@@ -2328,7 +2472,15 @@ class MetaSelectorBacktest:
         }
         evidence_hash = _canonical_hash(payload)
         execution_payload = {
-            "decisions": [asdict(decision) for decision in decisions],
+            "decisions": [
+                {
+                    **asdict(decision),
+                    "selector_consumed_regime": (
+                        item.operational_regime or item.market_regime
+                    ),
+                }
+                for decision, item in zip(decisions, items)
+            ],
             "targets": [
                 record for record in target_records
             ],
@@ -2381,6 +2533,7 @@ class MetaSelectorBacktest:
                     "timestamp": item.decision_time,
                     "raw_regime": item.raw_regime or item.market_regime,
                     "operational_regime": item.operational_regime or item.market_regime,
+                    "selector_consumed_regime": item.operational_regime or item.market_regime,
                 }
                 for item in items
             ],
@@ -2508,6 +2661,18 @@ class MetaSelectorBacktest:
         values["sectors"] = dict(values.get("sectors", {}))
         values["historical_bars"] = tuple(values.get("historical_bars", ()))
         values["prior_asset_returns"] = dict(values.get("prior_asset_returns", {}))
+        values["strategy_return_provenance"] = {
+            str(key): dict(value)
+            for key, value in dict(values.get("strategy_return_provenance", {})).items()
+        }
+        values["prior_strategy_returns"] = {
+            str(key): tuple(float(value) for value in values_for_key)
+            for key, values_for_key in dict(values.get("prior_strategy_returns", {})).items()
+        }
+        values["prior_strategy_return_provenance"] = {
+            str(key): tuple(dict(value) for value in values_for_key)
+            for key, values_for_key in dict(values.get("prior_strategy_return_provenance", {})).items()
+        }
         return MetaSelectorObservation(**values)
 
     @staticmethod
@@ -2747,7 +2912,7 @@ class MetaSelectorBacktest:
                     decision_time=item.decision_time,
                     symbol=item.symbol,
                     horizon=item.horizon,
-                    market_regime=item.market_regime,
+                    market_regime=item.operational_regime or item.market_regime,
                     regime_confidence=item.regime_confidence,
                     asset_cluster=item.asset_cluster,
                     scorecards=perturbed_cards,
@@ -3234,9 +3399,10 @@ class MetaSelectorBacktest:
                 "metrics": metrics,
                 "cost_model_version": self.execution_adapter.cost_schedule.version,
                 "cost_model_hash": self._cost_model_hash(self.execution_adapter.cost_schedule),
-                "execution_hash": result.final_oos_execution_hash,
+                "execution_hash": "",
                 "equity_hash": _canonical_hash(result.equity_curve),
             }
+            payload["execution_hash"] = _canonical_hash(_baseline_execution_payload(payload))
             payload["result_hash"] = _baseline_artifact_hash(payload)
             return payload
 
