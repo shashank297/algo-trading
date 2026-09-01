@@ -1657,6 +1657,217 @@ def test_t2_10_psr_below_threshold_reaches_ready_acceptance(monkeypatch):
     assert MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id") == "PHASE 2.10 IMPLEMENTATION READY"
 
 
+def _seed_insufficient_dsr_registry(db: DuckDBManager, created_at: datetime) -> tuple[str, str]:
+    family = ExperimentFamilySpec(
+        experiment_family_id="phase2-1-dsr-insufficient",
+        hypothesis="Authoritative DSR registry insufficiency",
+        strategy_names=["meta_selector"],
+        strategy_versions=["phase2.10"],
+        universe_snapshot_id="META",
+        timeframe="1d",
+        feature_versions=["phase2.10"],
+        cost_model_version="synthetic",
+        parameter_space={},
+        maximum_trials=2,
+        selection_metric="sharpe",
+        walk_forward_design={"purge_periods": 0, "embargo_periods": 0},
+        source_revision="test",
+        created_at=created_at,
+    )
+    db.register_experiment_family(family)
+    trial = ResearchTrial(
+        experiment_family_id=family.experiment_family_id,
+        strategy_name="meta_selector",
+        strategy_version="phase2.10",
+        scope="META_SELECTOR",
+        timeframe="1d",
+        parameters={"candidate": "only-sharpe-observation"},
+        source_revision="test",
+        data_hash="synthetic",
+        cost_model_hash="synthetic-cost",
+        frame_certification_id="frame-certification",
+        created_at=created_at,
+    )
+    trial_id = db.create_research_trial(trial)
+    db.transition_research_trial(trial_id, "RUNNING", effective_at=created_at, recorded_at=created_at)
+    db.transition_research_trial(
+        trial_id,
+        "SUCCEEDED",
+        metrics={"sharpe": 1.0},
+        effective_at=created_at + timedelta(minutes=1),
+        recorded_at=created_at + timedelta(minutes=1),
+    )
+    return family.experiment_family_id, trial_id
+
+
+def test_t2_10_registry_backed_insufficient_dsr_is_a_ready_gate(tmp_path):
+    db = DuckDBManager(str(tmp_path / "dsr-insufficient.duckdb"))
+    created_at = datetime(2024, 1, 1, tzinfo=UTC)
+    family_id, trial_id = _seed_insufficient_dsr_registry(db, created_at)
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("DSR", "PSR"),
+        primary_statistical_criterion="dsr_probability",
+        min_psr_probability=0.1,
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": created_at + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy, db=db)
+    evidence = replay._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        experiment_family_id=family_id,
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    evidence["source_execution_hash"] = "registry-dsr-execution"
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key != "evidence_hash"
+    })
+    result = {
+        "metrics": {"statistical_evidence": evidence},
+        "equity_curve": equity_curve,
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "registry-dsr-execution",
+    }
+    dsr = evidence["tests"]["DSR"]
+    assert dsr["status"] == EvidenceStatus.INSUFFICIENT_EVIDENCE.value
+    assert dsr["trial_count_source"] == "PHASE2_1_REGISTRY"
+    assert dsr["trial_ids"] == [trial_id]
+    assert dsr["effective_trials"] == 1
+    assert _recompute_statistical_quality(result, policy, db=db, strict=True) is False
+    db.close()
+
+
+def _assert_statistical_acceptance_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: MetaReplayPolicy,
+    result: dict[str, Any],
+    evidence: dict[str, Any],
+    *,
+    registry_db: DuckDBManager | None = None,
+) -> None:
+    final_end = datetime(2024, 4, 1, tzinfo=UTC)
+    materialized_at = datetime(2024, 5, 1, tzinfo=UTC)
+    evidence.update({
+        "frozen_policy_id": "frozen-policy",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": materialized_at,
+    })
+    evidence = _rehash_statistical_evidence(evidence)
+    certificate = {
+        "certificate_id": "certificate-id",
+        "frozen_policy_id": "frozen-policy",
+        "acceptance_policy_version": "phase2-10-acceptance-v1",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "execution_hash": result["final_oos_execution_hash"],
+        "meta_run_id": "meta-run",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "statistical_evidence_id": evidence["statistical_evidence_id"],
+        "statistical_evidence_hash": evidence["evidence_hash"],
+        "final_oos_end": final_end,
+        "materialized_at": materialized_at + timedelta(days=1),
+        "dataset_ids": ("dataset",),
+        "dataset_content_hashes": ("dataset-hash",),
+        "universe_snapshot_id": "universe",
+        "dataset_certification_ids": ("certification",),
+        "risk_snapshot_ids": ("risk",),
+        "risk_snapshot_hashes": ("risk-hash",),
+        "evidence_ids": ("evidence",),
+        "outcome_series_ids": ("outcome",),
+        "execution_bar_hashes": ("bars",),
+    }
+    result["metrics"].update({
+        "final_oos_duration_days": 1.0,
+        "decision_count": 1.0,
+        "trade_count": 10.0,
+        "evidence_coverage": 1.0,
+        "causal_verification": 1.0,
+    })
+    result["baselines"] = {
+        name: {"total_return": 0.0}
+        for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
+    }
+    result["stress_results"] = {scenario: {} for scenario in policy.required_stress_scenarios}
+
+    class AcceptanceDb:
+        def list_research_trials(self, family_id: str | None = None, **kwargs: Any) -> list[dict[str, Any]]:
+            assert registry_db is not None
+            return registry_db.list_research_trials(family_id=family_id, **kwargs)
+
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            return certificate
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            payload = dict(policy.__dict__)
+            payload["schema_version"] = "meta-replay-policy-v1"
+            return {
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "meta_policy_payload": payload,
+                "simple_comparator": "B2_static",
+                "comparator_selection_rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            }
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            return result
+
+        def validate_phase2_10_statistical_evidence(self, evidence_id: str) -> dict[str, Any]:
+            return evidence
+
+    monkeypatch.setattr("experiments.meta_selector_backtest._validate_baseline_artifact", lambda artifact, strict=False: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_transition_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_selector_stability", lambda *args, **kwargs: {"score": 1.0})
+    assert MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id") == "PHASE 2.10 IMPLEMENTATION READY"
+
+
+def test_t2_10_registry_backed_dsr_weakness_reaches_ready_acceptance(tmp_path, monkeypatch):
+    db = DuckDBManager(str(tmp_path / "dsr-acceptance.duckdb"))
+    created_at = datetime(2024, 1, 1, tzinfo=UTC)
+    family_id, _ = _seed_insufficient_dsr_registry(db, created_at)
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("DSR", "PSR"),
+        primary_statistical_criterion="dsr_probability",
+        min_psr_probability=0.1,
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    result, _ = _statistical_validation_fixture(policy, returns)
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy, db=db)
+    evidence = replay._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        experiment_family_id=family_id,
+        equity_hash=_canonical_hash(result["equity_curve"]),
+    )
+    evidence["source_execution_hash"] = result["final_oos_execution_hash"]
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key != "evidence_hash"
+    })
+    evidence["statistical_evidence_id"] = evidence["evidence_hash"][:32]
+    _assert_statistical_acceptance_ready(monkeypatch, policy, result, evidence, registry_db=db)
+    db.close()
+
+
+def test_t2_10_bootstrap_weakness_reaches_ready_acceptance(monkeypatch):
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+        min_psr_probability=0.1,
+        bootstrap_min_lower_bound=1.0,
+    )
+    result, evidence = _statistical_validation_fixture(policy, [0.01, -0.01] * 15)
+    assert evidence["tests"]["PSR"]["probability"] >= policy.min_psr_probability
+    assert evidence["tests"]["BOOTSTRAP"]["metric"]["lower_bound"] < policy.bootstrap_min_lower_bound
+    _assert_statistical_acceptance_ready(monkeypatch, policy, result, evidence)
+
+
 def test_t2_10_supplied_statistical_artifact_has_exclusive_authority():
     policy = MetaReplayPolicy(
         required_statistical_tests=("PSR",),
