@@ -32,8 +32,6 @@ REDUCE_RISK = "REDUCE_RISK"
 CASH = "CASH"
 ABSTAIN_BEHAVIORS = frozenset({HOLD_CURRENT, REDUCE_RISK, CASH})
 IMPLEMENTATION_READY_VERDICT = "PHASE 2.10 IMPLEMENTATION READY"
-CAUSALLY_VERIFIED_VERDICT = "PHASE 2.10 COMPLETE \u2014 META-SELECTOR CAUSALLY VERIFIED"
-SIMPLER_BASELINE_VERDICT = "PHASE 2.10 COMPLETE \u2014 ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
 
 
 def _canonical_hash(payload: object) -> str:
@@ -858,9 +856,9 @@ class MetaResearchRunner:
             and float(stress.get("2.0x_cost", {}).get("total_return", -1.0)) >= simple_best
         )
         verdict = (
-            CAUSALLY_VERIFIED_VERDICT
+            "PHASE 2.10 COMPLETE \u2014 META-SELECTOR CAUSALLY VERIFIED"
             if gates_pass
-            else SIMPLER_BASELINE_VERDICT
+            else "PHASE 2.10 COMPLETE \u2014 ADAPTIVE COMPLEXITY NOT JUSTIFIED; USE SIMPLER BASELINE"
         )
         acceptance_payload = {
             "meta_run_id": certificate["meta_run_id"], "certificate_id": certificate_id,
@@ -878,19 +876,6 @@ class MetaResearchRunner:
             acceptance_policy_hash=str(certificate["acceptance_policy_hash"]),
         )
         return verdict
-
-    def _derive_empirical_provenance(
-        self, items: tuple[MetaSelectorObservation, ...], trial_id: str, frozen_policy_id: str, data_hash: str,
-    ) -> dict[str, bool]:
-        trial = self.db.get_research_trial(trial_id)
-        artifact = self.db.load_frozen_meta_policy(frozen_policy_id)
-        return {
-            "non_synthetic_dataset": data_hash != "synthetic" and all(item.execution_dataset_id is not None for item in items),
-            "registered_trial": trial is not None and trial.get("experiment_family_id") == "meta-selector-phase2-10",
-            "frozen_policy": artifact.get("selected_trial_id") == trial_id,
-            "causal_inputs": all(item.risk_state_as_of is not None for item in items),
-            "isolated_final_oos": all(item.meta_split == "FINAL_OOS" for item in items),
-        }
 
     def _register_candidate(self, candidate_id: str, selector: AdaptiveStrategySelector, replay_policy: MetaReplayPolicy, data_hash: str, purge_periods: int, embargo_periods: int, created_at: datetime | None, scorecard_policy_hash: str, b2_strategy: str | None, universe_lineage: list[str], *, universe_snapshot_id: str = "META") -> str:
         from experiments.trials import ExperimentFamilySpec, ResearchTrial
