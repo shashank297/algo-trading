@@ -35,6 +35,10 @@ class MassExperimentManager:
 
     def run(self, spec: MassExperimentSpec, starting_capital: float = 100_000.0) -> dict[str, Any]:
         jobs: list[dict[str, Any]] = []
+        if (spec.require_authoritative_certification or spec.experiment_family_id) and self.risk_engine is None:
+            raise ValueError(
+                "Authoritative mass experiments require an explicitly injected configured RiskEngine."
+            )
         self.db.recover_stale_research_work(
             datetime.now(timezone.utc) - timedelta(seconds=spec.stale_job_seconds)
         )

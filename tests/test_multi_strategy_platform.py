@@ -453,7 +453,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
             try:
                 successful = {"outcome": {"result": SimpleNamespace(run_id="run-1")}}
                 with patch("experiments.mass.ExperimentManager.run", side_effect=[RuntimeError("transient"), successful]), patch.object(WalkForwardEvaluator, "evaluate", return_value=[]):
-                    result = MassExperimentManager(db).run(MassExperimentSpec(
+                    result = MassExperimentManager(db, risk_engine=RiskEngine()).run(MassExperimentSpec(
                         strategy_names=["trend_following"], universe=["TEST-EQ"],
                         benchmark_symbol=None, max_retries=1,
                     ))

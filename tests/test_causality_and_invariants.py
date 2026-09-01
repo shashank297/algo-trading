@@ -262,6 +262,29 @@ def test_p0_3_portfolio_paper_eod_batch_mutation_invariant():
     assert fills_1[0]["quantity"] == fills_2[0]["quantity"]
 
 
+def test_authoritative_portfolio_uses_date_effective_cost_regimes():
+    """Unfixed authoritative portfolio identity records every effective cost regime."""
+    from trading_stack.costs import explicit_fixed_cost_schedule, get_cost_schedule
+
+    dates = [
+        pd.Timestamp("2016-06-15", tz="UTC"),
+        pd.Timestamp("2024-10-15", tz="UTC"),
+        pd.Timestamp("2026-04-15", tz="UTC"),
+    ]
+    backtester = PortfolioEventBacktester(risk_engine=RiskEngine())
+    identity = backtester._cost_identity(dates)
+
+    assert identity != PortfolioEventBacktester(
+        IndianDeliveryCostSchedule(), risk_engine=RiskEngine(),
+    )._cost_identity(dates)
+    assert [get_cost_schedule(value.date()).version for value in dates] == [
+        "angel-nse-delivery-2016-06",
+        "angel-nse-delivery-2024-10",
+        "angel-nse-delivery-2026-04",
+    ]
+    assert explicit_fixed_cost_schedule({"cost_model": "ordinary"}) is None
+
+
 # ---------------------------------------------------------------------------
 # P0-4: Point-in-Time Universe Isolation & Coverage Fail-Closed
 # ---------------------------------------------------------------------------

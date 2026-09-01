@@ -479,7 +479,7 @@ def test_walk_forward_budget_exhaustion_blocks_candidate_execution(test_db: Duck
 
 def test_experiment_manager_failure_retention(test_db: DuckDBManager, sample_family: ExperimentFamilySpec) -> None:
     test_db.register_experiment_family(sample_family)
-    mgr = ExperimentManager(test_db)
+    mgr = ExperimentManager(test_db, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["UNKNOWN_SYMBOL_XYZ"],
@@ -496,6 +496,40 @@ def test_experiment_manager_failure_retention(test_db: DuckDBManager, sample_fam
     assert len(trials) == 1
     assert trials[0]["status"] == "FAILED"
     assert trials[0]["error_message"] is not None
+
+
+def test_governed_experiment_requires_injected_risk_engine(
+    test_db: DuckDBManager, sample_family: ExperimentFamilySpec,
+) -> None:
+    """A family-governed experiment cannot downgrade itself to exploratory execution."""
+    test_db.register_experiment_family(sample_family)
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TCS"],
+        timeframe="1d",
+        parameters={"lookback": 20},
+        experiment_family_id=sample_family.experiment_family_id,
+        require_authoritative_certification=False,
+    )
+
+    with pytest.raises(ValueError, match="injected configured RiskEngine"):
+        ExperimentManager(test_db).run(spec)
+
+
+def test_governed_walk_forward_requires_injected_risk_engine(
+    test_db: DuckDBManager, sample_family: ExperimentFamilySpec,
+) -> None:
+    """Family-governed walk-forward evaluation fails closed before loading data."""
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TCS"],
+        timeframe="1d",
+        experiment_family_id=sample_family.experiment_family_id,
+        require_authoritative_certification=False,
+    )
+
+    with pytest.raises(ValueError, match="injected configured RiskEngine"):
+        WalkForwardEvaluator(test_db).evaluate("parent-run", spec)
 
 
 # ---------------------------------------------------------------------------
@@ -855,7 +889,7 @@ def test_mass_experiment_manager_family_propagation(test_db: DuckDBManager) -> N
     from experiments.mass import MassExperimentManager
     from experiments.models import MassExperimentSpec
 
-    mgr = MassExperimentManager(test_db)
+    mgr = MassExperimentManager(test_db, risk_engine=RiskEngine())
     spec = MassExperimentSpec(
         experiment_id="mass_exp_test",
         strategy_names=["trend_following"],
@@ -887,10 +921,26 @@ def test_mass_experiment_manager_family_propagation(test_db: DuckDBManager) -> N
     assert res["jobs"][0]["state"] == "SUCCEEDED"
 
 
+def test_governed_mass_experiment_requires_injected_risk_engine(test_db: DuckDBManager) -> None:
+    """A family-governed mass run fails before scheduling child jobs without risk authority."""
+    from experiments.mass import MassExperimentManager
+    from experiments.models import MassExperimentSpec
+
+    spec = MassExperimentSpec(
+        strategy_names=["trend_following"],
+        universe=["TCS"],
+        experiment_family_id="governed-family",
+        require_authoritative_certification=False,
+    )
+
+    with pytest.raises(ValueError, match="injected configured RiskEngine"):
+        MassExperimentManager(test_db).run(spec)
+
+
 def test_experiment_manager_successful_execution_and_metrics_linkage(test_db: DuckDBManager, sample_family: ExperimentFamilySpec) -> None:
     """Verifies that ExperimentManager successful execution transitions trial to SUCCEEDED and binds metrics & run_id."""
     test_db.register_experiment_family(sample_family)
-    mgr = ExperimentManager(test_db)
+    mgr = ExperimentManager(test_db, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["TCS"],
@@ -935,7 +985,7 @@ def test_governed_lineage_failure_is_retained_without_execution(
     """A later executable result cannot turn an unresolved governed attempt into success."""
 
     test_db.register_experiment_family(sample_family)
-    manager = ExperimentManager(test_db)
+    manager = ExperimentManager(test_db, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["RELIANCE"],

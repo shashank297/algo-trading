@@ -20,7 +20,7 @@ from experiments.trials import (
 )
 from storage.duckdb_manager import DuckDBManager
 from risk.engine import RiskEngine
-from trading_stack.costs import IndianDeliveryCostSchedule
+from trading_stack.costs import explicit_fixed_cost_schedule
 from trading_stack.calendars import MarketCalendar
 from trading_stack.datasets import SynchronizedPanelBuilder
 from trading_stack.domain import StrategyScope
@@ -88,7 +88,7 @@ class ExperimentManager:
         resolved_dataset: Any = None
         lineage_error: ResearchLineageError | None = None
         authoritative_certification = governed or spec.require_authoritative_certification
-        if spec.require_authoritative_certification and self.risk_engine is None:
+        if authoritative_certification and self.risk_engine is None:
             raise ValueError(
                 "Authoritative experiments require an explicitly injected configured RiskEngine."
             )
@@ -222,11 +222,7 @@ class ExperimentManager:
                     benchmark_symbol=spec.benchmark_symbol,
                     minimum_lookback=metadata.required_lookback,
                 )
-                allowed = set(IndianDeliveryCostSchedule.__dataclass_fields__)
-                schedule_values: dict[str, Any] = {
-                    key: value for key, value in spec.cost_model.items() if key in allowed
-                }
-                schedule = IndianDeliveryCostSchedule(**schedule_values)
+                schedule = explicit_fixed_cost_schedule(spec.cost_model)
                 portfolio_result = PortfolioEventBacktester(schedule, risk_engine=self.risk_engine).run(
                     StrategyRegistry.create(spec.strategy_name, **spec.parameters),
                     dataset,

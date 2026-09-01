@@ -52,6 +52,20 @@ def _permissive_risk() -> RiskEngine:
     ))
 
 
+def test_governed_robustness_requires_injected_risk_engine() -> None:
+    """Family-governed robustness evaluation cannot run with an implicit engine."""
+    spec = ExperimentSpec(
+        strategy_name="trend_following",
+        universe=["TCS"],
+        timeframe="1d",
+        experiment_family_id="governed-family",
+        require_authoritative_certification=False,
+    )
+
+    with pytest.raises(ValueError, match="injected configured RiskEngine"):
+        RobustnessEvaluator(cast(DuckDBManager, None)).evaluate("parent-run", spec)
+
+
 
 def _make_dummy_candles(n_days: int = 400, start_date: date = date(2022, 1, 1), seed: int = 42) -> pd.DataFrame:
     """Generate deterministic synthetic candles with price and volume."""

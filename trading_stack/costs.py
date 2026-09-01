@@ -4,6 +4,7 @@ import math
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from enum import Enum
+from typing import Any, Mapping
 
 from data_platform.contracts import OrderSide
 
@@ -193,6 +194,23 @@ def get_cost_schedule(as_of: date | datetime | None = None) -> IndianDeliveryCos
     applicable = [s for s in DEFAULT_COST_SCHEDULES if s.effective_from <= ref_date]
     return applicable[-1] if applicable else DEFAULT_COST_SCHEDULES[0]
 
+
+def explicit_fixed_cost_schedule(
+    cost_model: Mapping[str, Any] | None,
+) -> IndianDeliveryCostSchedule | None:
+    """Build a fixed schedule only for an explicitly labelled stress run."""
+
+    values = dict(cost_model or {})
+    mode = values.get("cost_mode") or values.get("mode")
+    marked_stress = bool(values.get("fixed_cost_stress")) or mode == "FIXED_COST_STRESS"
+    nested = values.get("indian_delivery_costs")
+    if isinstance(nested, Mapping):
+        values = {**values, **nested}
+        marked_stress = marked_stress or bool(nested.get("fixed_cost_stress")) or nested.get("cost_mode") == "FIXED_COST_STRESS"
+    if not marked_stress:
+        return None
+    allowed = set(IndianDeliveryCostSchedule.__dataclass_fields__)
+    return IndianDeliveryCostSchedule(**{key: value for key, value in values.items() if key in allowed})
 
 
 

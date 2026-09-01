@@ -44,7 +44,7 @@ from experiments.trials import (
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, _compute_metrics
 from trading_stack.calendars import MarketCalendar
-from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
+from trading_stack.costs import IndianDeliveryCostSchedule, explicit_fixed_cost_schedule, get_cost_schedule
 from trading_stack.datasets import ResearchDataset, SynchronizedPanelBuilder
 from trading_stack.domain import AssetClass, StrategyScope
 from trading_stack.features import FeatureFactory
@@ -1112,7 +1112,7 @@ class RobustnessEvaluator:
         starting_capital: float = 100_000.0,
     ) -> RobustnessBundle:
         """Execute full nested walk-forward evaluation, statistical tests, and persistence."""
-        if spec.require_authoritative_certification and self.risk_engine is None:
+        if (spec.require_authoritative_certification or spec.experiment_family_id) and self.risk_engine is None:
             raise ValueError(
                 "Authoritative robustness evaluation requires an explicitly injected configured RiskEngine."
             )
@@ -1657,11 +1657,7 @@ class RobustnessEvaluator:
     ) -> Any:
         strategy = StrategyRegistry.create(spec.strategy_name, **parameters)
         if scope == StrategyScope.CROSS_SECTIONAL:
-            allowed = set(IndianDeliveryCostSchedule.__dataclass_fields__)
-            schedule_values: dict[str, Any] = {
-                key: value for key, value in spec.cost_model.items() if key in allowed
-            }
-            schedule = IndianDeliveryCostSchedule(**schedule_values)
+            schedule = explicit_fixed_cost_schedule(spec.cost_model)
             return PortfolioEventBacktester(schedule, risk_engine=self.risk_engine).run(
                 strategy,
                 source,
