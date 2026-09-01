@@ -496,19 +496,25 @@ def _recompute_transition_stress_quality(
 def _recompute_statistical_quality(
     result: dict[str, Any], policy: MetaReplayPolicy, *, db: Any = None,
     evidence: dict[str, Any] | None = None,
+    strict: bool = False,
 ) -> bool:
+    def fail(message: str) -> bool:
+        if strict:
+            raise ValueError(message)
+        return False
+
     supplied_evidence = evidence is not None
     if evidence is None:
         evidence = (result.get("metrics") or {}).get("statistical_evidence")
     if not isinstance(evidence, dict):
-        return False
+        return fail("statistical evidence is missing or malformed")
     if supplied_evidence:
         criterion_to_test = {
             "dsr_probability": "DSR",
             "psr_probability": "PSR",
         }
         if criterion_to_test.get(policy.primary_statistical_criterion) not in policy.required_statistical_tests:
-            return False
+            return fail("statistical primary criterion is not required by policy")
     persisted_equity_curve = (
         (result.get("execution_payload") or {}).get("equity_curve")
         or result.get("equity_curve", ())
@@ -516,70 +522,72 @@ def _recompute_statistical_quality(
     returns = [float(row.get("net_return", 0.0)) for row in persisted_equity_curve]
     expected_returns_hash = _canonical_hash(returns)
     if evidence.get("returns_hash") != expected_returns_hash:
-        return False
+        return fail("statistical returns hash mismatch")
     if evidence.get("source_equity_hash") != _canonical_hash(persisted_equity_curve):
-        return False
+        return fail("statistical source equity hash mismatch")
     if evidence.get("source_execution_hash") != result.get("final_oos_execution_hash"):
-        return False
+        return fail("statistical source execution hash mismatch")
     if evidence.get("policy_hash") != policy.policy_hash:
-        return False
+        return fail("statistical policy hash mismatch")
     if evidence.get("primary_criterion") != policy.primary_statistical_criterion:
-        return False
+        return fail("statistical primary criterion mismatch")
     if int(evidence.get("observations", -1)) != len(returns):
-        return False
+        return fail("statistical observation count mismatch")
     if int(evidence.get("independent_trades", -1)) < policy.statistical_min_independent_trades:
-        return False
+        return fail("statistical independent trades are below policy minimum")
     tests = evidence.get("tests")
     if not isinstance(tests, dict):
-        return False
+        return fail("statistical tests payload is missing or malformed")
     psr_evidence = tests.get("PSR")
     if "PSR" in policy.required_statistical_tests:
         if not isinstance(psr_evidence, dict):
-            return False
+            return fail("statistical PSR evidence is missing or malformed")
         recomputed_psr = compute_psr(returns, minimum_observations=policy.statistical_min_observations)
         if recomputed_psr.status != EvidenceStatus.VALID:
-            return False
+            return fail("statistical PSR recomputation is not valid")
         if psr_evidence.get("status") != EvidenceStatus.VALID.value:
-            return False
+            return fail("statistical PSR status mismatch")
         if abs(float(psr_evidence.get("probability", -1.0)) - float(recomputed_psr.psr_value or 0.0)) > 1e-12:
-            return False
+            return fail("statistical PSR probability mismatch")
         if float(psr_evidence.get("probability", 0.0)) < policy.min_psr_probability:
-            return False
+            return fail("statistical PSR probability is below policy minimum")
 
     dsr_evidence = tests.get("DSR")
     if "DSR" in policy.required_statistical_tests:
         if not isinstance(dsr_evidence, dict) or not evidence.get("experiment_family_id"):
-            return False
+            return fail("statistical DSR evidence is missing required lineage")
         recomputed_dsr = resolve_authoritative_dsr(
             db, returns, str(evidence["experiment_family_id"]),
             minimum_observations=policy.statistical_min_observations,
             trial_policy_version=policy.statistical_test_version,
             trial_policy_hash=policy.policy_hash,
         )
-        if recomputed_dsr.status != EvidenceStatus.VALID or dsr_evidence.get("status") != EvidenceStatus.VALID.value:
-            return False
+        if recomputed_dsr.status != EvidenceStatus.VALID:
+            return fail("statistical DSR recomputation is not valid")
+        if dsr_evidence.get("status") != EvidenceStatus.VALID.value:
+            return fail("statistical DSR status mismatch")
         if dsr_evidence.get("trial_count_source") != "PHASE2_1_REGISTRY":
-            return False
+            return fail("statistical DSR trial count source mismatch")
         if abs(float(dsr_evidence.get("probability", -1.0)) - float(recomputed_dsr.dsr_value or 0.0)) > 1e-12:
-            return False
+            return fail("statistical DSR probability mismatch")
         if dsr_evidence.get("trial_ids") != recomputed_dsr.trial_ids or int(dsr_evidence.get("effective_trials", -1)) != recomputed_dsr.effective_trials:
-            return False
+            return fail("statistical DSR trial lineage mismatch")
         if float(dsr_evidence.get("probability", 0.0)) < policy.min_dsr_probability:
-            return False
+            return fail("statistical DSR probability is below policy minimum")
 
     bootstrap_evidence = tests.get("BOOTSTRAP")
     if "BOOTSTRAP" in policy.required_statistical_tests:
         if not isinstance(bootstrap_evidence, dict):
-            return False
+            return fail("statistical bootstrap evidence is missing or malformed")
         if bootstrap_evidence.get("method") != policy.bootstrap_method or int(bootstrap_evidence.get("block_size", -1)) != policy.bootstrap_block_size:
-            return False
+            return fail("statistical bootstrap configuration mismatch")
         if int(bootstrap_evidence.get("resamples", -1)) != policy.statistical_bootstrap_resamples or int(bootstrap_evidence.get("seed", -1)) != policy.statistical_bootstrap_seed:
-            return False
+            return fail("statistical bootstrap resample configuration mismatch")
         if bootstrap_evidence.get("status") != EvidenceStatus.VALID.value:
-            return False
+            return fail("statistical bootstrap status mismatch")
         metric = bootstrap_evidence.get("metric")
         if not isinstance(metric, dict) or metric.get("metric_name") != policy.bootstrap_required_metric:
-            return False
+            return fail("statistical bootstrap metric mismatch")
         recomputed_bootstrap = compute_bootstrap_confidence_intervals(
             returns,
             confidence_level=policy.statistical_confidence_level,
@@ -591,17 +599,17 @@ def _recompute_statistical_quality(
         )
         expected_metric = recomputed_bootstrap.get(policy.bootstrap_required_metric)
         if expected_metric is None or expected_metric.status != EvidenceStatus.VALID:
-            return False
+            return fail("statistical bootstrap recomputation is not valid")
         for field in ("point_estimate", "median", "lower_bound", "upper_bound"):
             if abs(float(metric.get(field, float("nan"))) - float(getattr(expected_metric, field))) > 1e-12:
-                return False
+                return fail(f"statistical bootstrap {field} mismatch")
         if float(metric.get("lower_bound", -1.0)) < policy.bootstrap_min_lower_bound:
-            return False
+            return fail("statistical bootstrap lower bound is below policy minimum")
     if _canonical_hash({
         key: value for key, value in evidence.items()
         if key not in {"evidence_hash", "statistical_evidence_id"}
     }) != evidence.get("evidence_hash"):
-        return False
+        return fail("statistical evidence hash mismatch")
     return True
 
 
@@ -1583,7 +1591,7 @@ class MetaResearchRunner:
             raise ValueError("frozen simple comparator result is unavailable")
         transition_quality_pass = _recompute_transition_stress_quality(stress, policy, strict=True)
         statistical_quality_pass = _recompute_statistical_quality(
-            result, policy, db=self.db, evidence=statistical_artifact,
+            result, policy, db=self.db, evidence=statistical_artifact, strict=True,
         )
         validity_gates_pass = (
             metrics.get("final_oos_duration_days", 0.0) >= policy.min_final_oos_duration_days

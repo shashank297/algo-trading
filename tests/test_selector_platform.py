@@ -1405,6 +1405,12 @@ def test_t2_10_statistical_bootstrap_is_recomputed_and_standalone():
     assert _recompute_statistical_quality(result, policy)
     tampered = {**evidence, "tests": {**evidence["tests"], "BOOTSTRAP": {**evidence["tests"]["BOOTSTRAP"], "metric": {**evidence["tests"]["BOOTSTRAP"]["metric"], "lower_bound": 0.5}}}}
     assert not _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": tampered}}, policy)
+    with pytest.raises(ValueError, match="statistical bootstrap lower_bound mismatch"):
+        _recompute_statistical_quality(
+            {**result, "metrics": {"statistical_evidence": tampered}},
+            policy,
+            strict=True,
+        )
 
 
 def test_t2_10_supplied_statistical_artifact_has_exclusive_authority():
@@ -1432,6 +1438,153 @@ def test_t2_10_supplied_statistical_artifact_has_exclusive_authority():
         "final_oos_execution_hash": "execution",
     }
     assert _recompute_statistical_quality(result, policy, evidence=standalone)
+
+
+def test_t2_10_acceptance_hard_fails_on_statistical_contradictions():
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    base_result = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy).run([
+        obs(datetime(2024, 4, 1, tzinfo=UTC), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+        obs(datetime(2024, 4, 2, tzinfo=UTC), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+    ])
+    execution_payload = {
+        **base_result.execution_payload,
+        "equity_curve": equity_curve,
+        "selector_stability_evidence": [{"trials": [{
+            "baseline_decision": "SELECT",
+            "baseline_selected_strategies": ["alpha"],
+            "baseline_weights": {"ABC": 1.0},
+            "decision": "SELECT",
+            "selected_strategies": ["alpha"],
+            "weights": {"ABC": 1.0},
+        }]}],
+    }
+    execution_hash = hashlib.sha256(
+        json.dumps(execution_payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+    statistical_artifact = MetaSelectorBacktest(
+        AdaptiveStrategySelector(),
+        replay_policy=policy,
+    )._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    statistical_artifact.update({
+        "frozen_policy_id": "frozen-policy",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": datetime(2024, 5, 1, tzinfo=UTC),
+        "source_execution_hash": execution_hash,
+    })
+    statistical_artifact["evidence_hash"] = _canonical_hash({
+        key: value for key, value in statistical_artifact.items() if key != "evidence_hash"
+    })
+    statistical_artifact["statistical_evidence_id"] = statistical_artifact["evidence_hash"][:32]
+    statistical_artifact = {
+        **statistical_artifact,
+        "tests": {
+            **statistical_artifact["tests"],
+            "BOOTSTRAP": {
+                **statistical_artifact["tests"]["BOOTSTRAP"],
+                "metric": {
+                    **statistical_artifact["tests"]["BOOTSTRAP"]["metric"],
+                    "lower_bound": 0.5,
+                },
+            },
+        },
+    }
+    statistical_artifact["evidence_hash"] = _canonical_hash({
+        key: value
+        for key, value in statistical_artifact.items()
+        if key not in {"evidence_hash", "statistical_evidence_id"}
+    })
+    baselines = dict(base_result.baselines)
+    baselines["B2_static"] = {
+        **baselines["B3_equal_ensemble"],
+        "baseline_id": "B2_static",
+        "selection": "pit_static_fixture",
+    }
+    baselines["B2_static"]["execution_hash"] = _canonical_hash(
+        _baseline_execution_payload(baselines["B2_static"])
+    )
+    baselines["B2_static"]["result_hash"] = _baseline_artifact_hash(baselines["B2_static"])
+    result_payload = {
+        "metrics": {
+            **base_result.metrics,
+            "final_oos_duration_days": 30.0,
+            "decision_count": 30.0,
+            "trade_count": 10.0,
+            "evidence_coverage": 1.0,
+            "causal_verification": 1.0,
+            "selector_stability_score": 1.0,
+            "statistical_evidence": statistical_artifact,
+        },
+        "baselines": baselines,
+        "stress_results": base_result.stress_results,
+        "execution_payload": execution_payload,
+        "equity_curve": equity_curve,
+        "final_oos_execution_hash": execution_hash,
+    }
+
+    class AcceptanceDb:
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            return {
+                "certificate_id": certificate_id,
+                "frozen_policy_id": "frozen-policy",
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "execution_hash": execution_hash,
+                "meta_run_id": "meta-run",
+                "selected_trial_id": "selected-trial",
+                "meta_policy_hash": "meta-policy-hash",
+                "statistical_evidence_id": statistical_artifact["statistical_evidence_id"],
+                "statistical_evidence_hash": statistical_artifact["evidence_hash"],
+                "final_oos_end": datetime(2024, 4, 1, tzinfo=UTC),
+                "materialized_at": datetime(2024, 5, 2, tzinfo=UTC),
+                "dataset_ids": ("fixture-dataset",),
+                "dataset_content_hashes": ("dataset-a",),
+                "universe_snapshot_id": "META",
+                "dataset_certification_ids": ("fixture-certification",),
+                "risk_snapshot_ids": ("fixture-risk",),
+                "risk_snapshot_hashes": ("fixture-risk-hash",),
+                "evidence_ids": ("fixture-evidence",),
+                "outcome_series_ids": ("fixture-outcome",),
+                "execution_bar_hashes": ("fixture-bar-hash",),
+                "certificate_hash": "certificate-hash",
+            }
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            assert frozen_policy_id == "frozen-policy"
+            payload = dict(policy.__dict__)
+            payload["schema_version"] = "meta-replay-policy-v1"
+            return {
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "meta_policy_payload": payload,
+                "simple_comparator": "B2_static",
+                "comparator_selection_rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            }
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            assert meta_run_id == "meta-run"
+            return result_payload
+
+        def validate_phase2_10_statistical_evidence(self, evidence_id: str) -> dict[str, Any]:
+            assert evidence_id == statistical_artifact["statistical_evidence_id"]
+            return statistical_artifact
+
+    with pytest.raises(ValueError, match="statistical bootstrap lower_bound mismatch"):
+        MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id")
 
 
 @pytest.mark.parametrize(
@@ -1692,6 +1845,14 @@ def test_t2_8_effective_policy_identity_is_order_independent_and_material_change
     assert changed.effective_version != policy.effective_version
 
 
+def test_t2_8_effective_policy_identity_material_threshold_changes_split_identity():
+    policy = ScorecardPolicy()
+    changed = replace(policy, max_drawdown=policy.max_drawdown - 0.05)
+
+    assert changed.policy_hash != policy.policy_hash
+    assert changed.effective_version != policy.effective_version
+
+
 def test_t2_8_effective_policy_identity_conflict_is_immutable():
     db = DuckDBManager(":memory:")
     scorecard = card()
@@ -1721,6 +1882,51 @@ def test_t2_10_transition_stress_uses_returned_stressed_lineage_and_selector_reg
         row["selector_consumed_regime"] == row["perturbed_operational_regime"]
         for row in transition["transition_lineage"]
     )
+    assert _recompute_transition_stress_quality(result.stress_results, MetaReplayPolicy())
+
+
+def test_t2_10_transition_stress_fixture_can_change_selector_choice_and_orders():
+    class RegimeSensitiveSelector(AdaptiveStrategySelector):
+        def select(self, **kwargs):
+            decision = super().select(**kwargs)
+            selected = "alpha" if kwargs["market_regime"] == "BULL" else "beta"
+            return replace(
+                decision,
+                decision=SELECT,
+                selected_strategies=(selected,),
+                weights={selected: 1.0},
+            )
+
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    target_portfolios = {"alpha": {"ABC": 1.0}, "beta": {}}
+    items = [
+        obs(
+            start,
+            [card(name="alpha", net_return=0.03), card(name="beta", net_return=0.02)],
+            {"alpha": 0.01, "beta": 0.0},
+            raw_regime="BULL",
+            operational_regime="BULL",
+            target_portfolios=target_portfolios,
+            meta_split="RESEARCH",
+        ),
+        obs(
+            start + timedelta(days=1),
+            [card(name="alpha", net_return=0.03), card(name="beta", net_return=0.02)],
+            {"alpha": 0.01, "beta": 0.0},
+            raw_regime="BEAR",
+            operational_regime="BEAR",
+            target_portfolios=target_portfolios,
+            meta_split="RESEARCH",
+        ),
+    ]
+    result = MetaSelectorBacktest(
+        RegimeSensitiveSelector(SelectorPolicy(allow_ensemble=False))
+    ).run(items)
+    transition = result.stress_results["transition_uncertainty"]
+
+    assert result.execution_payload["decisions"][1]["selected_strategies"] == ("beta",)
+    assert transition["selector_decisions"][1]["selected_strategies"] == ("alpha",)
+    assert _canonical_hash(result.orders) != _canonical_hash(transition["orders"])
     assert _recompute_transition_stress_quality(result.stress_results, MetaReplayPolicy())
 
 
@@ -1758,3 +1964,152 @@ def test_t2_10_baseline_hash_binds_per_time_decision_lineage():
 
     with pytest.raises(ValueError, match="baseline execution hash mismatch"):
         _validate_baseline_artifact(mutated, strict=True)
+
+
+def _rehash_baseline(artifact: dict[str, Any], *, execution: bool = False, result: bool = False) -> dict[str, Any]:
+    updated = dict(artifact)
+    if execution:
+        updated["execution_hash"] = _canonical_hash(_baseline_execution_payload(updated))
+    if result:
+        updated["result_hash"] = _baseline_artifact_hash(updated)
+    return updated
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda baseline: _rehash_baseline(
+                {**baseline, "eligible_strategies": ("tampered",)},
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "baseline_decisions": [
+                        {**baseline["baseline_decisions"][0], "selected_strategies": ("tampered",)},
+                        *baseline["baseline_decisions"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "baseline_decisions": [
+                        {**baseline["baseline_decisions"][0], "weights": {"alpha": 0.5}},
+                        *baseline["baseline_decisions"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "targets": [
+                        {**baseline["targets"][0], "target_weights": {"ABC": 1.0}},
+                        *baseline["targets"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline target hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "deltas": [
+                        {**baseline["deltas"][0], "target_weights": {"ABC": 1.0}},
+                        *baseline["deltas"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "orders": [
+                        {**baseline["orders"][0], "order_id": "tampered-order"},
+                        *baseline["orders"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "fills": [
+                        {**baseline["fills"][0], "fill_id": "tampered-fill"},
+                        *baseline["fills"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "costs": [
+                        {**baseline["costs"][0], "total_cost": baseline["costs"][0]["total_cost"] + 1.0},
+                        *baseline["costs"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "equity_curve": [
+                        {**baseline["equity_curve"][0], "equity": baseline["equity_curve"][0]["equity"] + 1.0},
+                        *baseline["equity_curve"][1:],
+                    ],
+                },
+                execution=True,
+                result=True,
+            ),
+            "baseline equity hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {**baseline, "execution_hash": "tampered-execution-hash"},
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: {**baseline, "result_hash": "tampered-result-hash"},
+            "baseline result hash mismatch",
+        ),
+    ],
+)
+def test_t2_10_baseline_hash_binding_rejects_adversarial_mutations(mutate, expected_error: str):
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([
+        obs(start, [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+    ])
+    baseline = result.baselines["B3_equal_ensemble"]
+
+    with pytest.raises(ValueError, match=expected_error):
+        _validate_baseline_artifact(mutate(baseline), strict=True)
