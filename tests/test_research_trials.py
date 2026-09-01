@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
+from risk.engine import RiskEngine
 from experiments.manager import ExperimentManager
 from experiments.models import ExperimentSpec
 from experiments.trials import (
@@ -368,7 +369,7 @@ def test_walk_forward_evaluator_records_every_candidate(test_db: DuckDBManager) 
     )
     test_db.register_experiment_family(family)
 
-    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=3)
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=3, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["RELIANCE"],
@@ -439,7 +440,7 @@ def test_walk_forward_budget_exhaustion_blocks_candidate_execution(test_db: Duck
     )
     test_db.register_experiment_family(family)
 
-    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=5)
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=5, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["RELIANCE"],
@@ -588,7 +589,7 @@ def test_statistical_integrity_acceptance_20_candidates(test_db: DuckDBManager) 
     )
     test_db.register_experiment_family(family)
 
-    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=30)
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=30, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["RELIANCE"],
@@ -716,7 +717,7 @@ def test_walk_forward_evaluator_failed_candidate_continuation(test_db: DuckDBMan
     )
     test_db.register_experiment_family(family)
 
-    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=5)
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=5, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["RELIANCE"],
@@ -1024,7 +1025,7 @@ def test_walk_forward_governance_failure_aborts_before_candidate_c(
         source_revision="rev",
     )
     test_db.register_experiment_family(family)
-    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=3)
+    evaluator = WalkForwardEvaluator(test_db, maximum_candidates=3, risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following", universe=["RELIANCE"], timeframe="1d",
         experiment_family_id=family.experiment_family_id,

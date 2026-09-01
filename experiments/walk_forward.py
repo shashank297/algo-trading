@@ -59,6 +59,10 @@ class WalkForwardEvaluator:
         test_size: int = 63,
         starting_capital: float = 100_000.0,
     ) -> list[str]:
+        if spec.require_authoritative_certification and self.risk_engine is None:
+            raise ValueError(
+                "Authoritative walk-forward evaluation requires an explicitly injected configured RiskEngine."
+            )
         metadata = StrategyRegistry.metadata(spec.strategy_name)
         source = self._source(spec, metadata.scope, metadata.required_lookback)
         dates = pd.DatetimeIndex(

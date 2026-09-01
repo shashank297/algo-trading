@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping
 from statistics import NormalDist
 from typing import Any
 
+import pandas as pd
+
 
 def marked_to_market_equity(
     cash: float,
@@ -89,6 +91,20 @@ def calculate_projected_var_pct(
     if not math.isfinite(float(equity)) or equity <= 0:
         return None
     return NormalDist().inv_cdf(0.95) * float(volatility) * float(projected_gross) / float(equity)
+
+
+def causal_rolling_volatility(
+    closes: pd.Series,
+    *,
+    window: int = 20,
+    include_current: bool = False,
+) -> pd.Series:
+    """Return rolling close volatility using only prices available at evaluation."""
+
+    returns = pd.to_numeric(closes, errors="coerce").pct_change()
+    if not include_current:
+        returns = returns.shift(1)
+    return returns.rolling(window, min_periods=window).std(ddof=1)
 
 
 def cost_schedule_identity(

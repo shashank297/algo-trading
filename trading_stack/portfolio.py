@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -17,7 +17,9 @@ from risk.models import RiskAction, TradeProposal
 from trading_stack.backtest import _compute_metrics
 from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.economic import (
+    causal_rolling_volatility,
     calculate_projected_var_pct,
+    cost_schedule_identity,
     economic_contract_hash,
     max_affordable_quantity,
 )
@@ -80,13 +82,19 @@ class PortfolioEventBacktester:
         max_sector_exposure: float = 0.10,
         db: Any = None,
         risk_engine: RiskEngine | None = None,
+        require_authoritative: bool = False,
     ) -> None:
+        self._fixed_cost_schedule = cost_schedule
         self.cost_schedule = cost_schedule or IndianDeliveryCostSchedule()
         self.max_position_weight = risk_engine.policy.max_position_pct if risk_engine else max_position_weight
         self.max_gross_exposure = risk_engine.policy.max_gross_exposure_pct if risk_engine else max_gross_exposure
         self.max_sector_exposure = risk_engine.policy.max_sector_exposure_pct if risk_engine else max_sector_exposure
         self.db = db
         self.risk_engine = risk_engine
+        if require_authoritative and self.risk_engine is None:
+            raise ValueError(
+                "Authoritative portfolio replay requires an explicitly injected configured RiskEngine."
+            )
 
     def run(
         self,
@@ -113,7 +121,10 @@ class PortfolioEventBacktester:
         signals = strategy.generate_signals(panel)
         signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
         effective_parameters = {**dict(getattr(strategy, "parameters", {})), **(parameters or {})}
-        run_id = self._run_id(strategy.name, dataset.data_hash, effective_parameters, mode)
+        run_id = self._run_id(
+            strategy.name, dataset.data_hash, effective_parameters, mode,
+            [timestamp.date() for timestamp in pd.to_datetime(panel["timestamp"], utc=True)],
+        )
         panel_causal = panel.copy().sort_values(["symbol", "timestamp"]).reset_index(drop=True)
         panel_causal["lagged_adv20"] = (
             panel_causal.groupby("symbol", group_keys=False)["volume"]
@@ -124,6 +135,9 @@ class PortfolioEventBacktester:
             .shift(1)
         )
         panel_causal["lagged_traded_value"] = panel_causal["lagged_close"] * panel_causal["lagged_adv20"]
+        panel_causal["volatility_20"] = panel_causal.groupby("symbol")["close"].transform(
+            causal_rolling_volatility
+        )
 
         day_groups = {
             pd.Timestamp(timestamp): group.set_index("symbol", drop=False)
@@ -258,10 +272,10 @@ class PortfolioEventBacktester:
                 "risk_policy_hash": economic_contract_hash(
                     self.risk_engine.policy.model_dump() if self.risk_engine else {}
                 ),
-                "cost_schedule_identity": economic_contract_hash(asdict(self.cost_schedule)),
+                "cost_schedule_identity": self._cost_identity(dates),
                 "economic_contract_hash": economic_contract_hash({
                     "risk_policy": self.risk_engine.policy.model_dump() if self.risk_engine else {},
-                    "cost_schedule": asdict(self.cost_schedule),
+                    "cost_schedule_identity": self._cost_identity(dates),
                     "starting_capital": starting_capital,
                     "execution_mode": mode,
                     "liquidity_policy": {
@@ -735,10 +749,29 @@ class PortfolioEventBacktester:
             },
         }
 
-    def _run_id(self, strategy_name: str, data_hash: str, parameters: dict[str, Any], mode: str) -> str:
+    def _cost_identity(self, dates: list[pd.Timestamp]) -> str:
+        resolver = (
+            (lambda _date: self._fixed_cost_schedule)
+            if self._fixed_cost_schedule is not None
+            else get_cost_schedule
+        )
+        return cost_schedule_identity([timestamp.date() for timestamp in dates], resolver)
+
+    def _run_id(
+        self,
+        strategy_name: str,
+        data_hash: str,
+        parameters: dict[str, Any],
+        mode: str,
+        execution_dates: list[Any] | None = None,
+    ) -> str:
+        dates = execution_dates or []
         configuration_hash = hashlib.sha256(json.dumps({
             "parameters": parameters,
-            "cost_schedule": asdict(self.cost_schedule),
+            "cost_schedule_identity": (
+                self._cost_identity([pd.Timestamp(value) for value in dates])
+                if dates else economic_contract_hash(self.cost_schedule.__dict__)
+            ),
             "max_position_weight": self.max_position_weight,
             "max_gross_exposure": self.max_gross_exposure,
             "max_sector_exposure": self.max_sector_exposure,

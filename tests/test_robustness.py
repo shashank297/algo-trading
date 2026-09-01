@@ -11,6 +11,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from risk.engine import RiskEngine
+from risk.models import RiskPolicy
 from experiments.models import ExperimentSpec
 from experiments.robustness import (
     NestedWalkForwardSplitter,
@@ -35,6 +37,19 @@ from storage.duckdb_manager import DuckDBManager
 from storage.migrations.runner import MigrationRunner
 from trading_stack.datasets import ResearchDataset
 from trading_stack.features import FeatureFactory
+
+
+def _permissive_risk() -> RiskEngine:
+    return RiskEngine(RiskPolicy(
+        max_position_pct=1.0,
+        max_gross_exposure_pct=1.0,
+        max_daily_loss_pct=1.0,
+        max_drawdown_pct=1.0,
+        max_sector_exposure_pct=1.0,
+        max_open_positions=500,
+        max_var_pct=1.0,
+        min_liquidity_crore=0.0,
+    ))
 
 
 
@@ -128,7 +143,7 @@ def test_nested_wf_sealed_final_oos_leakage_prevention(tmp_path: Any, monkeypatc
     )
 
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -178,14 +193,14 @@ def test_purge_and_embargo_boundaries() -> None:
 
     # Reject negative purge / embargo
     with pytest.raises(ValueError, match="purge_window must be non-negative"):
-        RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy()).evaluate(
+        RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy(), risk_engine=RiskEngine()).evaluate(
             "run-neg",
             ExperimentSpec(strategy_name="trend_following", universe=["SYM"], timeframe="1d"),
             purge_window=-1,
         )
 
     with pytest.raises(ValueError, match="embargo_window must be non-negative"):
-        RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy()).evaluate(
+        RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy(), risk_engine=RiskEngine()).evaluate(
             "run-neg",
             ExperimentSpec(strategy_name="trend_following", universe=["SYM"], timeframe="1d"),
             embargo_window=-2,
@@ -263,7 +278,7 @@ def test_cost_stress_2x_worsens_net_performance(tmp_path: Any, monkeypatch: pyte
     db = DuckDBManager(db_path)
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -309,7 +324,7 @@ def test_execution_stress_scenarios_deterministic(tmp_path: Any, monkeypatch: py
     db = DuckDBManager(db_path)
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -392,7 +407,7 @@ def test_trial_registry_linkage_and_dsr_sensitivity(tmp_path: Any, monkeypatch: 
             db.transition_research_trial(tid, "SUCCEEDED", metrics={"sharpe": 1.1, "total_return": 0.15})
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -532,7 +547,7 @@ def test_parameter_robustness_selector_continuous_perturbation_and_empty_grid() 
 def test_nested_wf_insufficient_bars_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """Nested walk forward raises error when total data length is smaller than train + val + test."""
     db = DuckDBManager(":memory:")
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
     spec = ExperimentSpec(strategy_name="trend_following", universe=["TEST_SYM"], timeframe="1d")
 
     # Mock _source to return a short dataset with only 50 bars
@@ -578,7 +593,7 @@ def test_event_driven_mode_robustness_evaluation(tmp_path: Any, monkeypatch: pyt
     )
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -631,7 +646,7 @@ def test_parameter_grid_candidate_generation(tmp_path: Any, monkeypatch: pytest.
     )
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -770,7 +785,7 @@ def test_candidate_replay_error_handling_in_nested_selection(tmp_path: Any, monk
     )
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=_permissive_risk())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -887,7 +902,7 @@ def test_real_selected_trial_id_linkage_in_registry(tmp_path: Any, monkeypatch: 
     )
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -926,7 +941,7 @@ def test_cost_and_execution_stress_on_oos_evidence(tmp_path: Any, monkeypatch: p
     db = DuckDBManager(db_path)
 
     ds = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(slippage_stress_bps=15.0, liquidity_stress_factor=2.0))
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(slippage_stress_bps=15.0, liquidity_stress_factor=2.0), risk_engine=RiskEngine())
 
     spec = ExperimentSpec(
         strategy_name="trend_following",
@@ -969,7 +984,7 @@ def test_cost_and_execution_stress_on_oos_evidence(tmp_path: Any, monkeypatch: p
 
 def test_candidate_combinatorics_generation() -> None:
     """Verify _candidates generates multi-variable Cartesian product."""
-    evaluator = RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(cast(DuckDBManager, None), policy=RobustnessPolicy(), risk_engine=RiskEngine())
     grid = {
         "fast_threshold": (0.01, 0.02),
         "min_volatility": (0.005, 0.01),
@@ -992,7 +1007,7 @@ def test_source_and_cross_sectional_run_execution(tmp_path: Any, monkeypatch: py
     candles = _make_dummy_candles(n_days=100, seed=42)
     candles["dataset_id"] = "DS_TEST_01"
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
 
     spec_single = ExperimentSpec(
         strategy_name="trend_following",
@@ -1127,7 +1142,7 @@ def test_source_empty_candles_error(tmp_path: Any, monkeypatch: pytest.MonkeyPat
     MigrationRunner(db_path).run_migrations()
     db = DuckDBManager(db_path)
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
     spec = ExperimentSpec(strategy_name="trend_following", universe=["NON_EXISTENT"], timeframe="1d")
 
     monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf: pd.DataFrame())
@@ -1188,7 +1203,7 @@ def test_governance_and_registry_family_integration(tmp_path: Any, monkeypatch: 
         """
     )
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["TEST_SYM"],
@@ -1248,7 +1263,7 @@ def test_source_calendar_validation_and_malformed_json_evidence(tmp_path: Any, m
         """
     )
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
     spec = ExperimentSpec(strategy_name="trend_following", universe=["TEST_SYM"], timeframe="1d")
     candles = _make_dummy_candles(n_days=100, seed=42)
 
@@ -1318,7 +1333,7 @@ def test_fold_complete_dataset_lineage_and_evidence_hash_binding(tmp_path: Any, 
     db = DuckDBManager(db_path)
 
     ds_1 = _make_dummy_dataset(n_days=400, seed=42)
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
     spec = ExperimentSpec(strategy_name="trend_following", universe=["TEST_SYM"], timeframe="1d")
 
     monkeypatch.setattr(evaluator, "_source", lambda spec, scope, lookback: ds_1)
@@ -1479,7 +1494,7 @@ def test_registry_family_with_deduplicated_and_failed_trials(tmp_path: Any, monk
         """
     )
 
-    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy())
+    evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
     spec = ExperimentSpec(
         strategy_name="trend_following",
         universe=["TEST_SYM"],

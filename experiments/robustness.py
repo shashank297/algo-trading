@@ -1112,6 +1112,10 @@ class RobustnessEvaluator:
         starting_capital: float = 100_000.0,
     ) -> RobustnessBundle:
         """Execute full nested walk-forward evaluation, statistical tests, and persistence."""
+        if spec.require_authoritative_certification and self.risk_engine is None:
+            raise ValueError(
+                "Authoritative robustness evaluation requires an explicitly injected configured RiskEngine."
+            )
         purge_w = purge_window if purge_window is not None else self.policy.purge_window
         embargo_w = embargo_window if embargo_window is not None else self.policy.embargo_window
 

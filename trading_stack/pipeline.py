@@ -280,7 +280,10 @@ class StrategyPipeline:
                 parameters=parameters,
             )
         else:
-            result = EventDrivenBacktester(execution_model=execution_model).run(
+            result = EventDrivenBacktester(
+                execution_model=execution_model,
+                risk_engine=self._require_authoritative_risk(),
+            ).run(
                 strategy=strategy,
                 bars=featured,
                 symbol=symbol,

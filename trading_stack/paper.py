@@ -22,6 +22,7 @@ from trading_stack.domain import (
     OrderSide,
     PaperExecutionMode,
 )
+from trading_stack.economic import causal_rolling_volatility, calculate_projected_var_pct
 from trading_stack.features import FeatureFactory
 from trading_stack.strategies import StrategyRegistry
 
@@ -185,9 +186,25 @@ class ForwardPaperSessionEngine:
                 daily_start_equity = cash + quantity * float(bar["open"])
             pending_ts = pending.get("signal_timestamp") or pending.get("timestamp") if pending else None
             if pending is not None and pending_ts is not None and pd.Timestamp(pending_ts) < bar_timestamp:
-                available = completed.loc[pd.to_datetime(completed["timestamp"], utc=True) < bar_timestamp]
-                returns = available["close"].pct_change().dropna()
-                recent_vol = float(returns.tail(20).std()) if len(returns.tail(20)) >= 20 else None
+                is_next_open = execution_mode in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN")
+                available = completed.loc[
+                    pd.to_datetime(completed["timestamp"], utc=True)
+                    < bar_timestamp if is_next_open else
+                    pd.to_datetime(completed["timestamp"], utc=True) <= bar_timestamp
+                ]
+                recent_vol_series = causal_rolling_volatility(
+                    available["close"], include_current=True
+                ).dropna()
+                recent_vol = float(recent_vol_series.iloc[-1]) if not recent_vol_series.empty else None
+                prior = completed.loc[
+                    pd.to_datetime(completed["timestamp"], utc=True) < bar_timestamp
+                ]
+                if is_next_open:
+                    if not prior.empty:
+                        bar["prior_volume"] = float(prior.iloc[-1]["volume"])
+                        bar["prior_close"] = float(prior.iloc[-1]["close"])
+                    if len(prior) >= 1:
+                        bar["lagged_adv20"] = float(prior["volume"].tail(20).mean())
                 (
                     cash, quantity, average_cost, entry_timestamp, entry_reason,
                     entry_cost_pool, entry_execution_cost_pool,
@@ -378,11 +395,17 @@ class ForwardPaperSessionEngine:
         requested_notional = max(abs(requested_delta) * price, 1e-9)
         current_position_notional = quantity * price
 
-        vol = float(bar.get("volume", 0.0) or 0.0)
+        vol = float(
+            bar.get("lagged_adv20")
+            or bar.get("prior_volume")
+            or bar.get("volume", 0.0)
+            or 0.0
+        )
         daily_turnover_crore = (vol * price / 10_000_000.0) if (vol > 0 and price > 0) else None
-        est_var_pct = (
-            1.65 * asset_volatility * (requested_notional / max(current_equity, 1e-9))
-            if current_equity > 0 and asset_volatility is not None and asset_volatility > 0 else None
+        est_var_pct = calculate_projected_var_pct(
+            volatility=asset_volatility,
+            projected_gross=current_position_notional + requested_notional,
+            equity=current_equity,
         )
 
         proposal = TradeProposal(

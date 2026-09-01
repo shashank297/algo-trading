@@ -88,6 +88,10 @@ class ExperimentManager:
         resolved_dataset: Any = None
         lineage_error: ResearchLineageError | None = None
         authoritative_certification = governed or spec.require_authoritative_certification
+        if spec.require_authoritative_certification and self.risk_engine is None:
+            raise ValueError(
+                "Authoritative experiments require an explicitly injected configured RiskEngine."
+            )
 
         if metadata.scope == StrategyScope.CROSS_SECTIONAL:
             try:

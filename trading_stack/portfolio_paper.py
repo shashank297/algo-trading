@@ -17,7 +17,11 @@ from storage import DuckDBManager
 from trading_stack.calendars import MarketCalendar
 from trading_stack.costs import IndianDeliveryCostSchedule
 from trading_stack.datasets import SynchronizedPanelBuilder
-from trading_stack.economic import calculate_projected_var_pct, economic_contract_hash
+from trading_stack.economic import (
+    causal_rolling_volatility,
+    calculate_projected_var_pct,
+    economic_contract_hash,
+)
 from trading_stack.domain import (
     OpeningTickObservation,
     PaperExecutionMode,
@@ -64,7 +68,10 @@ class ForwardPortfolioPaperSessionEngine:
             self.cost_schedule,
             max_position_weight=risk_engine.policy.max_position_pct,
             max_gross_exposure=risk_engine.policy.max_gross_exposure_pct,
+            max_sector_exposure=risk_engine.policy.max_sector_exposure_pct,
             db=self.db,
+            risk_engine=risk_engine,
+            require_authoritative=True,
         )
 
     def run(
@@ -112,9 +119,11 @@ class ForwardPortfolioPaperSessionEngine:
             .transform(lambda s: s.shift(1))
         )
         panel["lagged_traded_value"] = panel["lagged_close"] * panel["lagged_adv20"]
-        panel["volatility_20"] = (
-            panel.groupby("symbol")["close"]
-            .transform(lambda prices: prices.pct_change().rolling(20, min_periods=20).std(ddof=1))
+        panel["volatility_20"] = panel.groupby("symbol")["close"].transform(
+            lambda prices: causal_rolling_volatility(
+                prices,
+                include_current=execution_mode not in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN"),
+            )
         )
         signals = strategy.generate_signals(panel).copy()
         signals["timestamp"] = pd.to_datetime(signals["timestamp"], utc=True)
@@ -254,7 +263,7 @@ class ForwardPortfolioPaperSessionEngine:
             if not pending.empty and pd.Timestamp(pending["timestamp"].max()) < session_timestamp:
                 adjusted, decisions = self._risk_adjust_targets(
                     pending, day, quantities, cash, latest_prices, starting_capital,
-                    daily_start_equity, peak_equity,
+                    daily_start_equity, peak_equity, execution_mode,
                 )
                 all_risk.extend(decisions)
                 cash, generated = self.backtester._rebalance(
@@ -383,6 +392,7 @@ class ForwardPortfolioPaperSessionEngine:
         capital: float,
         daily_start_equity: float,
         peak_equity: float,
+        execution_mode: str = PaperExecutionMode.EOD_BATCH.value,
     ) -> tuple[pd.DataFrame, list[RiskDecision]]:
         adjusted = targets.copy()
         del capital  # Risk limits use the current marked-to-market equity below.
@@ -390,22 +400,38 @@ class ForwardPortfolioPaperSessionEngine:
             adjusted["target_weight"] = pd.to_numeric(adjusted["target_weight"], errors="coerce").fillna(0.0)
         else:
             adjusted["target_weight"] = 0.0
-        equity = cash + sum(quantity * prices.get(symbol, 0.0) for symbol, quantity in quantities.items())
+        is_next_open = execution_mode in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN")
+        decision_prices = dict(prices)
+        for symbol, row in day.iterrows():
+            if is_next_open:
+                observed_open = row.get("open_tick_price")
+                decision_prices[str(symbol)] = float(
+                    observed_open if pd.notna(observed_open) and observed_open else row["open"]
+                )
+            else:
+                decision_prices[str(symbol)] = float(row["close"])
+        equity = cash + sum(
+            quantity * decision_prices.get(symbol, 0.0)
+            for symbol, quantity in quantities.items()
+        )
         target_weights = {
             str(k): (0.0 if pd.isna(v) else float(v))
             for k, v in zip(adjusted["symbol"].astype(str), adjusted["target_weight"])
         }
-        current_gross = sum(abs(quantity * prices.get(symbol, 0.0)) for symbol, quantity in quantities.items())
+        current_gross = sum(
+            abs(quantity * decision_prices.get(symbol, 0.0))
+            for symbol, quantity in quantities.items()
+        )
         sector_exposure: dict[str, float] = {}
         if "sector" in day.columns:
             for held_symbol, held_quantity in quantities.items():
                 sector = str(day.loc[held_symbol, "sector"]) if held_symbol in day.index else "UNKNOWN"
                 sector_exposure[sector] = sector_exposure.get(sector, 0.0) + abs(
-                    held_quantity * prices.get(held_symbol, 0.0)
+                    held_quantity * decision_prices.get(held_symbol, 0.0)
                 )
         decisions: list[RiskDecision] = []
         for symbol, quantity in quantities.items():
-            current_notional = abs(quantity * prices.get(symbol, 0.0))
+            current_notional = abs(quantity * decision_prices.get(symbol, 0.0))
             target_notional = target_weights.get(symbol, 0.0) * equity
             reduction = max(current_notional - target_notional, 0.0)
             if reduction > 0:
@@ -419,7 +445,7 @@ class ForwardPortfolioPaperSessionEngine:
             if symbol not in day.index:
                 adjusted.loc[index, "target_weight"] = 0.0
                 continue
-            price = float(day.loc[symbol, "open"])
+            price = decision_prices.get(symbol, 0.0)
             current_notional = quantities.get(symbol, 0.0) * price
             raw_weight = row.get("target_weight", 0.0)
             weight = 0.0 if pd.isna(raw_weight) else float(raw_weight)
