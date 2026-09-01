@@ -9,9 +9,10 @@ from typing import Any, Iterable, cast
 import pandas as pd
 import pytest
 
-from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _acceptance_policy_hash, _canonical_hash, _recompute_stress_quality, _stress_artifact_hash, _stress_execution_hash
+from experiments.meta_selector_backtest import CASH, CausalRiskSnapshot, FinalDatasetReference, FinalOOSProvenanceCertificate, FrozenMetaPolicy, HistoricalEvidenceResolver, MetaReplayPolicy, MetaResearchRunner, MetaSelectorBacktest, MetaSelectorCheckpoint, MetaSelectorObservation, _BaselineSelector, _acceptance_policy_hash, _baseline_artifact_hash, _baseline_execution_payload, _canonical_hash, _recompute_statistical_quality, _recompute_stress_quality, _recompute_transition_stress_quality, _stress_artifact_hash, _stress_execution_hash, _validate_baseline_artifact
 from experiments.selector_walk_forward import split_meta_walk_forward
 from experiments.trials import ExperimentFamilySpec, ResearchTrial
+from experiments.statistical_tests import EvidenceStatus
 from risk.engine import RiskEngine
 from risk.models import RiskPolicy
 from storage.duckdb_manager import DuckDBManager
@@ -555,6 +556,27 @@ def test_t2_10_g2_b5_adaptive_included_in_benchmark_ladder():
     )
     assert "B5_adaptive" in result.baselines
     assert result.baselines["B5_adaptive"]["total_return"] == result.metrics["total_return"]
+
+
+def test_t2_10_b4_final_ignores_unproven_prior_return_values():
+    now = datetime(2024, 4, 1, tzinfo=UTC)
+    replay = MetaSelectorBacktest(
+        _BaselineSelector(
+            AdaptiveStrategySelector(), "B4", None,
+            unavailable_action=CASH, volatility_lookback=20, min_history=10,
+        )
+    )
+    result = replay.run(
+        [obs(
+            now, [card()], {"alpha": 0.01},
+            prior_strategy_returns={"alpha": tuple([0.01] * 20)},
+            asset_returns={"ABC": 0.01},
+        )],
+        include_stress=False,
+        include_baselines=False,
+        _skip_final_oos_validation=True,
+    )
+    assert result.decisions[0].decision == ABSTAIN
 
 
 def test_t2_10_h_static_winner_can_beat_adaptive_without_forced_promotion():
@@ -1348,6 +1370,678 @@ def test_t2_10_zl_acceptance_policy_canonicalizes_scenarios_and_thresholds():
             MetaReplayPolicy(required_stress_scenarios=scenarios)
 
 
+def test_t2_10_statistical_bootstrap_is_recomputed_and_standalone():
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)
+    evidence = replay._statistical_evidence(
+        returns, independent_trades=10, meta_split="FINAL_OOS", equity_hash=_canonical_hash(equity_curve),
+    )
+    evidence.update({
+        "meta_run_id": "statistical-run",
+        "frozen_policy_id": "frozen-statistical",
+        "selected_trial_id": "trial-statistical",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": datetime(2024, 2, 1, tzinfo=UTC),
+        "source_execution_hash": "execution-statistical",
+        "statistical_evidence_id": "",
+    })
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key not in {"evidence_hash", "statistical_evidence_id"}
+    })
+    evidence["statistical_evidence_id"] = evidence["evidence_hash"][:32]
+    result = {
+        "metrics": {"statistical_evidence": evidence},
+        "equity_curve": equity_curve,
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "execution-statistical",
+    }
+    assert _recompute_statistical_quality(result, policy)
+    tampered = {**evidence, "tests": {**evidence["tests"], "BOOTSTRAP": {**evidence["tests"]["BOOTSTRAP"], "metric": {**evidence["tests"]["BOOTSTRAP"]["metric"], "lower_bound": 0.5}}}}
+    assert not _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": tampered}}, policy)
+    with pytest.raises(ValueError, match="statistical bootstrap lower_bound mismatch"):
+        _recompute_statistical_quality(
+            {**result, "metrics": {"statistical_evidence": tampered}},
+            policy,
+            strict=True,
+        )
+
+
+def _statistical_validation_fixture(
+    policy: MetaReplayPolicy,
+    returns: list[float],
+    *,
+    independent_trades: int = 10,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    evidence = MetaSelectorBacktest(
+        AdaptiveStrategySelector(), replay_policy=policy,
+    )._statistical_evidence(
+        returns,
+        independent_trades=independent_trades,
+        meta_split="FINAL_OOS",
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    evidence["source_execution_hash"] = "statistical-fixture-execution"
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key != "evidence_hash"
+    })
+    evidence["statistical_evidence_id"] = evidence["evidence_hash"][:32]
+    return {
+        "metrics": {"statistical_evidence": evidence},
+        "equity_curve": equity_curve,
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "statistical-fixture-execution",
+    }, evidence
+
+
+def _rehash_statistical_evidence(evidence: dict[str, Any], **updates: Any) -> dict[str, Any]:
+    updated = {**evidence, **updates}
+    updated["evidence_hash"] = _canonical_hash({
+        key: value for key, value in updated.items()
+        if key not in {"evidence_hash", "statistical_evidence_id"}
+    })
+    updated["statistical_evidence_id"] = updated["evidence_hash"][:32]
+    return updated
+
+
+def test_t2_10_authentic_statistical_weakness_is_a_gate_failure():
+    cases = (
+        (
+            MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability"),
+            [0.01, -0.01] * 15,
+            10,
+        ),
+        (
+            MetaReplayPolicy(
+                required_statistical_tests=("BOOTSTRAP", "PSR"),
+                primary_statistical_criterion="psr_probability",
+                bootstrap_min_lower_bound=1.0,
+            ),
+            [0.01, -0.01] * 15,
+            10,
+        ),
+        (
+            MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability"),
+            [0.01, -0.01] * 10,
+            10,
+        ),
+        (
+            MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability"),
+            [0.01, -0.01] * 15,
+            0,
+        ),
+    )
+    for policy, returns, independent_trades in cases:
+        result, _ = _statistical_validation_fixture(
+            policy, returns, independent_trades=independent_trades,
+        )
+        assert _recompute_statistical_quality(result, policy, strict=True) is False
+
+
+def test_t2_10_matching_insufficient_psr_dsr_and_bootstrap_statuses_are_ready_gates():
+    psr_policy = MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability")
+    psr_result, _ = _statistical_validation_fixture(psr_policy, [0.01, -0.01] * 10)
+    assert _recompute_statistical_quality(psr_result, psr_policy, strict=True) is False
+
+    dsr_policy = MetaReplayPolicy(required_statistical_tests=("DSR",), primary_statistical_criterion="dsr_probability")
+    dsr_result, _ = _statistical_validation_fixture(dsr_policy, [0.01, -0.01] * 15)
+    assert _recompute_statistical_quality(dsr_result, dsr_policy, strict=True) is False
+
+    bootstrap_policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+    )
+    bootstrap_result, _ = _statistical_validation_fixture(bootstrap_policy, [0.01, -0.01] * 10)
+    assert _recompute_statistical_quality(bootstrap_result, bootstrap_policy, strict=True) is False
+
+
+@pytest.mark.parametrize(
+    ("test_name", "policy", "returns", "expected_error"),
+    [
+        (
+            "DSR",
+            MetaReplayPolicy(required_statistical_tests=("DSR",), primary_statistical_criterion="dsr_probability"),
+            [0.01, -0.01] * 15,
+            "statistical DSR status mismatch",
+        ),
+        (
+            "BOOTSTRAP",
+            MetaReplayPolicy(
+                required_statistical_tests=("BOOTSTRAP", "PSR"),
+                primary_statistical_criterion="psr_probability",
+            ),
+            [0.01, -0.01] * 10,
+            "statistical bootstrap status mismatch",
+        ),
+    ],
+)
+def test_t2_10_insufficient_status_contradictions_hard_fail(
+    test_name: str, policy: MetaReplayPolicy, returns: list[float], expected_error: str,
+):
+    result, evidence = _statistical_validation_fixture(policy, returns)
+    assert evidence["tests"][test_name]["status"] == EvidenceStatus.INSUFFICIENT_EVIDENCE.value
+    assert _recompute_statistical_quality(result, policy, strict=True) is False
+    tampered_test = {**evidence["tests"][test_name], "status": EvidenceStatus.VALID.value}
+    tampered = _rehash_statistical_evidence(
+        evidence,
+        tests={**evidence["tests"], test_name: tampered_test},
+    )
+    with pytest.raises(ValueError, match=expected_error):
+        _recompute_statistical_quality(
+            {**result, "metrics": {"statistical_evidence": tampered}},
+            policy,
+            strict=True,
+        )
+
+
+def test_t2_10_observation_count_mismatch_is_integrity_but_low_matching_count_is_ready():
+    policy = MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability")
+    result, evidence = _statistical_validation_fixture(policy, [0.01, -0.01] * 10)
+    assert _recompute_statistical_quality(result, policy, strict=True) is False
+    mismatched = _rehash_statistical_evidence(evidence, observations=19)
+    with pytest.raises(ValueError, match="statistical observation count mismatch"):
+        _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": mismatched}}, policy, strict=True)
+
+
+@pytest.mark.parametrize(
+    ("returns", "persisted_status", "expected_error"),
+    [
+        ([0.01, -0.01] * 15, EvidenceStatus.INSUFFICIENT_EVIDENCE.value, "statistical PSR status mismatch"),
+        ([0.01, -0.01] * 10, EvidenceStatus.VALID.value, "statistical PSR status mismatch"),
+        ([0.01, -0.01] * 10, EvidenceStatus.INVALID_INPUT.value, "statistical PSR status mismatch"),
+    ],
+)
+def test_t2_10_persisted_statistical_status_must_match_recomputation(
+    returns: list[float], persisted_status: str, expected_error: str,
+):
+    policy = MetaReplayPolicy(required_statistical_tests=("PSR",), primary_statistical_criterion="psr_probability")
+    result, evidence = _statistical_validation_fixture(policy, returns)
+    recomputed_status = evidence["tests"]["PSR"]["status"]
+    if persisted_status == recomputed_status:
+        assert _recompute_statistical_quality(result, policy, strict=True) is False
+        return
+    psr = {**evidence["tests"]["PSR"], "status": persisted_status}
+    tampered = _rehash_statistical_evidence(evidence, tests={**evidence["tests"], "PSR": psr})
+    with pytest.raises(ValueError, match=expected_error):
+        _recompute_statistical_quality({**result, "metrics": {"statistical_evidence": tampered}}, policy, strict=True)
+
+
+def test_t2_10_psr_below_threshold_reaches_ready_acceptance(monkeypatch):
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("PSR",),
+        primary_statistical_criterion="psr_probability",
+    )
+    result, evidence = _statistical_validation_fixture(policy, [0.01, -0.01] * 15)
+    final_end = datetime(2024, 4, 1, tzinfo=UTC)
+    materialized_at = datetime(2024, 5, 1, tzinfo=UTC)
+    evidence.update({
+        "frozen_policy_id": "frozen-policy",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": materialized_at,
+    })
+    evidence = _rehash_statistical_evidence(evidence)
+    certificate = {
+        "certificate_id": "certificate-id",
+        "frozen_policy_id": "frozen-policy",
+        "acceptance_policy_version": "phase2-10-acceptance-v1",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "execution_hash": result["final_oos_execution_hash"],
+        "meta_run_id": "meta-run",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "statistical_evidence_id": evidence["statistical_evidence_id"],
+        "statistical_evidence_hash": evidence["evidence_hash"],
+        "final_oos_end": final_end,
+        "materialized_at": materialized_at + timedelta(days=1),
+        "dataset_ids": ("dataset",),
+        "dataset_content_hashes": ("dataset-hash",),
+        "universe_snapshot_id": "universe",
+        "dataset_certification_ids": ("certification",),
+        "risk_snapshot_ids": ("risk",),
+        "risk_snapshot_hashes": ("risk-hash",),
+        "evidence_ids": ("evidence",),
+        "outcome_series_ids": ("outcome",),
+        "execution_bar_hashes": ("bars",),
+    }
+    result["metrics"].update({
+        "final_oos_duration_days": 1.0,
+        "decision_count": 1.0,
+        "trade_count": 10.0,
+        "evidence_coverage": 1.0,
+        "causal_verification": 1.0,
+    })
+    result["baselines"] = {
+        name: {"total_return": 0.0}
+        for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
+    }
+    result["stress_results"] = {scenario: {} for scenario in policy.required_stress_scenarios}
+
+    class AcceptanceDb:
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            return certificate
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            payload = dict(policy.__dict__)
+            payload["schema_version"] = "meta-replay-policy-v1"
+            return {
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "meta_policy_payload": payload,
+                "simple_comparator": "B2_static",
+                "comparator_selection_rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            }
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            return result
+
+        def validate_phase2_10_statistical_evidence(self, evidence_id: str) -> dict[str, Any]:
+            return evidence
+
+    monkeypatch.setattr("experiments.meta_selector_backtest._validate_baseline_artifact", lambda artifact, strict=False: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_transition_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_selector_stability", lambda *args, **kwargs: {"score": 1.0})
+    assert MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id") == "PHASE 2.10 IMPLEMENTATION READY"
+
+
+def _seed_insufficient_dsr_registry(db: DuckDBManager, created_at: datetime) -> tuple[str, str]:
+    family = ExperimentFamilySpec(
+        experiment_family_id="phase2-1-dsr-insufficient",
+        hypothesis="Authoritative DSR registry insufficiency",
+        strategy_names=["meta_selector"],
+        strategy_versions=["phase2.10"],
+        universe_snapshot_id="META",
+        timeframe="1d",
+        feature_versions=["phase2.10"],
+        cost_model_version="synthetic",
+        parameter_space={},
+        maximum_trials=2,
+        selection_metric="sharpe",
+        walk_forward_design={"purge_periods": 0, "embargo_periods": 0},
+        source_revision="test",
+        created_at=created_at,
+    )
+    db.register_experiment_family(family)
+    trial = ResearchTrial(
+        experiment_family_id=family.experiment_family_id,
+        strategy_name="meta_selector",
+        strategy_version="phase2.10",
+        scope="META_SELECTOR",
+        timeframe="1d",
+        parameters={"candidate": "only-sharpe-observation"},
+        source_revision="test",
+        data_hash="synthetic",
+        cost_model_hash="synthetic-cost",
+        frame_certification_id="frame-certification",
+        created_at=created_at,
+    )
+    trial_id = db.create_research_trial(trial)
+    db.transition_research_trial(trial_id, "RUNNING", effective_at=created_at, recorded_at=created_at)
+    db.transition_research_trial(
+        trial_id,
+        "SUCCEEDED",
+        metrics={"sharpe": 1.0},
+        effective_at=created_at + timedelta(minutes=1),
+        recorded_at=created_at + timedelta(minutes=1),
+    )
+    return family.experiment_family_id, trial_id
+
+
+def test_t2_10_registry_backed_insufficient_dsr_is_a_ready_gate(tmp_path):
+    db = DuckDBManager(str(tmp_path / "dsr-insufficient.duckdb"))
+    created_at = datetime(2024, 1, 1, tzinfo=UTC)
+    family_id, trial_id = _seed_insufficient_dsr_registry(db, created_at)
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("DSR", "PSR"),
+        primary_statistical_criterion="dsr_probability",
+        min_psr_probability=0.1,
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": created_at + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy, db=db)
+    evidence = replay._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        experiment_family_id=family_id,
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    evidence["source_execution_hash"] = "registry-dsr-execution"
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key != "evidence_hash"
+    })
+    result = {
+        "metrics": {"statistical_evidence": evidence},
+        "equity_curve": equity_curve,
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "registry-dsr-execution",
+    }
+    dsr = evidence["tests"]["DSR"]
+    assert dsr["status"] == EvidenceStatus.INSUFFICIENT_EVIDENCE.value
+    assert dsr["trial_count_source"] == "PHASE2_1_REGISTRY"
+    assert dsr["trial_ids"] == [trial_id]
+    assert dsr["effective_trials"] == 1
+    assert _recompute_statistical_quality(result, policy, db=db, strict=True) is False
+    db.close()
+
+
+def _assert_statistical_acceptance_ready(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: MetaReplayPolicy,
+    result: dict[str, Any],
+    evidence: dict[str, Any],
+    *,
+    registry_db: DuckDBManager | None = None,
+) -> None:
+    final_end = datetime(2024, 4, 1, tzinfo=UTC)
+    materialized_at = datetime(2024, 5, 1, tzinfo=UTC)
+    evidence.update({
+        "frozen_policy_id": "frozen-policy",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": materialized_at,
+    })
+    evidence = _rehash_statistical_evidence(evidence)
+    certificate = {
+        "certificate_id": "certificate-id",
+        "frozen_policy_id": "frozen-policy",
+        "acceptance_policy_version": "phase2-10-acceptance-v1",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "execution_hash": result["final_oos_execution_hash"],
+        "meta_run_id": "meta-run",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "statistical_evidence_id": evidence["statistical_evidence_id"],
+        "statistical_evidence_hash": evidence["evidence_hash"],
+        "final_oos_end": final_end,
+        "materialized_at": materialized_at + timedelta(days=1),
+        "dataset_ids": ("dataset",),
+        "dataset_content_hashes": ("dataset-hash",),
+        "universe_snapshot_id": "universe",
+        "dataset_certification_ids": ("certification",),
+        "risk_snapshot_ids": ("risk",),
+        "risk_snapshot_hashes": ("risk-hash",),
+        "evidence_ids": ("evidence",),
+        "outcome_series_ids": ("outcome",),
+        "execution_bar_hashes": ("bars",),
+    }
+    result["metrics"].update({
+        "final_oos_duration_days": 1.0,
+        "decision_count": 1.0,
+        "trade_count": 10.0,
+        "evidence_coverage": 1.0,
+        "causal_verification": 1.0,
+    })
+    result["baselines"] = {
+        name: {"total_return": 0.0}
+        for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced")
+    }
+    result["stress_results"] = {scenario: {} for scenario in policy.required_stress_scenarios}
+
+    class AcceptanceDb:
+        def list_research_trials(self, family_id: str | None = None, **kwargs: Any) -> list[dict[str, Any]]:
+            assert registry_db is not None
+            return registry_db.list_research_trials(family_id=family_id, **kwargs)
+
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            return certificate
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            payload = dict(policy.__dict__)
+            payload["schema_version"] = "meta-replay-policy-v1"
+            return {
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "meta_policy_payload": payload,
+                "simple_comparator": "B2_static",
+                "comparator_selection_rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            }
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            return result
+
+        def validate_phase2_10_statistical_evidence(self, evidence_id: str) -> dict[str, Any]:
+            return evidence
+
+    monkeypatch.setattr("experiments.meta_selector_backtest._validate_baseline_artifact", lambda artifact, strict=False: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_transition_stress_quality", lambda *args, **kwargs: True)
+    monkeypatch.setattr("experiments.meta_selector_backtest._recompute_selector_stability", lambda *args, **kwargs: {"score": 1.0})
+    assert MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id") == "PHASE 2.10 IMPLEMENTATION READY"
+
+
+def test_t2_10_registry_backed_dsr_weakness_reaches_ready_acceptance(tmp_path, monkeypatch):
+    db = DuckDBManager(str(tmp_path / "dsr-acceptance.duckdb"))
+    created_at = datetime(2024, 1, 1, tzinfo=UTC)
+    family_id, _ = _seed_insufficient_dsr_registry(db, created_at)
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("DSR", "PSR"),
+        primary_statistical_criterion="dsr_probability",
+        min_psr_probability=0.1,
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    result, _ = _statistical_validation_fixture(policy, returns)
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy, db=db)
+    evidence = replay._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        experiment_family_id=family_id,
+        equity_hash=_canonical_hash(result["equity_curve"]),
+    )
+    evidence["source_execution_hash"] = result["final_oos_execution_hash"]
+    evidence["evidence_hash"] = _canonical_hash({
+        key: value for key, value in evidence.items() if key != "evidence_hash"
+    })
+    evidence["statistical_evidence_id"] = evidence["evidence_hash"][:32]
+    _assert_statistical_acceptance_ready(monkeypatch, policy, result, evidence, registry_db=db)
+    db.close()
+
+
+def test_t2_10_bootstrap_weakness_reaches_ready_acceptance(monkeypatch):
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+        min_psr_probability=0.1,
+        bootstrap_min_lower_bound=1.0,
+    )
+    result, evidence = _statistical_validation_fixture(policy, [0.01, -0.01] * 15)
+    assert evidence["tests"]["PSR"]["probability"] >= policy.min_psr_probability
+    assert evidence["tests"]["BOOTSTRAP"]["metric"]["lower_bound"] < policy.bootstrap_min_lower_bound
+    _assert_statistical_acceptance_ready(monkeypatch, policy, result, evidence)
+
+
+def test_t2_10_supplied_statistical_artifact_has_exclusive_authority():
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("PSR",),
+        primary_statistical_criterion="psr_probability",
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    replay = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)
+    standalone = replay._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    standalone.update({"source_execution_hash": "execution", "source_equity_hash": _canonical_hash(equity_curve)})
+    standalone["evidence_hash"] = _canonical_hash({key: value for key, value in standalone.items() if key != "evidence_hash"})
+    result = {
+        "metrics": {"statistical_evidence": {"tampered": True}},
+        "execution_payload": {"equity_curve": equity_curve},
+        "final_oos_execution_hash": "execution",
+    }
+    assert _recompute_statistical_quality(result, policy, evidence=standalone)
+
+
+def test_t2_10_acceptance_hard_fails_on_statistical_contradictions():
+    policy = MetaReplayPolicy(
+        required_statistical_tests=("BOOTSTRAP", "PSR"),
+        primary_statistical_criterion="psr_probability",
+    )
+    returns = [0.01 + (index % 5) * 0.001 for index in range(30)]
+    equity_curve = tuple(
+        {"timestamp": datetime(2024, 1, 1, tzinfo=UTC) + timedelta(days=index), "net_return": value}
+        for index, value in enumerate(returns)
+    )
+    base_result = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy).run([
+        obs(datetime(2024, 4, 1, tzinfo=UTC), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+        obs(datetime(2024, 4, 2, tzinfo=UTC), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+    ])
+    execution_payload = {
+        **base_result.execution_payload,
+        "equity_curve": equity_curve,
+        "selector_stability_evidence": [{"trials": [{
+            "baseline_decision": "SELECT",
+            "baseline_selected_strategies": ["alpha"],
+            "baseline_weights": {"ABC": 1.0},
+            "decision": "SELECT",
+            "selected_strategies": ["alpha"],
+            "weights": {"ABC": 1.0},
+        }]}],
+    }
+    execution_hash = hashlib.sha256(
+        json.dumps(execution_payload, sort_keys=True, default=str, separators=(",", ":")).encode()
+    ).hexdigest()
+    statistical_artifact = MetaSelectorBacktest(
+        AdaptiveStrategySelector(),
+        replay_policy=policy,
+    )._statistical_evidence(
+        returns,
+        independent_trades=10,
+        meta_split="FINAL_OOS",
+        equity_hash=_canonical_hash(equity_curve),
+    )
+    statistical_artifact.update({
+        "frozen_policy_id": "frozen-policy",
+        "selected_trial_id": "selected-trial",
+        "meta_policy_hash": "meta-policy-hash",
+        "acceptance_policy_hash": _acceptance_policy_hash(policy),
+        "materialized_at": datetime(2024, 5, 1, tzinfo=UTC),
+        "source_execution_hash": execution_hash,
+    })
+    statistical_artifact["evidence_hash"] = _canonical_hash({
+        key: value for key, value in statistical_artifact.items() if key != "evidence_hash"
+    })
+    statistical_artifact["statistical_evidence_id"] = statistical_artifact["evidence_hash"][:32]
+    statistical_artifact = {
+        **statistical_artifact,
+        "tests": {
+            **statistical_artifact["tests"],
+            "BOOTSTRAP": {
+                **statistical_artifact["tests"]["BOOTSTRAP"],
+                "metric": {
+                    **statistical_artifact["tests"]["BOOTSTRAP"]["metric"],
+                    "lower_bound": 0.5,
+                },
+            },
+        },
+    }
+    statistical_artifact["evidence_hash"] = _canonical_hash({
+        key: value
+        for key, value in statistical_artifact.items()
+        if key not in {"evidence_hash", "statistical_evidence_id"}
+    })
+    baselines = dict(base_result.baselines)
+    baselines["B2_static"] = {
+        **baselines["B3_equal_ensemble"],
+        "baseline_id": "B2_static",
+        "selection": "pit_static_fixture",
+    }
+    baselines["B2_static"]["execution_hash"] = _canonical_hash(
+        _baseline_execution_payload(baselines["B2_static"])
+    )
+    baselines["B2_static"]["result_hash"] = _baseline_artifact_hash(baselines["B2_static"])
+    result_payload = {
+        "metrics": {
+            **base_result.metrics,
+            "final_oos_duration_days": 30.0,
+            "decision_count": 30.0,
+            "trade_count": 10.0,
+            "evidence_coverage": 1.0,
+            "causal_verification": 1.0,
+            "selector_stability_score": 1.0,
+            "statistical_evidence": statistical_artifact,
+        },
+        "baselines": baselines,
+        "stress_results": base_result.stress_results,
+        "execution_payload": execution_payload,
+        "equity_curve": equity_curve,
+        "final_oos_execution_hash": execution_hash,
+    }
+
+    class AcceptanceDb:
+        def validate_final_oos_provenance_certificate(self, certificate_id: str) -> dict[str, Any]:
+            return {
+                "certificate_id": certificate_id,
+                "frozen_policy_id": "frozen-policy",
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "execution_hash": execution_hash,
+                "meta_run_id": "meta-run",
+                "selected_trial_id": "selected-trial",
+                "meta_policy_hash": "meta-policy-hash",
+                "statistical_evidence_id": statistical_artifact["statistical_evidence_id"],
+                "statistical_evidence_hash": statistical_artifact["evidence_hash"],
+                "final_oos_end": datetime(2024, 4, 1, tzinfo=UTC),
+                "materialized_at": datetime(2024, 5, 2, tzinfo=UTC),
+                "dataset_ids": ("fixture-dataset",),
+                "dataset_content_hashes": ("dataset-a",),
+                "universe_snapshot_id": "META",
+                "dataset_certification_ids": ("fixture-certification",),
+                "risk_snapshot_ids": ("fixture-risk",),
+                "risk_snapshot_hashes": ("fixture-risk-hash",),
+                "evidence_ids": ("fixture-evidence",),
+                "outcome_series_ids": ("fixture-outcome",),
+                "execution_bar_hashes": ("fixture-bar-hash",),
+                "certificate_hash": "certificate-hash",
+            }
+
+        def load_frozen_meta_policy(self, frozen_policy_id: str) -> dict[str, Any]:
+            assert frozen_policy_id == "frozen-policy"
+            payload = dict(policy.__dict__)
+            payload["schema_version"] = "meta-replay-policy-v1"
+            return {
+                "acceptance_policy_version": "phase2-10-acceptance-v1",
+                "acceptance_policy_hash": _acceptance_policy_hash(policy),
+                "meta_policy_payload": payload,
+                "simple_comparator": "B2_static",
+                "comparator_selection_rule": "highest_validation_after_cost_return_then_B2_B3_B4",
+            }
+
+        def validate_meta_selector_result_execution_hash(self, meta_run_id: str) -> dict[str, Any]:
+            assert meta_run_id == "meta-run"
+            return result_payload
+
+        def validate_phase2_10_statistical_evidence(self, evidence_id: str) -> dict[str, Any]:
+            assert evidence_id == statistical_artifact["statistical_evidence_id"]
+            return statistical_artifact
+
+    with pytest.raises(ValueError, match="statistical bootstrap lower_bound mismatch"):
+        MetaResearchRunner(AcceptanceDb()).evaluate_final_oos_acceptance("certificate-id")
+
+
 @pytest.mark.parametrize(
     ("simple_return", "expected_verdict"),
     [
@@ -1363,12 +2057,16 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     final = final_reference(start)
     db = DuckDBManager(":memory:")
     runner = MetaResearchRunner(db)
+    test_policy = MetaReplayPolicy(
+        required_statistical_tests=("PSR",),
+        primary_statistical_criterion="psr_probability",
+    )
     lifecycle = runner.run(
         train, validation, final,
-        [("candidate-a", AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)), MetaReplayPolicy())],
+        [("candidate-a", AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False)), test_policy)],
         data_hash="dataset-a", frozen_at=start + timedelta(days=1, hours=12),
     )
-    policy = MetaReplayPolicy()
+    policy = test_policy
 
     def scenario(scenario_id: str, total_return: float, execution_cost: float, *, fill_count: float = 1.0, slippage: float = 0.01, switching_cost_drag: float = 0.01, bar: str = "base") -> dict[str, Any]:
         artifact = {
@@ -1393,6 +2091,27 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         "delayed_execution": scenario("delayed_execution", 0.07, 0.012, bar="delayed"),
         "reduced_liquidity": scenario("reduced_liquidity", 0.05, 0.012, fill_count=0.5),
     }
+    transition = scenario("transition_uncertainty", 0.07, 0.012, bar="transition")
+    transition["informative"] = True
+    transition["base_transition_lineage"] = [
+        {"timestamp": start.isoformat(), "operational_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BEAR"},
+    ]
+    transition["regime_lineage"] = [
+        {"timestamp": start.isoformat(), "operational_regime": "BULL", "selector_consumed_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "operational_regime": "BULL", "selector_consumed_regime": "BULL"},
+    ]
+    transition["transition_lineage"] = [
+        {"timestamp": start.isoformat(), "base_operational_regime": "BULL", "perturbed_operational_regime": "BULL", "selector_consumed_regime": "BULL"},
+        {"timestamp": (start + timedelta(days=1)).isoformat(), "base_operational_regime": "BEAR", "perturbed_operational_regime": "BULL", "selector_consumed_regime": "BULL"},
+    ]
+    transition["selector_decisions"] = [
+        {"selector_consumed_regime": "BULL"},
+        {"selector_consumed_regime": "BULL"},
+    ]
+    transition["execution_hash"] = _stress_execution_hash(transition)
+    transition["result_hash"] = _stress_artifact_hash(transition)
+    stress["transition_uncertainty"] = transition
     tampered_stress = dict(stress)
     tampered_stress["1.5x_cost"] = {
         **stress["1.5x_cost"], "fills": [{"fill_id": "tampered-fill"}],
@@ -1408,12 +2127,37 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
     metrics.update({"final_oos_duration_days": 2.0, "decision_count": 2.0, "trade_count": 2.0, "evidence_coverage": 1.0, "causal_verification": 1.0, "switch_count": 0.0, "max_drawdown": -0.10, "total_return": 0.20, "robustness_certified": 0.0, "selector_stable": 0.0})
     baselines = dict(base_result.baselines)
     for name in ("B2_static", "B3_equal_ensemble", "B4_risk_balanced"):
-        baselines[name] = {**baselines.get(name, {}), "total_return": simple_return}
-    execution_payload = {**base_result.execution_payload, "orders": [fixture_order], "selector_stability_evidence": stability_evidence}
+        baseline = {**baselines.get(name, {}), "total_return": simple_return}
+        baseline["execution_hash"] = _canonical_hash(_baseline_execution_payload(baseline))
+        baseline["result_hash"] = _baseline_artifact_hash(baseline)
+        baselines[name] = baseline
+    returns = [0.01 + (index % 3) * 0.001 for index in range(30)]
+    fixture_equity_curve = tuple(
+        {
+            "timestamp": start + timedelta(days=2 + index),
+            "cash": 100_000.0,
+            "holdings": {},
+            "equity": 100_000.0,
+            "net_return": value,
+            "drawdown": -0.01,
+            "position": 0.0,
+            "decision": "SELECT",
+            "turnover": 0.01,
+            "execution_cost": 0.01,
+            "slippage": 0.001,
+        }
+        for index, value in enumerate(returns)
+    )
+    execution_payload = {**base_result.execution_payload, "orders": [fixture_order], "selector_stability_evidence": stability_evidence, "equity_curve": fixture_equity_curve}
     execution_hash = hashlib.sha256(json.dumps(execution_payload, sort_keys=True, default=str, separators=(",", ":")).encode()).hexdigest()
+    statistical = MetaSelectorBacktest(AdaptiveStrategySelector(), replay_policy=policy)._statistical_evidence(returns, independent_trades=10, meta_split="FINAL_OOS")
+    statistical["source_execution_hash"] = execution_hash
+    statistical["source_equity_hash"] = _canonical_hash(fixture_equity_curve)
+    statistical["evidence_hash"] = _canonical_hash({key: value for key, value in statistical.items() if key != "evidence_hash"})
+    metrics["statistical_evidence"] = statistical
     pre_payload = {**base_result.pre_verdict_result_payload, "metrics": metrics, "baselines": baselines, "stress": stress, "execution_payload": execution_payload, "final_oos_execution_hash": execution_hash}
     fixture_result = replace(
-        base_result, meta_run_id=f"fixture-final-{simple_return}", metrics=metrics, baselines=baselines, stress_results=stress,
+        base_result, meta_run_id=f"fixture-final-{simple_return}", metrics=metrics, baselines=baselines, stress_results=stress, equity_curve=fixture_equity_curve,
         orders=(fixture_order,), final_oos_execution_hash=execution_hash, execution_payload=execution_payload,
         pre_verdict_result_payload=pre_payload, pre_verdict_result_hash=_canonical_hash(pre_payload),
     )
@@ -1421,6 +2165,20 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         fixture_result, policy_version=policy.version, selector_policy_version=lifecycle.frozen_policy.selector_policy_version,
         selector_policy_hash=lifecycle.frozen_policy.selector_policy_hash, meta_split="FINAL_OOS", available_at=start + timedelta(days=3),
     )
+    statistical_artifact = dict(statistical)
+    statistical_artifact.update({
+        "meta_run_id": fixture_result.meta_run_id,
+        "frozen_policy_id": lifecycle.frozen_policy.frozen_policy_id,
+        "selected_trial_id": lifecycle.frozen_policy.selected_trial_id,
+        "acceptance_policy_hash": lifecycle.frozen_policy.acceptance_policy_hash,
+        "meta_policy_hash": lifecycle.frozen_policy.meta_policy_hash,
+        "materialized_at": start + timedelta(days=3),
+    })
+    statistical_artifact["evidence_hash"] = _canonical_hash({
+        key: value for key, value in statistical_artifact.items() if key != "evidence_hash"
+    })
+    statistical_artifact["statistical_evidence_id"] = statistical_artifact["evidence_hash"][:32]
+    db.persist_phase2_10_statistical_evidence(statistical_artifact)
     db.conn.execute(
         "INSERT INTO market_datasets (dataset_id, exchange, timeframe, provider_name, raw_hash, transformation_hash, lifecycle_status, status, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         ["fixture-dataset", "NSE", "1m", "test-fixture", "dataset-a", "dataset-a", "CANONICAL_PROMOTED", "VERIFIED", "{}"],
@@ -1459,6 +2217,8 @@ def test_t2_10_zm_acceptance_reloads_real_duckdb_chain(simple_return: float, exp
         outcome_series_bindings=(("fixture-outcome", "fixture-outcome-hash"),), execution_bar_hashes=("fixture-bar-hash",),
         execution_bar_ids=("fixture-bar-id",), dataset_certification_bindings=(("fixture-dataset", "fixture-certification"),),
         dataset_bindings=(("fixture-dataset", "dataset-a"),), knowledge_cutoff=start + timedelta(days=2),
+        statistical_evidence_id=statistical_artifact["statistical_evidence_id"],
+        statistical_evidence_hash=statistical_artifact["evidence_hash"],
     )
     db.persist_final_oos_provenance_certificate(certificate)
     assert db.validate_final_oos_provenance_certificate(certificate.certificate_id)["certificate_id"] == certificate.certificate_id
@@ -1524,3 +2284,287 @@ def test_t2_10_zo_acceptance_storage_is_idempotent_and_conflict_safe():
         db.persist_phase2_10_empirical_acceptance(
             **{**arguments, "acceptance_id": conflicting_id, "acceptance_hash": conflicting_hash, "verdict": simpler_verdict}
         )
+
+
+def test_t2_8_effective_policy_identity_is_order_independent_and_material_changes_split_identity():
+    policy = ScorecardPolicy()
+    reordered = replace(policy, weights=dict(reversed(tuple(policy.weights.items()))))
+    changed_weights = dict(policy.weights)
+    changed_weights["performance"] += 0.01
+    changed_weights["downside"] -= 0.01
+    changed = replace(policy, weights=changed_weights)
+
+    assert reordered.policy_hash == policy.policy_hash
+    assert reordered.effective_version == policy.effective_version
+    assert changed.policy_hash != policy.policy_hash
+    assert changed.effective_version != policy.effective_version
+
+
+def test_t2_8_effective_policy_identity_material_threshold_changes_split_identity():
+    policy = ScorecardPolicy()
+    changed = replace(policy, max_drawdown=policy.max_drawdown - 0.05)
+
+    assert changed.policy_hash != policy.policy_hash
+    assert changed.effective_version != policy.effective_version
+
+
+def test_t2_8_effective_policy_identity_conflict_is_immutable():
+    db = DuckDBManager(":memory:")
+    scorecard = card()
+    db.persist_scorecard(scorecard)
+
+    with pytest.raises(ValueError, match="immutable scorecard"):
+        db.persist_scorecard(replace(scorecard, evidence_hash="tampered-evidence"))
+    with pytest.raises(ValueError, match="effective scorecard policy identity"):
+        db.persist_scorecard(replace(scorecard, scorecard_policy_hash="tampered-policy"))
+
+
+def test_t2_10_transition_stress_uses_returned_stressed_lineage_and_selector_regime():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    items = [
+        obs(start, [card()], {"alpha": 0.01}, raw_regime="BULL", operational_regime="BULL", meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, raw_regime="BEAR", operational_regime="BEAR", meta_split="RESEARCH"),
+    ]
+    result = MetaSelectorBacktest(AdaptiveStrategySelector(SelectorPolicy(allow_ensemble=False))).run(items)
+    transition = result.stress_results["transition_uncertainty"]
+
+    assert transition["informative"] is True
+    assert any(
+        row["base_operational_regime"] != row["perturbed_operational_regime"]
+        for row in transition["transition_lineage"]
+    )
+    assert all(
+        row["selector_consumed_regime"] == row["perturbed_operational_regime"]
+        for row in transition["transition_lineage"]
+    )
+    assert _recompute_transition_stress_quality(result.stress_results, MetaReplayPolicy())
+
+
+def test_t2_10_transition_stress_fixture_can_change_selector_choice_and_orders():
+    class RegimeSensitiveSelector(AdaptiveStrategySelector):
+        def select(self, **kwargs):
+            decision = super().select(**kwargs)
+            selected = "alpha" if kwargs["market_regime"] == "BULL" else "beta"
+            return replace(
+                decision,
+                decision=SELECT,
+                selected_strategies=(selected,),
+                weights={selected: 1.0},
+            )
+
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    target_portfolios = {"alpha": {"ABC": 1.0}, "beta": {}}
+    items = [
+        obs(
+            start,
+            [card(name="alpha", net_return=0.03), card(name="beta", net_return=0.02)],
+            {"alpha": 0.01, "beta": 0.0},
+            raw_regime="BULL",
+            operational_regime="BULL",
+            target_portfolios=target_portfolios,
+            meta_split="RESEARCH",
+        ),
+        obs(
+            start + timedelta(days=1),
+            [card(name="alpha", net_return=0.03), card(name="beta", net_return=0.02)],
+            {"alpha": 0.01, "beta": 0.0},
+            raw_regime="BEAR",
+            operational_regime="BEAR",
+            target_portfolios=target_portfolios,
+            meta_split="RESEARCH",
+        ),
+    ]
+    result = MetaSelectorBacktest(
+        RegimeSensitiveSelector(SelectorPolicy(allow_ensemble=False))
+    ).run(items)
+    transition = result.stress_results["transition_uncertainty"]
+
+    assert result.execution_payload["decisions"][1]["selected_strategies"] == ("beta",)
+    assert transition["selector_decisions"][1]["selected_strategies"] == ("alpha",)
+    assert _canonical_hash(result.orders) != _canonical_hash(transition["orders"])
+    assert _recompute_transition_stress_quality(result.stress_results, MetaReplayPolicy())
+
+
+def test_t2_10_transition_integrity_tampering_hard_fails_at_acceptance_boundary():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([
+        obs(start, [card()], {"alpha": 0.01}, raw_regime="BULL", operational_regime="BULL", meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, raw_regime="BEAR", operational_regime="BEAR", meta_split="RESEARCH"),
+    ])
+    tampered = dict(result.stress_results)
+    transition = dict(tampered["transition_uncertainty"])
+    transition["execution_hash"] = "tampered-execution-hash"
+    tampered["transition_uncertainty"] = transition
+
+    with pytest.raises(ValueError, match="transition execution hash mismatch"):
+        _recompute_transition_stress_quality(tampered, MetaReplayPolicy(), strict=True)
+
+
+def test_t2_10_baseline_hash_binds_per_time_decision_lineage():
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([
+        obs(start, [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+    ])
+    baseline = result.baselines["B3_equal_ensemble"]
+    assert _validate_baseline_artifact(baseline)
+    mutated = {
+        **baseline,
+        "baseline_decisions": [
+            {**baseline["baseline_decisions"][0], "selected_strategies": ("tampered",)},
+            *baseline["baseline_decisions"][1:],
+        ],
+    }
+    mutated["result_hash"] = _baseline_artifact_hash(mutated)
+
+    with pytest.raises(ValueError, match="baseline execution hash mismatch"):
+        _validate_baseline_artifact(mutated, strict=True)
+
+
+def _rehash_baseline(artifact: dict[str, Any], *, execution: bool = False, result: bool = False) -> dict[str, Any]:
+    updated = dict(artifact)
+    if execution:
+        updated["execution_hash"] = _canonical_hash(_baseline_execution_payload(updated))
+    if result:
+        updated["result_hash"] = _baseline_artifact_hash(updated)
+    return updated
+
+
+@pytest.mark.parametrize(
+    ("mutate", "expected_error"),
+    [
+        (
+            lambda baseline: _rehash_baseline(
+                {**baseline, "eligible_strategies": ("tampered",)},
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "baseline_decisions": [
+                        {**baseline["baseline_decisions"][0], "selected_strategies": ("tampered",)},
+                        *baseline["baseline_decisions"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "baseline_decisions": [
+                        {**baseline["baseline_decisions"][0], "weights": {"alpha": 0.5}},
+                        *baseline["baseline_decisions"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "targets": [
+                        {**baseline["targets"][0], "target_weights": {"ABC": 1.0}},
+                        *baseline["targets"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline target hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "deltas": [
+                        {**baseline["deltas"][0], "target_weights": {"ABC": 1.0}},
+                        *baseline["deltas"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "orders": [
+                        {**baseline["orders"][0], "order_id": "tampered-order"},
+                        *baseline["orders"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "fills": [
+                        {**baseline["fills"][0], "fill_id": "tampered-fill"},
+                        *baseline["fills"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "costs": [
+                        {**baseline["costs"][0], "total_cost": baseline["costs"][0]["total_cost"] + 1.0},
+                        *baseline["costs"][1:],
+                    ],
+                },
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {
+                    **baseline,
+                    "equity_curve": [
+                        {**baseline["equity_curve"][0], "equity": baseline["equity_curve"][0]["equity"] + 1.0},
+                        *baseline["equity_curve"][1:],
+                    ],
+                },
+                execution=True,
+                result=True,
+            ),
+            "baseline equity hash mismatch",
+        ),
+        (
+            lambda baseline: _rehash_baseline(
+                {**baseline, "execution_hash": "tampered-execution-hash"},
+                result=True,
+            ),
+            "baseline execution hash mismatch",
+        ),
+        (
+            lambda baseline: {**baseline, "result_hash": "tampered-result-hash"},
+            "baseline result hash mismatch",
+        ),
+    ],
+)
+def test_t2_10_baseline_hash_binding_rejects_adversarial_mutations(mutate, expected_error: str):
+    start = datetime(2024, 4, 1, tzinfo=UTC)
+    result = MetaSelectorBacktest(AdaptiveStrategySelector()).run([
+        obs(start, [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+        obs(start + timedelta(days=1), [card()], {"alpha": 0.01}, meta_split="RESEARCH"),
+    ])
+    baseline = result.baselines["B3_equal_ensemble"]
+
+    with pytest.raises(ValueError, match=expected_error):
+        _validate_baseline_artifact(mutate(baseline), strict=True)

@@ -29,7 +29,10 @@ The adaptive selector is itself a strategy and is validated as a continuous caus
 - Portfolio state is continuous across strategy changes; switches trade only deltas rather than resetting holdings.
 - Risk-reducing sells are processed before buys in historical rebalance deltas.
 - Replay metrics include returns, CAGR, volatility, Sharpe, Sortino, Calmar, drawdown, VaR/CVaR, notional turnover, costs, slippage, switching drag, switch count, dwell, regime transitions, abstention duration/returns, skipped opportunities, risk avoided, and drawdown effect.
-- Baselines are reported as B0 benchmark, B1 cash, B2 static training-only winner, B3 equal eligible ensemble, B4 simple diversified ensemble, and B5 adaptive.
+- Regime reporting keeps raw and operational transition counts plus period and elapsed-time dwell; `average_regime_dwell` is the operational-regime period dwell metric and is included in restart state.
+- Baselines are reported as B0 benchmark, B1 cash, B2 static training-only winner, B3 equal eligible ensemble, B4 causal trailing inverse-volatility allocation, and B5 adaptive. B2 is selected once from META TRAIN only, then evaluated without changing its strategy; unavailable B2/B4 states use their frozen CASH action.
+- B2, B3, and B4 use the same historical risk, delta, fill, cost, cash, holdings, and accounting path as B5. Their complete after-cost execution artifacts are immutable and hash-bound.
+- META VALIDATION freezes the simple comparator using the highest after-cost return among B2/B3/B4, with deterministic tie order B2, B3, B4. FINAL OOS cannot change either B2 or the comparator.
 
 ## Validation
 
@@ -37,6 +40,11 @@ The adaptive selector is itself a strategy and is validated as a continuous caus
 - Meta-selector trials must be registered before the first final-OOS observation is consumed; final-OOS results cannot be reported for retrospectively registered policies.
 - The final verdict may accept the adaptive selector or report `ADAPTIVE_COMPLEXITY_NOT_JUSTIFIED` when simpler baselines win after costs.
 - Stress reports rerun historical execution for base cost, 1.5x cost, 2.0x cost, switch-cost stress, delayed execution, and reduced liquidity.
+- The five execution stresses are mandatory and hash-bound. Transition uncertainty is a separate required regime stress; missing or non-informative transition evidence fails validity and remains `PHASE 2.10 IMPLEMENTATION READY`.
+- Statistical acceptance is frozen before FINAL OOS, including required PSR/DSR/bootstrap tests, versions, criterion, thresholds, confidence, bootstrap seed/configuration, multiple-testing method, and minimum samples. The standalone statistical evidence artifact is append-only, reloaded, and recomputed from the persisted FINAL execution series; DSR multiplicity comes only from the Phase 2.1 registry.
+- Transition uncertainty is a one-observation delayed operational-regime replay from the base checkpoint, not a metadata flag. It must produce an informative causal lineage and its own execution/result hashes.
+- Regime dwell uses run lengths, with separate raw and operational period/day averages and checkpointed active-run state; `average_regime_dwell` is operational dwell in periods.
+- Replay and `_verdict()` always return `PHASE 2.10 IMPLEMENTATION READY`. Only certificate reload/validation followed by the immutable empirical acceptance policy may emit a contractual `COMPLETE` verdict.
 - Read-only inspection commands in `research.py` query historical scorecards, selector decisions, and meta runs with explicit cutoffs and no latest fallback.
 
 Phases 2.11 and later remain out of scope.

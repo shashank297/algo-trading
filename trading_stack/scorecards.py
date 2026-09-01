@@ -75,6 +75,10 @@ class ScorecardPolicy:
     def policy_hash(self) -> str:
         return _canonical_hash(asdict(self))
 
+    @property
+    def effective_version(self) -> str:
+        return f"{self.version}+{self.policy_hash[:12]}"
+
 
 @dataclass(frozen=True)
 class ScorecardInputs:
@@ -281,7 +285,7 @@ class ScorecardBuilder:
                 "capacity": capacity_penalty,
                 "uncertainty": uncertainty_penalty,
             }.items() if value > 0.25),
-            "policy_version": self.policy.version,
+            "policy_version": self.policy.effective_version,
             "evidence_ids": evidence_ids,
         }
         payload = {
@@ -331,7 +335,7 @@ class ScorecardBuilder:
             overall_score=overall_score,
             available_at=available,
             scorecard_version="phase2.8",
-            scorecard_policy_version=self.policy.version,
+            scorecard_policy_version=self.policy.effective_version,
             scorecard_policy_hash=self.policy.policy_hash,
             evidence_hash=digest,
             evidence_ids=evidence_ids,
