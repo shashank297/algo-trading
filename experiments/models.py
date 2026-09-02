@@ -28,6 +28,7 @@ class ExperimentSpec(BaseModel):
     cost_model_version: str = "legacy-bps-v1"
     require_authoritative_certification: bool = True
     experiment_family_id: str | None = None
+    parent_trial_id: str | None = None
 
 
 class MassExperimentSpec(BaseModel):

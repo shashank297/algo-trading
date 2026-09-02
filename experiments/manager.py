@@ -128,6 +128,7 @@ class ExperimentManager:
                     spec.universe[0],
                     spec.timeframe,
                     require_authoritative_certification=authoritative_certification,
+                    universe_snapshot_id=spec.universe_snapshot_id,
                 )
                 hash_columns = [
                     c for c in ("timestamp", "open", "high", "low", "close", "volume", "adjustment", "provider_name", "dataset_id")
@@ -180,6 +181,7 @@ class ExperimentManager:
                 train_start=train_start,
                 train_end=train_end,
                 fold_id=spec.fold_id,
+                parent_trial_id=spec.parent_trial_id,
                 status=TrialStatus.PLANNED,
             )
             trial_id = self.db.create_research_trial(trial)
@@ -249,6 +251,7 @@ class ExperimentManager:
                     parameters=spec.parameters,
                     starting_capital=starting_capital,
                     cost_model=spec.cost_model,
+                    universe_snapshot_id=spec.universe_snapshot_id,
                 )
                 result = outcome["result"]
                 dataset_id = self._latest_dataset_id(spec.universe[0], spec.timeframe)
@@ -341,6 +344,7 @@ class ExperimentManager:
             train_start=train_start,
             train_end=train_end,
             fold_id=spec.fold_id,
+            parent_trial_id=spec.parent_trial_id,
             status=TrialStatus.PLANNED,
         )
         trial_id = self.db.create_research_trial(trial)

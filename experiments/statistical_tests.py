@@ -443,7 +443,7 @@ def resolve_authoritative_dsr(
             trials_log = db.list_research_trials(family_id=experiment_family_id)
         elif hasattr(db, "conn") and hasattr(db.conn, "execute"):
             rows = db.conn.execute(
-                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                "SELECT trial_id, status, trial_json, metrics_json, parent_trial_id FROM research_trials_log WHERE experiment_family_id = ?",
                 [experiment_family_id],
             ).fetchall()
             trials_log = [
@@ -452,12 +452,13 @@ def resolve_authoritative_dsr(
                     "trial_id": r[0],
                     "status": r[1],
                     "metrics": json.loads(str(r[3])) if r[3] else None,
+                    "parent_trial_id": r[4],
                 }
                 for r in rows
             ]
         elif hasattr(db, "execute"):
             rows = db.execute(
-                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                "SELECT trial_id, status, trial_json, metrics_json, parent_trial_id FROM research_trials_log WHERE experiment_family_id = ?",
                 [experiment_family_id],
             ).fetchall()
             trials_log = [
@@ -466,6 +467,7 @@ def resolve_authoritative_dsr(
                     "trial_id": r[0],
                     "status": r[1],
                     "metrics": json.loads(str(r[3])) if r[3] else None,
+                    "parent_trial_id": r[4],
                 }
                 for r in rows
             ]
@@ -497,6 +499,11 @@ def resolve_authoritative_dsr(
             status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
             reason="EXPERIMENT_FAMILY_NOT_FOUND_IN_DB",
         )
+
+    # Campaign 1 reserves one hypothesis per configuration. Symbol, fold, and
+    # retry rows are execution children and must not inflate DSR multiplicity.
+    if experiment_family_id == "campaign-1-2d653914799e":
+        trials_log = [tr for tr in trials_log if tr.get("parent_trial_id") is None]
 
     registry_sharpes: list[float] = []
     registry_trial_ids: list[str] = []

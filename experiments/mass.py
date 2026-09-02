@@ -12,7 +12,7 @@ from risk.engine import RiskEngine
 
 from experiments.manager import ExperimentManager, source_revision
 from experiments.models import ExperimentSpec, MassExperimentSpec
-from experiments.trials import is_research_governance_error
+from experiments.trials import ResearchTrial, TrialStatus, canonical_hash, is_research_governance_error
 from experiments.walk_forward import WalkForwardEvaluator
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.domain import StrategyScope
@@ -35,6 +35,7 @@ class MassExperimentManager:
 
     def run(self, spec: MassExperimentSpec, starting_capital: float = 100_000.0) -> dict[str, Any]:
         jobs: list[dict[str, Any]] = []
+        campaign_roots: dict[tuple[str, str], str] = {}
         if (spec.require_authoritative_certification or spec.experiment_family_id) and self.risk_engine is None:
             raise ValueError(
                 "Authoritative mass experiments require an explicitly injected configured RiskEngine."
@@ -45,11 +46,37 @@ class MassExperimentManager:
         revision = source_revision(ExperimentManager(self.db, risk_engine=self.risk_engine).project_root)
         data_revision = self.db.market_data_revision()
         self.db.cancel_superseded_experiment_jobs(revision, data_revision)
+        if spec.experiment_family_id == "campaign-1-2d653914799e":
+            from research import materialize_campaign_1_configurations
+
+            for config in materialize_campaign_1_configurations():
+                metadata = StrategyRegistry.metadata(config["strategy_name"])
+                root = ResearchTrial(
+                    experiment_family_id=spec.experiment_family_id,
+                    strategy_name=config["strategy_name"],
+                    strategy_version=config["strategy_version"],
+                    scope=metadata.scope.value,
+                    symbol=None,
+                    universe_snapshot_id=spec.universe_snapshot_id,
+                    timeframe=spec.timeframe,
+                    parameters=config["parameters"],
+                    source_revision=revision,
+                    data_hash=f"campaign-root:{config['parameter_hash']}",
+                    cost_model_hash=canonical_hash(spec.cost_model),
+                    cost_model_version=spec.cost_model_version,
+                    feature_version="features-v1",
+                    status=TrialStatus.PLANNED,
+                )
+                existing_root = self.db.get_research_trial(root.trial_id)
+                campaign_roots[(config["strategy_name"], config["parameter_hash"])] = (
+                    root.trial_id if existing_root is not None else self.db.create_research_trial(root)
+                )
         for strategy_name in spec.strategy_names:
             metadata = StrategyRegistry.metadata(strategy_name)
             targets: list[list[str]] = [spec.universe] if metadata.scope == StrategyScope.CROSS_SECTIONAL else [[symbol] for symbol in spec.universe]
             for universe in targets:
                 parameters = spec.parameters.get(strategy_name, {})
+                parent_trial_id = campaign_roots.get((strategy_name, canonical_hash(parameters)))
                 key = self._job_key(
                     strategy_name, metadata.version, metadata.scope.value, universe,
                     spec.universe_snapshot_id, parameters, spec.cost_model_version, revision,
@@ -83,7 +110,7 @@ class MassExperimentManager:
                     coverage = self._candle_coverage(universe[0], spec.timeframe)
                     payload.update(coverage)
                 self.db.log_experiment_job(payload)
-                jobs.append({**payload, "universe": universe, "parameters": parameters})
+                jobs.append({**payload, "universe": universe, "parameters": parameters, "parent_trial_id": parent_trial_id})
         pending = [job for job in jobs if job.get("state") not in {"SUCCEEDED", "RUNNING"}]
         
         # Display progress bar for pending jobs
@@ -127,6 +154,7 @@ class MassExperimentManager:
                     cost_model_version=spec.cost_model_version,
                     require_authoritative_certification=spec.require_authoritative_certification,
                     experiment_family_id=spec.experiment_family_id,
+                    parent_trial_id=job.get("parent_trial_id"),
                 )
                 result = ExperimentManager(
                     self.db,

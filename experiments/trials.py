@@ -10,6 +10,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+CAMPAIGN_1_FAMILY_ID = "campaign-1-2d653914799e"
+
+
 class ResearchIntegrityError(RuntimeError):
     """Base error for a failure that must stop governed research."""
 

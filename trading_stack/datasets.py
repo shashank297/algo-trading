@@ -32,6 +32,80 @@ REQUIRED_AUTHORITATIVE_DQ_CHECKS = {
 }
 
 
+def pit_evidence_hash(db: DuckDBManager, universe_name: str) -> str:
+    """Hash the complete PIT evidence, including exact knowledge timestamps."""
+    rows = db.conn.execute(
+        """
+        SELECT pit.universe_name, pit.instrument_id, pit.symbol, pit.token, pit.exchange,
+               pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at,
+               pit.weight, pit.inclusion_reason, pit.exclusion_reason
+        FROM index_constituents_pit pit
+        LEFT JOIN index_constituent_knowledge knowledge
+          ON REPLACE(UPPER(knowledge.universe_name), ' ', '') = REPLACE(UPPER(pit.universe_name), ' ', '')
+         AND knowledge.instrument_id = pit.instrument_id
+         AND knowledge.effective_from = pit.effective_from
+        WHERE REPLACE(UPPER(pit.universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
+        ORDER BY pit.symbol, pit.effective_from, pit.effective_until, pit.instrument_id
+        """,
+        [universe_name.upper()],
+    ).fetchall()
+    normalized = [tuple(value.isoformat() if hasattr(value, "isoformat") else value for value in row) for row in rows]
+    return hashlib.sha256(json.dumps(normalized, sort_keys=False, separators=(",", ":"), default=str).encode()).hexdigest()
+
+
+def filter_frame_by_pit(
+    db: DuckDBManager,
+    frame: pd.DataFrame,
+    universe_name: str | None,
+    *,
+    timezone_name: str = "Asia/Kolkata",
+    required: bool = False,
+) -> tuple[pd.DataFrame, str | None]:
+    """Apply effective-date and knowledge-time PIT eligibility to a candle frame."""
+    if not universe_name or universe_name in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}:
+        return frame, None
+    rows = db.conn.execute(
+        """
+        SELECT pit.symbol, pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at
+        FROM index_constituents_pit pit
+        LEFT JOIN index_constituent_knowledge knowledge
+          ON REPLACE(UPPER(knowledge.universe_name), ' ', '') = REPLACE(UPPER(pit.universe_name), ' ', '')
+         AND knowledge.instrument_id = pit.instrument_id
+         AND knowledge.effective_from = pit.effective_from
+        WHERE REPLACE(UPPER(pit.universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
+        ORDER BY pit.symbol, pit.effective_from
+        """,
+        [universe_name.upper()],
+    ).fetchall()
+    if not rows:
+        if required:
+            raise RuntimeError(f"Missing point-in-time constituent history for universe '{universe_name}'.")
+        return frame, None
+    pit_hash = pit_evidence_hash(db, universe_name)
+    pit_df = pd.DataFrame(rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
+    pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
+    pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
+    pit_df["known_from"] = pd.to_datetime(pit_df["known_from"]).dt.date
+    pit_df["known_at"] = pd.to_datetime(pit_df["known_at"], utc=True)
+    if required and (pit_df["known_from"].isna() | pit_df["known_at"].isna()).any():
+        raise RuntimeError(f"PIT evidence for universe '{universe_name}' has incomplete knowledge-time fields.")
+    timestamps = pd.to_datetime(frame["timestamp"], utc=True)
+    local_dates = timestamps.dt.tz_convert(timezone_name).dt.date
+    symbols = frame["symbol"].astype(str).str.upper() if "symbol" in frame else pd.Series(["" for _ in frame.index], index=frame.index)
+    eligible = pd.Series(False, index=frame.index)
+    for _, row in pit_df.iterrows():
+        mask = symbols == str(row["symbol"]).upper()
+        mask &= local_dates >= row["effective_from"]
+        if pd.notna(row["effective_until"]):
+            mask &= local_dates < row["effective_until"]
+        if pd.notna(row["known_from"]):
+            mask &= local_dates >= row["known_from"]
+        if pd.notna(row["known_at"]):
+            mask &= timestamps <= row["known_at"]
+        eligible |= mask
+    return frame.loc[eligible.to_numpy()].reset_index(drop=True), pit_hash
+
+
 @dataclass(frozen=True)
 class ResearchUniverse:
     universe_name: str
@@ -272,9 +346,14 @@ class SynchronizedPanelBuilder:
             if universe_name and universe_name != "CONFIGURED_UNIVERSE":
                 pit_rows = self.db.conn.execute(
                     """
-                    SELECT symbol, effective_from, effective_until 
-                    FROM index_constituents_pit 
-                    WHERE UPPER(universe_name) = ?
+                    SELECT pit.symbol, pit.effective_from, pit.effective_until,
+                           pit.known_from, knowledge.known_at
+                    FROM index_constituents_pit pit
+                    LEFT JOIN index_constituent_knowledge knowledge
+                      ON REPLACE(UPPER(knowledge.universe_name), ' ', '') = REPLACE(UPPER(pit.universe_name), ' ', '')
+                     AND knowledge.instrument_id = pit.instrument_id
+                     AND knowledge.effective_from = pit.effective_from
+                    WHERE REPLACE(UPPER(pit.universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
                     """,
                     [universe_name.upper()],
                 ).fetchall()
@@ -286,9 +365,17 @@ class SynchronizedPanelBuilder:
                 is_named_index = True
 
             if pit_rows:
-                pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until"])
+                pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
                 pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
                 pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
+                pit_df["known_from"] = pd.to_datetime(pit_df["known_from"]).dt.date
+                pit_df["known_at"] = pd.to_datetime(pit_df["known_at"], utc=True)
+                snapshot_exists = self.db.conn.execute(
+                    "SELECT 1 FROM universe_snapshots WHERE snapshot_id = ?",
+                    [universe_snapshot_id],
+                ).fetchone() is not None
+                if self.require_authoritative_certification and snapshot_exists and (pit_df["known_from"].isna() | pit_df["known_at"].isna()).any():
+                    raise RuntimeError(f"PIT evidence for '{universe_name}' has incomplete knowledge-time fields.")
                 
                 panel_dates = pd.to_datetime(panel["timestamp"]).dt.tz_convert(self.calendar.zone).dt.date
                 
@@ -325,6 +412,13 @@ class SynchronizedPanelBuilder:
                             in_interval = sym_dates >= eff_from
                         else:
                             in_interval = (sym_dates >= eff_from) & (sym_dates < eff_until)
+                        known_from = row["known_from"]
+                        known_at = row["known_at"]
+                        if pd.notna(known_from):
+                            in_interval &= sym_dates >= known_from
+                        if pd.notna(known_at):
+                            timestamps = pd.to_datetime(panel.iloc[sym_indices]["timestamp"], utc=True)
+                            in_interval &= timestamps.to_numpy() <= known_at
                         is_member_mask[sym_indices[in_interval]] = True
                 
                 panel["pit_eligible"] = is_member_mask
@@ -470,16 +564,7 @@ class SynchronizedPanelBuilder:
         return result
 
     def _pit_evidence_hash(self, universe_name: str) -> str:
-        rows = self.db.conn.execute(
-            """SELECT universe_name, instrument_id, symbol, token, exchange, 
-                      effective_from, effective_until, known_from, weight, 
-                      inclusion_reason, exclusion_reason 
-               FROM index_constituents_pit 
-               WHERE UPPER(universe_name) = ? 
-               ORDER BY symbol, effective_from, effective_until, instrument_id""",
-            [universe_name.upper()],
-        ).fetchall()
-        return hashlib.sha256(json.dumps(rows, default=str, separators=(",", ":")).encode()).hexdigest()
+        return pit_evidence_hash(self.db, universe_name)
 
     def _resolve_benchmark(self, symbol: str | None, timeframe: str) -> tuple[str | None, str | None]:
         if not symbol:

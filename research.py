@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import time
 from datetime import datetime, timedelta
@@ -31,7 +32,7 @@ from experiments import (
     RobustnessEvaluator,
     RobustnessPolicy,
 )
-from experiments.trials import ExperimentFamilySpec
+from experiments.trials import ExperimentFamilySpec, canonical_hash
 
 from data_platform.universe import PointInTimeUniverseManager
 from risk import build_risk_engine
@@ -51,6 +52,35 @@ CAMPAIGN_1_ID = "campaign-1-2d653914799e"
 CAMPAIGN_1_MAXIMUM_TRIALS = 74
 
 
+def materialize_campaign_1_configurations() -> list[dict[str, Any]]:
+    """Materialize the frozen Campaign 1 roots in deterministic order."""
+    configurations: list[dict[str, Any]] = []
+    names = sorted(
+        name for name in StrategyRegistry.available()
+        if StrategyRegistry.metadata(name).paper_eligible
+    )
+    for name in names:
+        metadata = StrategyRegistry.metadata(name)
+        grid = metadata.parameter_grid or {}
+        keys = sorted(grid)
+        values = [tuple(grid[key]) for key in keys]
+        combinations = itertools.product(*values) if values else [()]
+        for combination in combinations:
+            parameters = dict(zip(keys, combination))
+            configurations.append({
+                "strategy_name": name,
+                "strategy_version": metadata.version,
+                "parameters": parameters,
+                "parameter_hash": canonical_hash(parameters),
+                "root_trial_id": None,
+            })
+    if len(configurations) != CAMPAIGN_1_MAXIMUM_TRIALS:
+        raise ValueError(
+            f"Campaign 1 registry arithmetic changed: expected {CAMPAIGN_1_MAXIMUM_TRIALS} configurations, got {len(configurations)}."
+        )
+    return configurations
+
+
 def _ensure_campaign_1_family(
     db: DuckDBManager,
     *,
@@ -60,6 +90,7 @@ def _ensure_campaign_1_family(
 ) -> None:
     """Register or validate the immutable Campaign 1 trial family."""
 
+    configurations = materialize_campaign_1_configurations()
     existing = db.get_experiment_family(CAMPAIGN_1_ID)
     if existing is not None:
         if int(existing["maximum_trials"]) != CAMPAIGN_1_MAXIMUM_TRIALS:
@@ -68,10 +99,7 @@ def _ensure_campaign_1_family(
             raise ValueError("Campaign 1 experiment family universe mismatch.")
         return
 
-    strategy_names = [
-        name for name in StrategyRegistry.available()
-        if StrategyRegistry.metadata(name).paper_eligible
-    ]
+    strategy_names = sorted({item["strategy_name"] for item in configurations})
     family = ExperimentFamilySpec(
         experiment_family_id=CAMPAIGN_1_ID,
         hypothesis="Campaign 1 authoritative event-driven Indian-equity screening",
@@ -92,6 +120,15 @@ def _ensure_campaign_1_family(
         operator_notes=f"benchmark={benchmark_symbol or 'NIFTY200'}; authoritative event-driven only",
     )
     db.register_experiment_family(family)
+
+
+def campaign_1_mass_is_complete(result: dict[str, Any]) -> bool:
+    """Return true only when every authoritative Campaign 1 job succeeded."""
+    jobs = result.get("jobs") if isinstance(result, dict) else None
+    return isinstance(jobs, list) and bool(jobs) and all(
+        isinstance(job, dict) and str(job.get("state", "")).upper() == "SUCCEEDED"
+        for job in jobs
+    )
 
 
 def _list_phase2_7_conditional_evidence_read_only(
@@ -967,6 +1004,9 @@ def main(argv: list[str] | None = None) -> int:
                 starting_capital=args.capital,
             )
             print(json.dumps(mass_result, default=str, indent=2))
+            if args.experiment_family_id == CAMPAIGN_1_ID and not campaign_1_mass_is_complete(mass_result):
+                print("CAMPAIGN 1 MASS RESEARCH BLOCKED: unresolved jobs remain")
+                return 2
             return 0
         if args.command == "agent-research":
             workflow = ResearchWorkflow(

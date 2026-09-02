@@ -1376,6 +1376,7 @@ class DuckDBManager:
 
     def create_research_trial(self, trial: Any) -> str:
         """Atomically reserve an immutable trial slot before execution."""
+        campaign_family = str(trial.experiment_family_id) == "campaign-1-2d653914799e"
         max_retries = 10
         for attempt in range(max_retries):
             try:
@@ -1386,6 +1387,15 @@ class DuckDBManager:
                     ).fetchone()
                     if family is None:
                         raise ValueError("Research trial requires a pre-registered experiment family.")
+
+                    parent_trial_id = getattr(trial, "parent_trial_id", None)
+                    if campaign_family and parent_trial_id is not None:
+                        parent = self.conn.execute(
+                            "SELECT experiment_family_id, parent_trial_id FROM research_trials_log WHERE trial_id = ?",
+                            [parent_trial_id],
+                        ).fetchone()
+                        if parent is None or str(parent[0]) != str(trial.experiment_family_id) or parent[1] is not None:
+                            raise ValueError("Campaign 1 child trial requires a valid root trial in the same family.")
                     
                     # Check if this exact trial or any successor attempt already SUCCEEDED
                     succeeded_attempt = self.conn.execute(
@@ -1404,8 +1414,6 @@ class DuckDBManager:
                         return str(running_attempt[0])
 
                     target_trial_id = trial.trial_id
-                    parent_trial_id = getattr(trial, "parent_trial_id", None)
-
                     # Check if any prior attempts exist (for retry creation)
                     attempts_row = self.conn.execute(
                         "SELECT COUNT(*) FROM research_trials_log WHERE trial_id = ? OR parent_trial_id = ?",
@@ -1416,10 +1424,12 @@ class DuckDBManager:
                         target_trial_id = f"{trial.trial_id}#attempt={attempt_count + 1}"
                         parent_trial_id = trial.trial_id
 
-                    consumed_row = self.conn.execute(
-                        "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ?",
-                        [trial.experiment_family_id],
-                    ).fetchone()
+                    count_sql = (
+                        "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ? AND parent_trial_id IS NULL"
+                        if campaign_family else
+                        "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ?"
+                    )
+                    consumed_row = self.conn.execute(count_sql, [trial.experiment_family_id]).fetchone()
                     consumed = int(_scalar(consumed_row, "research trial count"))
                     if int(consumed) >= int(family[0]):
                         raise RuntimeError("Experiment family trial budget exhausted.")

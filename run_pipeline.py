@@ -19,6 +19,7 @@ from risk import build_risk_engine
 from storage.integrity import DatabaseIntegrityValidator
 from trading_stack.costs import DEFAULT_COST_SCHEDULES, get_cost_schedule
 from trading_stack.economic import economic_contract_hash
+from trading_stack.datasets import pit_evidence_hash
 from trading_stack.universe import UniverseResearchService
 from trading_stack.strategies import StrategyRegistry
 
@@ -27,6 +28,7 @@ PROJECT_ROOT = Path(__file__).resolve().parent
 CAMPAIGN_STARTING_CAPITAL = 100_000.0
 CAMPAIGN_ID = "campaign-1-2d653914799e"
 CAMPAIGN_BENCHMARK = "NIFTY200"
+CAMPAIGN_ECONOMIC_SEMANTICS_VERSION = "current_mark_to_market_equity_v1/floor_whole_share_v1"
 REQUIRED_RESEARCH_TABLES = frozenset({
     "historical_candles",
     "market_datasets",
@@ -113,6 +115,7 @@ def _pit_preflight(
     *,
     benchmark_symbol: str,
     requested_start: date,
+    manifest_path: str | None = None,
 ) -> tuple[dict[str, Any], tuple[str, ...]]:
     details: dict[str, Any] = {"selected_universe": snapshot_id}
     blockers: list[str] = []
@@ -133,6 +136,54 @@ def _pit_preflight(
         details["survivorship_bias"] = survivorship_bias
         if survivorship_bias:
             blockers.extend(("PIT_UNIVERSE_NOT_READY", "SURVIVORSHIP_BIASED_UNIVERSE"))
+
+        if not manifest_path:
+            blockers.append("PIT_COMPLETENESS_MANIFEST_REQUIRED")
+        else:
+            manifest = Path(manifest_path)
+            if not manifest.is_absolute():
+                manifest = PROJECT_ROOT / manifest
+            if not manifest.is_file():
+                blockers.append("PIT_COMPLETENESS_MANIFEST_REQUIRED")
+            else:
+                try:
+                    manifest_data = load_yaml(str(manifest))
+                    required_manifest = {
+                        "manifest_version", "universe_name", "source_name", "source_certification_id",
+                        "source_hash", "coverage_start", "coverage_end", "periods", "additions",
+                        "removals", "former_constituents", "delistings", "pit_evidence_hash",
+                    }
+                    if not isinstance(manifest_data, dict) or not required_manifest.issubset(manifest_data):
+                        raise ValueError("manifest is missing required fields")
+                    supplied_hash = manifest_data.get("manifest_hash")
+                    if supplied_hash:
+                        content = {k: v for k, v in manifest_data.items() if k != "manifest_hash"}
+                        actual_hash = economic_contract_hash(content)
+                        if str(supplied_hash) != actual_hash:
+                            raise ValueError("manifest content hash mismatch")
+                    actual_pit_hash = pit_evidence_hash(_ReadOnlyDatabase(conn), universe_name)  # type: ignore[arg-type]
+                    if str(manifest_data["pit_evidence_hash"]) != actual_pit_hash:
+                        raise ValueError("manifest PIT evidence hash mismatch")
+                    for period in manifest_data["periods"]:
+                        if not isinstance(period, dict) or "effective_from" not in period or "expected_member_count" not in period:
+                            raise ValueError("manifest period is malformed")
+                        boundary = str(period["effective_from"])
+                        count_row = conn.execute(
+                            """
+                            SELECT COUNT(DISTINCT instrument_id)
+                            FROM index_constituents_pit
+                            WHERE UPPER(universe_name) = ?
+                              AND effective_from <= ?
+                              AND (effective_until IS NULL OR effective_until > ?)
+                            """,
+                            [universe_name.upper(), boundary, boundary],
+                        ).fetchone()
+                        if int(count_row[0] if count_row else 0) != int(period["expected_member_count"]):
+                            raise ValueError(f"manifest member count mismatch at {boundary}")
+                    details["pit_manifest"] = manifest_data
+                except Exception as exc:
+                    details["pit_manifest_error"] = str(exc)
+                    blockers.append("PIT_COMPLETENESS_MANIFEST_INVALID")
 
         pit_rows = conn.execute(
             """
@@ -281,8 +332,15 @@ def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str,
         "execution_mode": mode,
         "starting_capital": CAMPAIGN_STARTING_CAPITAL,
         "campaign_id": CAMPAIGN_ID,
+        "benchmark_symbol": CAMPAIGN_BENCHMARK,
+        "feature_version": "features-v1",
+        "economic_semantics_version": CAMPAIGN_ECONOMIC_SEMANTICS_VERSION,
+        "live_trading": config.get("research", {}).get("live_trading") if isinstance(config.get("research"), dict) else None,
         "research_config_hash": economic_contract_hash(config.get("research", {})),
-        "strategy_library": _campaign_strategy_names(),
+        "strategy_library": [
+            {"name": name, "version": StrategyRegistry.metadata(name).version}
+            for name in _campaign_strategy_names()
+        ],
     }
     blockers: list[str] = []
     research = config.get("research")
@@ -355,6 +413,11 @@ def run_preflight(
             universe_snapshot,
             benchmark_symbol=benchmark_symbol,
             requested_start=requested_start,
+            manifest_path=(
+                research_config.get("campaign_1", {}).get("pit_completeness_manifest")
+                if isinstance(research_config, dict) and isinstance(research_config.get("campaign_1"), dict)
+                else None
+            ),
         )
         details.update(pit_details)
         blockers.extend(pit_blockers)
