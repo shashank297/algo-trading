@@ -369,6 +369,26 @@ def compute_dsr_statistic(
     )
 
 
+def _aggregate_campaign_descendants(
+    children: list[dict[str, Any]],
+    root_id: str,
+) -> list[dict[str, Any]]:
+    """Return all descendants in stable breadth-first trial order."""
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for child in children:
+        parent_id = child.get("parent_trial_id")
+        if parent_id:
+            by_parent.setdefault(str(parent_id), []).append(child)
+    result: list[dict[str, Any]] = []
+    pending = sorted(by_parent.get(root_id, []), key=lambda row: str(row.get("trial_id", "")))
+    while pending:
+        child = pending.pop(0)
+        result.append(child)
+        pending.extend(by_parent.get(str(child.get("trial_id", "")), []))
+        pending.sort(key=lambda row: str(row.get("trial_id", "")))
+    return result
+
+
 def _aggregate_campaign_root_evidence(
     root: dict[str, Any],
     children: list[dict[str, Any]],
@@ -562,7 +582,8 @@ def resolve_authoritative_dsr(
         for root in roots:
             root_copy = dict(root)
             root_id = str(root.get("trial_id", ""))
-            child_rows = children.get(root_id, [])
+            all_children = [child for rows in children.values() for child in rows]
+            child_rows = _aggregate_campaign_descendants(all_children, root_id)
             enriched_roots.append(_aggregate_campaign_root_evidence(root_copy, child_rows))
         trials_log = enriched_roots
 

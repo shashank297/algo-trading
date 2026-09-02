@@ -1389,13 +1389,22 @@ class DuckDBManager:
                         raise ValueError("Research trial requires a pre-registered experiment family.")
 
                     parent_trial_id = getattr(trial, "parent_trial_id", None)
+                    campaign_root_id = parent_trial_id
                     if campaign_family and parent_trial_id is not None:
-                        parent = self.conn.execute(
-                            "SELECT experiment_family_id, parent_trial_id FROM research_trials_log WHERE trial_id = ?",
-                            [parent_trial_id],
-                        ).fetchone()
-                        if parent is None or str(parent[0]) != str(trial.experiment_family_id) or parent[1] is not None:
-                            raise ValueError("Campaign 1 child trial requires a valid root trial in the same family.")
+                        seen_parents: set[str] = set()
+                        current_parent = str(parent_trial_id)
+                        while current_parent:
+                            if current_parent in seen_parents:
+                                raise ValueError("Campaign 1 child trial has cyclic parent lineage.")
+                            seen_parents.add(current_parent)
+                            parent = self.conn.execute(
+                                "SELECT experiment_family_id, parent_trial_id FROM research_trials_log WHERE trial_id = ?",
+                                [current_parent],
+                            ).fetchone()
+                            if parent is None or str(parent[0]) != str(trial.experiment_family_id):
+                                raise ValueError("Campaign 1 child trial requires a valid root trial in the same family.")
+                            campaign_root_id = current_parent
+                            current_parent = str(parent[1]) if parent[1] is not None else ""
                     
                     # Check if this exact trial or any successor attempt already SUCCEEDED
                     succeeded_attempt = self.conn.execute(
@@ -1424,7 +1433,7 @@ class DuckDBManager:
                         if campaign_family and parent_trial_id is None:
                             raise ValueError("Campaign 1 root configuration has already been attempted.")
                         target_trial_id = f"{trial.trial_id}#attempt={attempt_count + 1}"
-                        parent_trial_id = trial.trial_id
+                        parent_trial_id = campaign_root_id if campaign_family else trial.trial_id
 
                     count_sql = (
                         "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ? AND parent_trial_id IS NULL"

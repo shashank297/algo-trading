@@ -157,6 +157,37 @@ def test_campaign_pit_known_at_is_causal_and_inclusive(tmp_path: Path) -> None:
         db.close()
 
 
+def test_campaign_pit_end_coverage_accepts_open_ended_current_members(tmp_path: Path) -> None:
+    db = DuckDBManager(str(tmp_path / "pit-open-ended.duckdb"))
+    try:
+        for symbol, effective_until in (("FORMER", date(2022, 1, 1)), ("CURRENT", None)):
+            PointInTimeUniverseManager.insert_constituent(
+                db,
+                PointInTimeConstituent(
+                    universe_name="NIFTY200",
+                    symbol=symbol,
+                    token=symbol,
+                    instrument_id=f"NSE:{symbol}:EQ",
+                    exchange="NSE",
+                    effective_from=date(2020, 1, 1),
+                    effective_until=effective_until,
+                    known_from=date(2020, 1, 1),
+                    known_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+                ),
+            )
+        frame = pd.DataFrame(
+            {
+                "symbol": ["CURRENT"],
+                "timestamp": [pd.Timestamp("2026-01-02 10:00:00", tz="UTC")],
+            }
+        )
+        filtered, pit_hash = filter_frame_by_pit(db, frame, "NIFTY200", required=True)
+        assert pit_hash
+        assert filtered["symbol"].tolist() == ["CURRENT"]
+    finally:
+        db.close()
+
+
 def test_campaign_root_retry_is_rejected(tmp_path: Path) -> None:
     db = DuckDBManager(str(tmp_path / "campaign-retry.duckdb"))
     try:
@@ -179,3 +210,34 @@ def test_campaign_root_evidence_aggregates_all_children_in_stable_order() -> Non
     assert aggregate["status"] == "SUCCEEDED"
     assert aggregate["metrics"]["sharpe"] == 2.0
     assert aggregate["child_trial_ids"] == ["child-a", "child-b"]
+
+
+def test_campaign_child_retry_preserves_root_lineage(tmp_path: Path) -> None:
+    db = DuckDBManager(str(tmp_path / "campaign-child-retry.duckdb"))
+    try:
+        db.register_experiment_family(_family(maximum_trials=1))
+        root = db.create_research_trial(_trial({"p": 21}))
+        child = _trial({"p": 21}, parent_trial_id=root).model_copy(update={"symbol": "AAA"})
+        assert db.create_research_trial(child) == child.trial_id
+        retry = child.model_copy(update={"status": TrialStatus.FAILED})
+        retry_id = db.create_research_trial(retry)
+        parent = db.conn.execute(
+            "SELECT parent_trial_id FROM research_trials_log WHERE trial_id = ?",
+            [retry_id],
+        ).fetchone()
+        assert parent == (root,)
+    finally:
+        db.close()
+
+
+def test_campaign_root_aggregation_includes_nested_descendants() -> None:
+    root = {"trial_id": "root", "status": "PLANNED"}
+    children = [
+        {"trial_id": "child", "parent_trial_id": "root", "status": "SUCCEEDED", "metrics": {"sharpe": 1.0}},
+        {"trial_id": "retry", "parent_trial_id": "child", "status": "SUCCEEDED", "metrics": {"sharpe": 3.0}},
+    ]
+    from experiments.statistical_tests import _aggregate_campaign_descendants
+
+    aggregate = _aggregate_campaign_root_evidence(root, _aggregate_campaign_descendants(children, "root"))
+    assert aggregate["metrics"]["sharpe"] == 2.0
+    assert aggregate["child_trial_ids"] == ["child", "retry"]

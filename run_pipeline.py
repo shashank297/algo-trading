@@ -130,6 +130,8 @@ def _validate_pit_manifest(
             raise ValueError(f"manifest member count mismatch at {boundary}")
     if sorted(period_dates) != period_dates:
         raise ValueError("manifest periods are not ordered")
+    if period_dates[0] != coverage_start:
+        raise ValueError("manifest periods do not start at coverage start")
 
     pit_rows = conn.execute(
         """
@@ -140,6 +142,15 @@ def _validate_pit_manifest(
         """,
         [universe_name],
     ).fetchall()
+    db_boundaries = {
+        boundary
+        for row in pit_rows
+        for boundary in (_as_date(row[1]), _as_date(row[2]))
+        if boundary is not None and coverage_start <= boundary <= coverage_end
+    }
+    manifest_boundaries = set(period_dates)
+    if not db_boundaries.issubset(manifest_boundaries):
+        raise ValueError("manifest does not reconcile all PIT membership-change boundaries")
     additions: set[str] = set()
     for row in pit_rows:
         effective_from = _as_date(row[1])
@@ -445,11 +456,18 @@ def _certification_preflight(
                     raise ValueError("selected frame dataset content hash mismatch")
             for certification_id in dq_ids:
                 dq_row = conn.execute(
-                    "SELECT dataset_id FROM data_quality_certifications WHERE certification_id = ? AND status = 'CERTIFIED' AND issue_count = 0",
+                    "SELECT dataset_id, checks_json FROM data_quality_certifications WHERE certification_id = ? AND status = 'CERTIFIED' AND issue_count = 0",
                     [certification_id],
                 ).fetchone()
                 if dq_row is None or str(dq_row[0]) not in {str(value) for value in dataset_ids}:
                     raise ValueError("selected frame DQ certification lineage is incomplete")
+                try:
+                    dq_checks = json.loads(str(dq_row[1] or "{}"))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise ValueError("selected frame DQ certification payload is malformed") from exc
+                expected_hash = dataset_evidence.get(str(dq_row[0]))
+                if not expected_hash or dq_checks.get("dataset_content_hash") != expected_hash:
+                    raise ValueError("selected frame DQ certification content hash mismatch")
             details["selected_frame_certification_id"] = str(frame_id)
             details["selected_frame_pit_hash"] = str(frame_pit_hash)
     except Exception as exc:

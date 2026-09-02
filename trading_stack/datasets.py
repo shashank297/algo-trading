@@ -87,9 +87,15 @@ def _pit_eligibility_mask(
         return pd.Series(True, index=frame.index), None
 
     pit_df = pd.DataFrame(rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
-    pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
-    pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
-    pit_df["known_from"] = pd.to_datetime(pit_df["known_from"]).dt.date
+    pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).map(
+        lambda value: value.date() if pd.notna(value) else None
+    )
+    pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).map(
+        lambda value: value.date() if pd.notna(value) else None
+    )
+    pit_df["known_from"] = pd.to_datetime(pit_df["known_from"]).map(
+        lambda value: value.date() if pd.notna(value) else None
+    )
     pit_df["known_at"] = pd.to_datetime(pit_df["known_at"], utc=True)
     if require_knowledge and (pit_df["known_from"].isna() | pit_df["known_at"].isna()).any():
         raise RuntimeError(f"PIT evidence for universe '{universe_name}' has incomplete knowledge-time fields.")
@@ -131,8 +137,11 @@ def _pit_eligibility_mask(
         max_frame_date = local_dates.max()
         if pit_df["effective_from"].min() > min_frame_date:
             raise RuntimeError(f"PIT membership evidence for '{universe_name}' does not cover requested research start date.")
-        finite_ends = pit_df["effective_until"].dropna()
-        if not finite_ends.empty and finite_ends.max() <= max_frame_date:
+        end_coverage = pit_df[
+            (pit_df["effective_from"] <= max_frame_date)
+            & (pit_df["effective_until"].isna() | (pit_df["effective_until"] > max_frame_date))
+        ]
+        if end_coverage.empty:
             raise RuntimeError(f"PIT membership evidence for '{universe_name}' does not cover the requested end date.")
     return eligible, pit_evidence_hash(db, universe_name)
 
