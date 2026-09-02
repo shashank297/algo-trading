@@ -1429,10 +1429,11 @@ class DuckDBManager:
                         if campaign_family else
                         "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ?"
                     )
-                    consumed_row = self.conn.execute(count_sql, [trial.experiment_family_id]).fetchone()
-                    consumed = int(_scalar(consumed_row, "research trial count"))
-                    if int(consumed) >= int(family[0]):
-                        raise RuntimeError("Experiment family trial budget exhausted.")
+                    if not (campaign_family and parent_trial_id is not None):
+                        consumed_row = self.conn.execute(count_sql, [trial.experiment_family_id]).fetchone()
+                        consumed = int(_scalar(consumed_row, "research trial count"))
+                        if int(consumed) >= int(family[0]):
+                            raise RuntimeError("Experiment family trial budget exhausted.")
 
                     # Serialize concurrent reservations for the same family via write lock on family row
                     self.conn.execute(
