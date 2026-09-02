@@ -7,7 +7,9 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from scheduler import advance_active_paper_sessions, run_job
+from risk import build_risk_engine
 from storage import DuckDBManager
+from trading_stack.economic import economic_contract_hash
 
 
 class SchedulerTests(unittest.TestCase):
@@ -43,12 +45,18 @@ class SchedulerTests(unittest.TestCase):
         config = {
             "database": {"path": "scheduler.duckdb"},
             "research": {
-                "risk": {"max_position_pct": 0.05, "max_gross_exposure_pct": 0.20},
+                "risk": {
+                    "max_position_pct": 0.05, "max_gross_exposure_pct": 0.20,
+                    "max_daily_loss_pct": 0.03, "max_drawdown_pct": 0.15,
+                    "max_sector_exposure_pct": 0.40, "max_open_positions": 20,
+                    "max_var_pct": 0.02, "min_liquidity_crore": 0.0,
+                },
                 "indian_delivery_costs": {},
             },
         }
+        manual_engine = build_risk_engine(config)
         with patch("scheduler.DuckDBManager") as manager, patch("scheduler.StrategyPipeline") as pipeline, patch(
-            "scheduler.build_risk_engine", return_value="authoritative-engine",
+            "scheduler.build_risk_engine", side_effect=build_risk_engine,
         ) as build_engine:
             manager.return_value.conn.execute.return_value.fetchall.return_value = [
                 ("SINGLE", "sess", "run", "strategy", "ABC", "1d", "{}", 100_000.0, None, None),
@@ -57,8 +65,13 @@ class SchedulerTests(unittest.TestCase):
                 "forward_result": SimpleNamespace(status="PROCESSED", processed_bars=1),
             }
             advance_active_paper_sessions(config)
-        build_engine.assert_called_once_with(config)
-        self.assertEqual(pipeline.call_args.kwargs["risk_engine"], "authoritative-engine")
+            build_engine.assert_called_once_with(config)
+            scheduler_engine = pipeline.call_args.kwargs["risk_engine"]
+            self.assertEqual(scheduler_engine.policy.model_dump(), manual_engine.policy.model_dump())
+            self.assertEqual(
+                economic_contract_hash(scheduler_engine.policy.model_dump()),
+                economic_contract_hash(manual_engine.policy.model_dump()),
+            )
 
 
 if __name__ == "__main__":

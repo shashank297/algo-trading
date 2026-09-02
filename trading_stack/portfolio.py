@@ -493,7 +493,11 @@ class PortfolioEventBacktester:
                 execution_source = "COMPLETED_BAR"
 
             tw = float(target_by_symbol.get(symbol, 0.0)) if pd.notna(target_by_symbol.get(symbol, 0.0)) else 0.0
-            target_quantity = float(np.floor(equity * tw / max(base_price, 1e-12))) if not pd.isna(base_price) and base_price > 0 else 0.0
+            current_equity = cash + sum(
+                qty * (base_price if name == symbol else last_prices.get(name, 0.0))
+                for name, qty in quantities.items()
+            )
+            target_quantity = float(np.floor(current_equity * tw / max(base_price, 1e-12))) if not pd.isna(base_price) and base_price > 0 else 0.0
             current_quantity = float(quantities.get(symbol, 0.0))
             requested_quantity = target_quantity - current_quantity
             if pd.isna(requested_quantity) or abs(requested_quantity) < 1:
@@ -553,7 +557,7 @@ class PortfolioEventBacktester:
             if requested_abs < 1:
                 continue
             sched_date = execution_timestamp.tz_convert("Asia/Kolkata").date() if hasattr(execution_timestamp, "tz_convert") and execution_timestamp.tzinfo else (execution_timestamp.date() if hasattr(execution_timestamp, "date") else date)
-            effective_schedule = cost_schedule or get_cost_schedule(sched_date)
+            effective_schedule = self._schedule_for(sched_date, cost_schedule)
             lagged_adv_raw = row.get("lagged_adv20")
             lagged_adv = float(lagged_adv_raw) if pd.notna(lagged_adv_raw) and float(lagged_adv_raw) > 0 else np.nan
             lagged_val_raw = row.get("lagged_traded_value")
@@ -626,6 +630,7 @@ class PortfolioEventBacktester:
                 "metadata_json": json.dumps({
                     "reason": reason, "requested_quantity": requested_abs, "rejection_reason": rejection_reason,
                     "execution_mode": execution_mode, "execution_source": execution_source,
+                    "cost_schedule_version": effective_schedule.version,
                     "execution_timestamp": str(execution_timestamp),
                     "source_exchange_timestamp": str(getattr(observation, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,
                     "source_received_at_utc": str(getattr(observation, "received_at_utc", "")) if execution_source == "OBSERVED_TICK" else None,
@@ -717,6 +722,7 @@ class PortfolioEventBacktester:
                 "metadata_json": json.dumps({
                     "reason": reason, "participation": participation, "execution_mode": execution_mode,
                     "execution_source": execution_source,
+                    "cost_schedule_version": effective_schedule.version,
                     "source_exchange_timestamp": str(getattr(observation, "exchange_timestamp", "")) if execution_source == "OBSERVED_TICK" else None,
                     "source_received_at_utc": str(getattr(observation, "received_at_utc", "")) if execution_source == "OBSERVED_TICK" else None,
                     "source_sequence_number": source_seq,
@@ -749,13 +755,24 @@ class PortfolioEventBacktester:
             },
         }
 
+    def _schedule_for(
+        self,
+        trade_date: Any,
+        override: IndianDeliveryCostSchedule | None = None,
+    ) -> IndianDeliveryCostSchedule:
+        """Resolve the schedule used by both fills and economic identity."""
+
+        if override is not None:
+            return override
+        if self._fixed_cost_schedule is not None:
+            return self._fixed_cost_schedule
+        return get_cost_schedule(trade_date)
+
     def _cost_identity(self, dates: list[pd.Timestamp]) -> str:
-        resolver = (
-            (lambda _date: self._fixed_cost_schedule)
-            if self._fixed_cost_schedule is not None
-            else get_cost_schedule
+        return cost_schedule_identity(
+            [timestamp.date() for timestamp in dates],
+            lambda trade_date: self._schedule_for(trade_date),
         )
-        return cost_schedule_identity([timestamp.date() for timestamp in dates], resolver)
 
     def _run_id(
         self,

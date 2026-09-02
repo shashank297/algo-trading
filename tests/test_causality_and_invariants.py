@@ -27,7 +27,9 @@ Rigorous Adversarial Invariant Tests:
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+import json
 import time
+from typing import Any
 import pandas as pd
 import pytest
 
@@ -52,7 +54,7 @@ from trading_stack.costs import (
     IndianDeliveryCostSchedule,
     get_cost_schedule,
 )
-from trading_stack.domain import OrderStatus, StrategyScope
+from trading_stack.domain import OpeningTickObservation, OrderStatus, StrategyScope
 from trading_stack.live_aggregator import RealtimeBarAggregator
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
@@ -283,6 +285,113 @@ def test_authoritative_portfolio_uses_date_effective_cost_regimes():
         "angel-nse-delivery-2026-04",
     ]
     assert explicit_fixed_cost_schedule({"cost_model": "ordinary"}) is None
+
+
+def test_fixed_cost_stress_executes_fixed_schedule_not_date_effective_schedule():
+    """Fixed-cost stress must use its declared schedule for actual fills."""
+    date_val = pd.Timestamp("2016-06-15", tz="UTC")
+    day = pd.DataFrame([{
+        "symbol": "RELIANCE", "timestamp": date_val, "open": 100.0, "close": 100.0,
+        "lagged_adv20": 100_000.0, "lagged_traded_value": 100_000_000.0,
+        "volatility_20": 0.01, "sector": "ENERGY",
+    }]).set_index("symbol")
+    targets = pd.DataFrame([{
+        "symbol": "RELIANCE", "timestamp": date_val, "target_weight": 0.05,
+    }])
+    kwargs = {
+        "run_id": "cost-stress",
+        "date": date_val,
+        "day": day,
+        "targets": targets,
+        "cash": 100_000.0,
+        "quantities": {},
+        "average_cost": {},
+        "entry_timestamps": {},
+        "entry_reasons": {},
+        "entry_cost_pools": {},
+        "entry_execution_cost_pools": {},
+        "last_prices": {"RELIANCE": 100.0},
+        "mode": "paper",
+        "execution_mode": "EOD_BATCH",
+    }
+    fixed = PortfolioEventBacktester(
+        IndianDeliveryCostSchedule(), risk_engine=RiskEngine(),
+    )
+    _, fixed_generated = fixed._rebalance(**kwargs)
+    _, ordinary_generated = PortfolioEventBacktester(
+        risk_engine=RiskEngine(),
+    )._rebalance(**kwargs)
+
+    fixed_metadata = json.loads(fixed_generated["fills"][0]["metadata_json"])
+    ordinary_metadata = json.loads(ordinary_generated["fills"][0]["metadata_json"])
+    assert fixed_metadata["cost_schedule_version"] == "angel-nse-delivery-2026-04"
+    assert ordinary_metadata["cost_schedule_version"] == "angel-nse-delivery-2016-06"
+
+
+def test_true_next_open_overnight_gap_keeps_historical_and_paper_risk_inputs_equal():
+    """A T+1 opening gap must drive both paths' causal risk and sizing inputs."""
+    class RecordingRiskEngine(RiskEngine):
+        def __init__(self) -> None:
+            super().__init__(RiskPolicy(
+                max_position_pct=0.20, max_gross_exposure_pct=1.0,
+                max_daily_loss_pct=1.0, max_drawdown_pct=1.0,
+                max_sector_exposure_pct=1.0, max_open_positions=20,
+                max_var_pct=1.0, min_liquidity_crore=0.0,
+            ))
+            self.records: list[tuple[TradeProposal, Any]] = []
+
+        def evaluate(self, proposal: TradeProposal):
+            decision = super().evaluate(proposal)
+            self.records.append((proposal, decision))
+            return decision
+
+    observation = OpeningTickObservation(
+        symbol="RELIANCE", exchange="NSE", token="2885", price=150.0,
+        exchange_timestamp=datetime(2026, 1, 6, 9, 15, tzinfo=timezone.utc),
+        received_at_utc=datetime(2026, 1, 6, 9, 15, 1, tzinfo=timezone.utc),
+    )
+    date_val = pd.Timestamp("2026-01-06", tz="UTC")
+    day = pd.DataFrame([{
+        "symbol": "RELIANCE", "timestamp": date_val, "open": 150.0, "close": 100.0,
+        "token": "2885", "exchange": "NSE", "open_tick_observation": observation,
+        "lagged_adv20": 100_000.0, "lagged_traded_value": 100_000_000.0,
+        "volatility_20": 0.01, "sector": "ENERGY",
+    }]).set_index("symbol")
+    targets = pd.DataFrame([{
+        "symbol": "RELIANCE", "timestamp": date_val, "target_weight": 0.20,
+    }])
+    historical_engine = RecordingRiskEngine()
+    _, generated = PortfolioEventBacktester(risk_engine=historical_engine)._rebalance(
+        run_id="gap-historical", date=date_val, day=day, targets=targets,
+        cash=99_000.0, quantities={"RELIANCE": 10.0}, average_cost={"RELIANCE": 100.0},
+        entry_timestamps={}, entry_reasons={}, entry_cost_pools={},
+        entry_execution_cost_pools={}, last_prices={"RELIANCE": 100.0},
+        mode="paper", execution_mode="TRUE_NEXT_OPEN",
+    )
+    paper_engine = RecordingRiskEngine()
+    paper = ForwardPaperSessionEngine(None, calendar=build_nse_calendar(), risk_engine=paper_engine)
+    result = paper._execute_pending(
+        "gap-paper", "RELIANCE", {
+            "timestamp": datetime(2026, 1, 6, 10, 0, tzinfo=timezone.utc),
+            "open": 150.0, "close": 100.0, "token": "2885", "exchange": "NSE",
+            "open_tick_observation": observation, "lagged_adv20": 100_000.0,
+            "volume": 100_000.0,
+        }, {"signal_timestamp": datetime(2026, 1, 5, 10, 0, tzinfo=timezone.utc), "target_position": 0.20},
+        99_000.0, 10.0, 100.0, 100_000.0, 100_000.0, 100_000.0,
+        execution_mode="TRUE_NEXT_OPEN", asset_volatility=0.01,
+    )
+    paper_fill = result[8]
+    historical_proposal, historical_decision = historical_engine.records[0]
+    paper_proposal, paper_decision = paper_engine.records[0]
+
+    assert historical_proposal.capital == pytest.approx(100_500.0)
+    assert paper_proposal.capital == pytest.approx(historical_proposal.capital)
+    assert paper_proposal.current_position_notional == pytest.approx(historical_proposal.current_position_notional)
+    assert paper_proposal.requested_notional == pytest.approx(historical_proposal.requested_notional)
+    assert paper_proposal.estimated_portfolio_var_pct == pytest.approx(historical_proposal.estimated_portfolio_var_pct)
+    assert paper_decision.approved_notional == pytest.approx(historical_decision.approved_notional)
+    assert paper_fill is not None
+    assert float(paper_fill["quantity"]) == pytest.approx(float(generated["fills"][0]["quantity"]))
 
 
 # ---------------------------------------------------------------------------
