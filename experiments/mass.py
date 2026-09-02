@@ -90,12 +90,20 @@ class MassExperimentManager:
                     )
                     existing = self.db.get_experiment_job(key)
                     if existing and existing["state"] == "SUCCEEDED":
-                        jobs.append({"job_key": key, "state": "SUCCEEDED", "run_id": existing.get("run_id"), "resumed": True})
+                        jobs.append({
+                            "job_key": key, "state": "SUCCEEDED", "run_id": existing.get("run_id"),
+                            "strategy_name": strategy_name, "parameters_hash": canonical_hash(parameters),
+                            "resumed": True,
+                        })
                         continue
                     if existing and existing["state"] == "RUNNING":
                         started_at = existing.get("started_at")
                         if started_at and started_at > datetime.now(timezone.utc) - timedelta(seconds=spec.stale_job_seconds):
-                            jobs.append({"job_key": key, "state": "RUNNING", "run_id": existing.get("run_id"), "resumed": True})
+                            jobs.append({
+                                "job_key": key, "state": "RUNNING", "run_id": existing.get("run_id"),
+                                "strategy_name": strategy_name, "parameters_hash": canonical_hash(parameters),
+                                "resumed": True,
+                            })
                             continue
                     payload = {
                         "job_key": key, "experiment_id": spec.experiment_id, "strategy_name": strategy_name,
@@ -180,7 +188,11 @@ class MassExperimentManager:
                     **base, "state": "SUCCEEDED", "retry_count": attempt, "run_id": run_id,
                     "started_at": now, "finished_at": datetime.now(timezone.utc),
                 })
-                return {"job_key": job["job_key"], "state": "SUCCEEDED", "run_id": run_id, "folds": folds, "resumed": attempt > 0}
+                return {
+                    "job_key": job["job_key"], "state": "SUCCEEDED", "run_id": run_id, "folds": folds,
+                    "strategy_name": job["strategy_name"], "parameters_hash": job["parameters_hash"],
+                    "resumed": attempt > 0,
+                }
             except Exception as exc:
                 terminal = is_research_governance_error(exc) or attempt >= spec.max_retries
                 self.db.log_experiment_job({
@@ -189,7 +201,11 @@ class MassExperimentManager:
                     "started_at": now, "finished_at": datetime.now(timezone.utc) if terminal else None,
                 })
                 if terminal:
-                    return {"job_key": job["job_key"], "state": "FAILED", "error": str(exc), "resumed": attempt > 0}
+                    return {
+                        "job_key": job["job_key"], "state": "FAILED", "error": str(exc),
+                        "strategy_name": job["strategy_name"], "parameters_hash": job["parameters_hash"],
+                        "resumed": attempt > 0,
+                    }
         raise RuntimeError("Mass experiment retry loop ended unexpectedly.")
 
     @staticmethod

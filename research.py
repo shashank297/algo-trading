@@ -127,13 +127,28 @@ def _ensure_campaign_1_family(
     db.register_experiment_family(family)
 
 
-def campaign_1_mass_is_complete(result: dict[str, Any]) -> bool:
-    """Return true only when every authoritative Campaign 1 job succeeded."""
+def campaign_1_mass_is_complete(result: dict[str, Any], db: DuckDBManager | None = None) -> bool:
+    """Return true only when all 74 Campaign 1 configurations succeeded."""
     jobs = result.get("jobs") if isinstance(result, dict) else None
-    return isinstance(jobs, list) and bool(jobs) and all(
+    if not isinstance(jobs, list) or not jobs or not all(
         isinstance(job, dict) and str(job.get("state", "")).upper() == "SUCCEEDED"
         for job in jobs
-    )
+    ):
+        return False
+    configuration_keys = {
+        (str(job.get("strategy_name", "")), str(job.get("parameters_hash", "")))
+        for job in jobs
+    }
+    if len(configuration_keys) != CAMPAIGN_1_MAXIMUM_TRIALS or any(not key[0] or not key[1] for key in configuration_keys):
+        return False
+    if db is not None:
+        roots = db.conn.execute(
+            "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ? AND parent_trial_id IS NULL",
+            [CAMPAIGN_1_ID],
+        ).fetchone()
+        if not roots or int(roots[0]) != CAMPAIGN_1_MAXIMUM_TRIALS:
+            return False
+    return True
 
 
 def _list_phase2_7_conditional_evidence_read_only(
@@ -1009,7 +1024,7 @@ def main(argv: list[str] | None = None) -> int:
                 starting_capital=args.capital,
             )
             print(json.dumps(mass_result, default=str, indent=2))
-            if args.experiment_family_id == CAMPAIGN_1_ID and not campaign_1_mass_is_complete(mass_result):
+            if args.experiment_family_id == CAMPAIGN_1_ID and not campaign_1_mass_is_complete(mass_result, db):
                 print("CAMPAIGN 1 MASS RESEARCH BLOCKED: unresolved jobs remain")
                 return 2
             return 0

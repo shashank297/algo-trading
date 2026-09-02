@@ -295,15 +295,23 @@ def _certification_preflight(
         if certified == 0:
             return details, ("DATA_QUALITY_NOT_CERTIFIED",)
         if universe_snapshot:
+            snapshot_row = conn.execute(
+                "SELECT name FROM universe_snapshots WHERE snapshot_id = ?",
+                [universe_snapshot],
+            ).fetchone()
+            expected_pit_hash = (
+                pit_evidence_hash(_ReadOnlyDatabase(conn), str(snapshot_row[0]))  # type: ignore[arg-type]
+                if snapshot_row else None
+            )
             frame_row = conn.execute(
                 """
                 SELECT COUNT(*) FROM research_frame_certifications
                 WHERE UPPER(status) = 'CERTIFIED'
                   AND timeframe = ?
                   AND (symbol = ? OR symbol = ?)
-                  AND pit_evidence_hash IS NOT NULL
+                  AND pit_evidence_hash = ?
                 """,
-                [timeframe, f"PORTFOLIO:{universe_snapshot}", benchmark_symbol],
+                [timeframe, f"PORTFOLIO:{universe_snapshot}", benchmark_symbol, expected_pit_hash],
             ).fetchone()
             frame_count = int(frame_row[0]) if frame_row else 0
             details["selected_universe_frame_certification_count"] = frame_count
