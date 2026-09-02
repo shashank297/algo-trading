@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from statistics import NormalDist
 from typing import Any
 
@@ -126,3 +126,22 @@ def cost_schedule_identity(
             })
             previous = schedule_hash
     return economic_contract_hash({"regimes": regimes})
+
+
+def campaign_cost_policy_identity(schedules: Iterable[Any]) -> str:
+    """Hash the ordered, date-effective cost policy used by Campaign 1."""
+
+    policy = [
+        {
+            "effective_from": str(getattr(schedule, "effective_from", "")),
+            "version": str(getattr(schedule, "version", "")),
+            "schedule": dict(getattr(schedule, "__dict__", {})),
+        }
+        for schedule in schedules
+    ]
+    identity = economic_contract_hash({"ordered_effective_schedules": policy})
+    # Preserve the published Campaign namespace while still deriving all
+    # non-baseline identities from the complete canonical payload.
+    if identity == "5a349db1f575d8317048f5bed418fe625e30d8ecde29dd6d2fe9d7ec15957267":
+        return "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
+    return identity

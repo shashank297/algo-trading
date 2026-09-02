@@ -353,6 +353,23 @@ def main(argv: list[str] | None = None) -> int:
     db_path = Path(args.database_path or config["database"]["path"])
     if not db_path.is_absolute():
         db_path = (PROJECT_ROOT / db_path).resolve()
+    if args.command == "mass-research" and args.experiment_family_id == CAMPAIGN_1_ID:
+        from run_pipeline import run_preflight
+
+        campaign_preflight = run_preflight(
+            config,
+            universe_snapshot=args.universe_snapshot,
+            database_path=str(db_path),
+            mode=args.mode,
+            benchmark_symbol=args.benchmark,
+            require_certification=True,
+            starting_capital=args.capital,
+        )
+        if not campaign_preflight.ready:
+            campaign_preflight.print()
+            print("CAMPAIGN 1 DATA READINESS BLOCKED")
+            print("EXTERNAL HISTORICAL CONSTITUENT DATA REQUIRED")
+            return 2
     if args.command == "strategy-regime-analysis":
         cutoff = (
             datetime.fromisoformat(args.evidence_at.replace("Z", "+00:00"))

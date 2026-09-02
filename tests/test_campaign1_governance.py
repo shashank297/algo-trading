@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -13,9 +14,13 @@ from storage.duckdb_manager import DuckDBManager
 from research import materialize_campaign_1_configurations
 from data_platform.universe import PointInTimeConstituent, PointInTimeUniverseManager
 from trading_stack.datasets import filter_frame_by_pit
+from trading_stack.costs import DEFAULT_COST_SCHEDULES
+from trading_stack.economic import campaign_cost_policy_identity
+from run_pipeline import _manifest_events
 
 
 CAMPAIGN_FAMILY = "campaign-1-2d653914799e"
+CAMPAIGN_COST_IDENTITY = "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
 
 
 def _family(maximum_trials: int = 2) -> ExperimentFamilySpec:
@@ -241,3 +246,26 @@ def test_campaign_root_aggregation_includes_nested_descendants() -> None:
     aggregate = _aggregate_campaign_root_evidence(root, _aggregate_campaign_descendants(children, "root"))
     assert aggregate["metrics"]["sharpe"] == 2.0
     assert aggregate["child_trial_ids"] == ["child", "retry"]
+
+
+def test_campaign_cost_identity_matches_frozen_policy_and_binds_ordered_regimes() -> None:
+    assert campaign_cost_policy_identity(DEFAULT_COST_SCHEDULES) == CAMPAIGN_COST_IDENTITY
+
+    changed_amount = replace(DEFAULT_COST_SCHEDULES[0], stt_buy_bps=13.5)
+    changed_date = replace(DEFAULT_COST_SCHEDULES[1], effective_from=date(2016, 7, 1))
+    reordered = (DEFAULT_COST_SCHEDULES[1], DEFAULT_COST_SCHEDULES[0], *DEFAULT_COST_SCHEDULES[2:])
+    assert campaign_cost_policy_identity((changed_amount, *DEFAULT_COST_SCHEDULES[1:])) != CAMPAIGN_COST_IDENTITY
+    assert campaign_cost_policy_identity((DEFAULT_COST_SCHEDULES[0], changed_date, *DEFAULT_COST_SCHEDULES[2:])) != CAMPAIGN_COST_IDENTITY
+    assert campaign_cost_policy_identity(reordered) != CAMPAIGN_COST_IDENTITY
+
+
+def test_campaign_manifest_events_bind_symbol_and_effective_date() -> None:
+    expected = _manifest_events(
+        [{"symbol": "AAA", "effective_from": "2020-01-01"}], "ADDITION"
+    )
+    swapped = _manifest_events(
+        [{"symbol": "AAA", "effective_from": "2021-01-01"}], "ADDITION"
+    )
+    assert expected != swapped
+    with pytest.raises(ValueError, match="require symbol and effective date"):
+        _manifest_events(["AAA"], "ADDITION")

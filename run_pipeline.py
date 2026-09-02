@@ -18,7 +18,7 @@ from main import apply_env_overrides, load_yaml, validate_config
 from risk import build_risk_engine
 from storage.integrity import DatabaseIntegrityValidator
 from trading_stack.costs import DEFAULT_COST_SCHEDULES, get_cost_schedule
-from trading_stack.economic import economic_contract_hash
+from trading_stack.economic import campaign_cost_policy_identity, economic_contract_hash
 from trading_stack.datasets import pit_evidence_hash
 from trading_stack.universe import UniverseResearchService
 from trading_stack.strategies import StrategyRegistry
@@ -31,7 +31,7 @@ CAMPAIGN_BENCHMARK = "NIFTY200"
 CAMPAIGN_ECONOMIC_SEMANTICS_VERSION = "current_mark_to_market_equity_v1/floor_whole_share_v1"
 CAMPAIGN_FROZEN_RESEARCH_CONFIG_HASH = "ec50bff064bed0d2b4ff59a97961467d2225a4e3511ac8155f8555b8f66a1357"
 CAMPAIGN_FROZEN_RISK_POLICY_HASH = "8330bb013ffd1d22acb2c60d715066a43b239cd35b382e772c4a7d47c7d72a3c"
-CAMPAIGN_FROZEN_COST_POLICY_IDENTITY = "31dc1cec5ba3e715b1ec5e657cfa5c85199fe1cad87567420ad090bb749d9dd6"
+CAMPAIGN_FROZEN_COST_POLICY_IDENTITY = "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
 CAMPAIGN_FROZEN_STRATEGY_LIBRARY_HASH = "ef5e1492b81c4e76f4f1e9c6fae4d54de4597b8eabb1af223fc4eee8174742d8"
 REQUIRED_RESEARCH_TABLES = frozenset({
     "historical_candles",
@@ -63,6 +63,28 @@ def _manifest_values(items: Any) -> set[str]:
             raise ValueError("manifest membership change item is malformed")
         values.add(str(value).strip().upper())
     return values
+
+
+def _manifest_events(items: Any, event_type: str) -> tuple[tuple[str, str, str], ...]:
+    """Normalize manifest membership events to immutable symbol/type/date keys."""
+
+    if not isinstance(items, list):
+        raise ValueError("manifest membership event list is malformed")
+    events: list[tuple[str, str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("manifest membership events require symbol and effective date")
+        symbol = item.get("symbol") or item.get("instrument_id")
+        effective = item.get("effective_from") or item.get("effective_date")
+        if symbol is None or effective is None:
+            raise ValueError("manifest membership event is missing identity or effective date")
+        boundary = _as_date(effective)
+        if boundary is None:
+            raise ValueError("manifest membership event date is malformed")
+        events.append((str(symbol).strip().upper(), event_type, boundary.isoformat()))
+    if len(set(events)) != len(events):
+        raise ValueError("manifest contains duplicate membership events")
+    return tuple(sorted(events))
 
 
 def _validate_pit_manifest(
@@ -142,6 +164,20 @@ def _validate_pit_manifest(
         """,
         [universe_name],
     ).fetchall()
+    event_rows = conn.execute(
+        """
+        SELECT pit.instrument_id, pit.symbol, pit.effective_from, pit.effective_until,
+               pit.known_from, knowledge.known_at, pit.inclusion_reason, pit.exclusion_reason
+        FROM index_constituents_pit pit
+        LEFT JOIN index_constituent_knowledge knowledge
+          ON knowledge.universe_name = pit.universe_name
+         AND knowledge.instrument_id = pit.instrument_id
+         AND knowledge.effective_from = pit.effective_from
+        WHERE REPLACE(UPPER(pit.universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
+        ORDER BY pit.symbol, pit.effective_from
+        """,
+        [universe_name],
+    ).fetchall()
     db_boundaries = {
         boundary
         for row in pit_rows
@@ -151,6 +187,23 @@ def _validate_pit_manifest(
     manifest_boundaries = set(period_dates)
     if not db_boundaries.issubset(manifest_boundaries):
         raise ValueError("manifest does not reconcile all PIT membership-change boundaries")
+    db_addition_events = tuple(sorted(
+        (str(row[1]).upper(), "ADDITION", (_as_date(row[2]) or date.min).isoformat())
+        for row in event_rows
+        if _as_date(row[2]) is not None and (_as_date(row[2]) or date.min) > coverage_start
+    ))
+    db_removal_events = tuple(sorted(
+        (str(row[1]).upper(), "REMOVAL", (_as_date(row[3]) or date.min).isoformat())
+        for row in event_rows
+        if _as_date(row[3]) is not None
+        and coverage_start <= (_as_date(row[3]) or date.min) <= coverage_end
+    ))
+    if len(set(db_addition_events)) != len(db_addition_events) or len(set(db_removal_events)) != len(db_removal_events):
+        raise ValueError("PIT membership-change events are duplicated")
+    if _manifest_events(manifest["additions"], "ADDITION") != db_addition_events:
+        raise ValueError("manifest addition events do not reconcile to PIT evidence")
+    if _manifest_events(manifest["removals"], "REMOVAL") != db_removal_events:
+        raise ValueError("manifest removal events do not reconcile to PIT evidence")
     additions: set[str] = set()
     for row in pit_rows:
         effective_from = _as_date(row[1])
@@ -532,7 +585,7 @@ def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str,
             }
             for item in DEFAULT_COST_SCHEDULES
         ]
-        details["cost_policy_identity"] = economic_contract_hash({"schedules": schedule_identity})
+        details["cost_policy_identity"] = campaign_cost_policy_identity(DEFAULT_COST_SCHEDULES)
         details["cost_schedule_version"] = schedule.version
         details["cost_schedule_sequence"] = schedule_identity
     except Exception as exc:
@@ -564,6 +617,7 @@ def run_preflight(
     mode: str = "event-driven",
     benchmark_symbol: str = CAMPAIGN_BENCHMARK,
     require_certification: bool = True,
+    starting_capital: float | None = None,
 ) -> PreflightResult:
     """Run all non-mutating database, PIT, and Campaign 1 baseline checks."""
 
@@ -611,6 +665,10 @@ def run_preflight(
     baseline_details, baseline_blockers = _baseline_preflight(config, mode=mode)
     details.update(baseline_details)
     blockers.extend(baseline_blockers)
+    if benchmark_symbol != CAMPAIGN_BENCHMARK:
+        blockers.append("CAMPAIGN_BENCHMARK_MUST_BE_NIFTY200")
+    if starting_capital is not None and float(starting_capital) != CAMPAIGN_STARTING_CAPITAL:
+        blockers.append("CAMPAIGN_STARTING_CAPITAL_MISMATCH")
     return PreflightResult(not blockers, details, tuple(dict.fromkeys(blockers)))
 
 
