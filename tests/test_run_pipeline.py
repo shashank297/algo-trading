@@ -140,6 +140,15 @@ def test_valid_pipeline_uses_exact_order_and_snapshot(monkeypatch, tmp_path):
         "Mass Strategy Backtesting & Evaluation",
     ]
     assert all(command[command.index("--universe-snapshot") + 1] == "PIT" for _, command in stages)
+    research_command = stages[-1][1]
+    assert research_command[research_command.index("--mode") + 1] == "event-driven"
+    assert research_command[research_command.index("--benchmark") + 1] == "NIFTY200"
+    assert research_command[research_command.index("--capital") + 1] == "100000.0"
+    assert research_command[research_command.index("--experiment-family-id") + 1] == run_pipeline.CAMPAIGN_ID
+    assert "--database-path" in research_command
+    assert "--strategies" in research_command
+    assert "--database-path" in stages[0][1]
+    assert stages[1][1][stages[1][1].index("--database") + 1] == str(tmp_path / "research.duckdb")
 
 
 def test_backfill_failure_blocks_quality_and_research(monkeypatch, tmp_path):
@@ -204,6 +213,13 @@ def test_live_trading_fails_campaign_baseline_gate(tmp_path):
 
     assert details["execution_mode"] == "event-driven"
     assert "LIVE_TRADING_MUST_BE_FALSE" in blockers
+
+
+def test_campaign_strategy_inventory_excludes_non_paper_strategy():
+    names = run_pipeline._campaign_strategy_names()
+
+    assert len(names) == 20
+    assert "opening_range_breakout" not in names
 
 
 def test_skip_api_does_not_launch_dashboard(monkeypatch, tmp_path):

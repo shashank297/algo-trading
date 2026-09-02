@@ -8,7 +8,7 @@ import os
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -17,13 +17,16 @@ import duckdb
 from main import apply_env_overrides, load_yaml, validate_config
 from risk import build_risk_engine
 from storage.integrity import DatabaseIntegrityValidator
-from trading_stack.costs import get_cost_schedule
+from trading_stack.costs import DEFAULT_COST_SCHEDULES, get_cost_schedule
 from trading_stack.economic import economic_contract_hash
 from trading_stack.universe import UniverseResearchService
+from trading_stack.strategies import StrategyRegistry
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 CAMPAIGN_STARTING_CAPITAL = 100_000.0
+CAMPAIGN_ID = "campaign-1-2d653914799e"
+CAMPAIGN_BENCHMARK = "NIFTY200"
 REQUIRED_RESEARCH_TABLES = frozenset({
     "historical_candles",
     "market_datasets",
@@ -31,6 +34,14 @@ REQUIRED_RESEARCH_TABLES = frozenset({
     "universe_snapshot_members",
     "index_constituents_pit",
 })
+
+
+def _as_date(value: Any) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    return value if isinstance(value, date) else date.fromisoformat(str(value))
 
 
 @dataclass(frozen=True)
@@ -123,10 +134,24 @@ def _pit_preflight(
         if survivorship_bias:
             blockers.extend(("PIT_UNIVERSE_NOT_READY", "SURVIVORSHIP_BIASED_UNIVERSE"))
 
-        pit_count, pit_start = conn.execute(
-            "SELECT COUNT(*), MIN(effective_from) FROM index_constituents_pit WHERE universe_name = ?",
+        pit_rows = conn.execute(
+            """
+            SELECT pit.symbol, pit.effective_from, pit.effective_until,
+                   pit.known_from, knowledge.known_at
+            FROM index_constituents_pit pit
+            LEFT JOIN index_constituent_knowledge knowledge
+              ON knowledge.universe_name = pit.universe_name
+             AND knowledge.instrument_id = pit.instrument_id
+             AND knowledge.effective_from = pit.effective_from
+            WHERE REPLACE(UPPER(pit.universe_name), ' ', '') =
+                  REPLACE(UPPER(?), ' ', '')
+            ORDER BY pit.symbol, pit.effective_from
+            """,
             [universe_name],
-        ).fetchone()
+        ).fetchall()
+        pit_count = len(pit_rows)
+        pit_dates = [normalized for row in pit_rows if (normalized := _as_date(row[1])) is not None]
+        pit_start = min(pit_dates) if pit_dates else None
         details["pit_membership_rows"] = int(pit_count or 0)
         details["pit_coverage_start"] = pit_start
         if not pit_count:
@@ -134,7 +159,50 @@ def _pit_preflight(
         elif pit_start is None or pit_start > requested_start:
             blockers.append("PIT_REQUESTED_HISTORY_PRECEDES_COVERAGE")
 
-        readiness = UniverseResearchService(_ReadOnlyDatabase(conn)).readiness(
+        missing_knowledge = sum(1 for row in pit_rows if row[3] is None or row[4] is None)
+        details["pit_rows_missing_knowledge_evidence"] = missing_knowledge
+        if missing_knowledge:
+            blockers.append("PIT_KNOWLEDGE_TIME_INCOMPLETE")
+
+        interval_errors = 0
+        symbols = sorted({str(row[0]) for row in pit_rows})
+        for symbol in symbols:
+            intervals = [row for row in pit_rows if str(row[0]) == symbol]
+            previous_end = None
+            for _, effective_from, effective_until, *_ in intervals:
+                effective_from = _as_date(effective_from)
+                effective_until = _as_date(effective_until)
+                if effective_from is None:
+                    interval_errors += 1
+                    continue
+                if effective_until is not None and effective_from >= effective_until:
+                    interval_errors += 1
+                if previous_end is not None and effective_from < previous_end:
+                    interval_errors += 1
+                previous_end = effective_until
+        details["pit_interval_errors"] = interval_errors
+        if interval_errors:
+            blockers.append("PIT_INTERVAL_INTEGRITY_FAILED")
+
+        if pit_rows:
+            data_bounds = conn.execute(
+                "SELECT MIN(timestamp), MAX(timestamp) FROM historical_candles WHERE timeframe = '1d'",
+            ).fetchone() or (None, None)
+            details["market_data_period"] = {
+                "start": data_bounds[0] if data_bounds else None,
+                "end": data_bounds[1] if data_bounds else None,
+            }
+            if data_bounds and _as_date(data_bounds[0]) is not None and (_as_date(data_bounds[0]) or date.max) < requested_start:
+                for symbol in symbols:
+                    covered = [row for row in pit_rows if str(row[0]) == symbol]
+                    if not any(
+                        (_as_date(row[1]) or date.max) <= requested_start
+                        and (_as_date(row[2]) is None or (_as_date(row[2]) or date.min) > requested_start)
+                        for row in covered
+                    ):
+                        blockers.append("PIT_SYMBOL_COVERAGE_INCOMPLETE")
+
+        readiness = UniverseResearchService(_ReadOnlyDatabase(conn)).readiness(  # type: ignore[arg-type]
             snapshot_id,
             timeframe="1d",
             benchmark_symbol=benchmark_symbol,
@@ -155,19 +223,41 @@ def _pit_preflight(
     return details, tuple(dict.fromkeys(blockers))
 
 
-def _certification_preflight(db_path: Path) -> tuple[dict[str, Any], tuple[str, ...]]:
+def _certification_preflight(
+    db_path: Path,
+    *,
+    universe_snapshot: str | None = None,
+    benchmark_symbol: str = CAMPAIGN_BENCHMARK,
+    timeframe: str = "1d",
+) -> tuple[dict[str, Any], tuple[str, ...]]:
     """Require persisted authoritative data-quality evidence before research."""
 
     details: dict[str, Any] = {}
     conn: duckdb.DuckDBPyConnection | None = None
     try:
         conn = duckdb.connect(database=str(db_path), read_only=True)
-        certified = int(conn.execute(
+        certification_row = conn.execute(
             "SELECT COUNT(*) FROM data_quality_certifications WHERE UPPER(status) = 'CERTIFIED'",
-        ).fetchone()[0])
+        ).fetchone()
+        certified = int(certification_row[0]) if certification_row else 0
         details["certified_dataset_count"] = certified
         if certified == 0:
             return details, ("DATA_QUALITY_NOT_CERTIFIED",)
+        if universe_snapshot:
+            frame_row = conn.execute(
+                """
+                SELECT COUNT(*) FROM research_frame_certifications
+                WHERE UPPER(status) = 'CERTIFIED'
+                  AND timeframe = ?
+                  AND (symbol = ? OR symbol = ?)
+                  AND pit_evidence_hash IS NOT NULL
+                """,
+                [timeframe, f"PORTFOLIO:{universe_snapshot}", benchmark_symbol],
+            ).fetchone()
+            frame_count = int(frame_row[0]) if frame_row else 0
+            details["selected_universe_frame_certification_count"] = frame_count
+            if frame_count == 0:
+                return details, ("DATA_QUALITY_NOT_CERTIFIED_FOR_SELECTED_UNIVERSE",)
     except Exception as exc:
         details["certification_error"] = str(exc)
         return details, ("DATA_QUALITY_NOT_CERTIFIED",)
@@ -177,8 +267,23 @@ def _certification_preflight(db_path: Path) -> tuple[dict[str, Any], tuple[str, 
     return details, ()
 
 
+def _campaign_strategy_names() -> tuple[str, ...]:
+    """Return the registered paper-eligible strategies for Campaign 1."""
+
+    return tuple(
+        name for name in StrategyRegistry.available()
+        if StrategyRegistry.metadata(name).paper_eligible
+    )
+
+
 def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str, Any], tuple[str, ...]]:
-    details: dict[str, Any] = {"execution_mode": mode, "starting_capital": CAMPAIGN_STARTING_CAPITAL}
+    details: dict[str, Any] = {
+        "execution_mode": mode,
+        "starting_capital": CAMPAIGN_STARTING_CAPITAL,
+        "campaign_id": CAMPAIGN_ID,
+        "research_config_hash": economic_contract_hash(config.get("research", {})),
+        "strategy_library": _campaign_strategy_names(),
+    }
     blockers: list[str] = []
     research = config.get("research")
     if not isinstance(research, dict):
@@ -199,8 +304,17 @@ def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str,
         blockers.append("INDIAN_COST_POLICY_NOT_READY")
     try:
         schedule = get_cost_schedule()
-        details["cost_policy_identity"] = economic_contract_hash(dict(schedule.__dict__))
+        schedule_identity = [
+            {
+                "effective_from": item.effective_from.isoformat(),
+                "version": item.version,
+                "hash": economic_contract_hash(dict(item.__dict__)),
+            }
+            for item in DEFAULT_COST_SCHEDULES
+        ]
+        details["cost_policy_identity"] = economic_contract_hash({"schedules": schedule_identity})
         details["cost_schedule_version"] = schedule.version
+        details["cost_schedule_sequence"] = schedule_identity
     except Exception as exc:
         details["cost_error"] = str(exc)
         blockers.append("INDIAN_COST_POLICY_NOT_READY")
@@ -213,7 +327,7 @@ def run_preflight(
     universe_snapshot: str | None,
     database_path: str | None,
     mode: str = "event-driven",
-    benchmark_symbol: str = "NIFTY",
+    benchmark_symbol: str = CAMPAIGN_BENCHMARK,
     require_certification: bool = True,
 ) -> PreflightResult:
     """Run all non-mutating database, PIT, and Campaign 1 baseline checks."""
@@ -245,7 +359,11 @@ def run_preflight(
         details.update(pit_details)
         blockers.extend(pit_blockers)
         if require_certification:
-            certification_details, certification_blockers = _certification_preflight(db_path)
+            certification_details, certification_blockers = _certification_preflight(
+                db_path,
+                universe_snapshot=universe_snapshot,
+                benchmark_symbol=benchmark_symbol,
+            )
             details.update(certification_details)
             blockers.extend(certification_blockers)
     else:
@@ -305,16 +423,18 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     python_exe = sys.executable
+    db_path = _database_path(config, args.database_path)
     snapshot_args = ["--universe-snapshot", str(args.universe_snapshot)]
+    database_args = ["--database-path", str(db_path)]
     if not args.skip_backfill:
         result = run_step(
-            [python_exe, "tools/backfill_market_history.py", *snapshot_args],
+            [python_exe, "tools/backfill_market_history.py", *snapshot_args, "--benchmark", CAMPAIGN_BENCHMARK, *database_args],
             "Incremental Market Data Backfill",
         )
         if result:
             return result
         result = run_step(
-            [python_exe, "tools/refresh_session_quality.py", *snapshot_args, "--timeframe", "1d"],
+            [python_exe, "tools/refresh_session_quality.py", *snapshot_args, "--timeframe", "1d", "--benchmark", CAMPAIGN_BENCHMARK, "--database", str(db_path)],
             "Data Quality & Session Guardrails",
         )
         if result:
@@ -331,7 +451,13 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     result = run_step(
-        [python_exe, "research.py", "--command", "mass-research", *snapshot_args],
+        [
+            python_exe, "research.py", "--command", "mass-research",
+            *snapshot_args, *database_args, "--benchmark", CAMPAIGN_BENCHMARK,
+            "--mode", "event-driven", "--capital", str(CAMPAIGN_STARTING_CAPITAL),
+            "--strategies", ",".join(_campaign_strategy_names()),
+            "--experiment-family-id", CAMPAIGN_ID,
+        ],
         "Mass Strategy Backtesting & Evaluation",
     )
     if result:

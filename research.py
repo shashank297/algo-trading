@@ -14,7 +14,14 @@ from zoneinfo import ZoneInfo
 import duckdb
 import pandas as pd
 
-from main import apply_env_overrides, configured_nse_calendar, load_yaml, validate_config, validate_symbols
+from main import (
+    apply_env_overrides,
+    configured_nse_calendar,
+    load_universe_snapshot_symbols,
+    load_yaml,
+    validate_config,
+    validate_symbols,
+)
 from ai_research import OpenAIResearchClient, ResearchGoal, ResearchWorkflow
 from experiments import (
     ExperimentManager,
@@ -24,6 +31,7 @@ from experiments import (
     RobustnessEvaluator,
     RobustnessPolicy,
 )
+from experiments.trials import ExperimentFamilySpec
 
 from data_platform.universe import PointInTimeUniverseManager
 from risk import build_risk_engine
@@ -39,6 +47,51 @@ from utils import LoggerSetup
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+CAMPAIGN_1_ID = "campaign-1-2d653914799e"
+CAMPAIGN_1_MAXIMUM_TRIALS = 74
+
+
+def _ensure_campaign_1_family(
+    db: DuckDBManager,
+    *,
+    universe_snapshot_id: str,
+    benchmark_symbol: str | None,
+    cost_model_version: str,
+) -> None:
+    """Register or validate the immutable Campaign 1 trial family."""
+
+    existing = db.get_experiment_family(CAMPAIGN_1_ID)
+    if existing is not None:
+        if int(existing["maximum_trials"]) != CAMPAIGN_1_MAXIMUM_TRIALS:
+            raise ValueError("Campaign 1 experiment family trial budget mismatch.")
+        if str(existing.get("universe_snapshot_id", universe_snapshot_id)) != universe_snapshot_id:
+            raise ValueError("Campaign 1 experiment family universe mismatch.")
+        return
+
+    strategy_names = [
+        name for name in StrategyRegistry.available()
+        if StrategyRegistry.metadata(name).paper_eligible
+    ]
+    family = ExperimentFamilySpec(
+        experiment_family_id=CAMPAIGN_1_ID,
+        hypothesis="Campaign 1 authoritative event-driven Indian-equity screening",
+        strategy_names=strategy_names,
+        strategy_versions=[StrategyRegistry.metadata(name).version for name in strategy_names],
+        universe_snapshot_id=universe_snapshot_id,
+        timeframe="1d",
+        feature_versions=["features-v1"],
+        cost_model_version=cost_model_version,
+        parameter_space={
+            name: dict(StrategyRegistry.metadata(name).parameter_grid)
+            for name in strategy_names
+        },
+        maximum_trials=CAMPAIGN_1_MAXIMUM_TRIALS,
+        selection_metric="net_return_drawdown_turnover_stability",
+        walk_forward_design={"mode": "nested_expanding", "purge": "configured", "embargo": "configured"},
+        source_revision="campaign-1-baseline",
+        operator_notes=f"benchmark={benchmark_symbol or 'NIFTY200'}; authoritative event-driven only",
+    )
+    db.register_experiment_family(family)
 
 
 def _list_phase2_7_conditional_evidence_read_only(
@@ -303,21 +356,7 @@ def main(argv: list[str] | None = None) -> int:
         if requested_universe:
             universe = requested_universe
         elif args.universe_snapshot != "CONFIGURED_UNIVERSE" and args.command != "market-regime":
-            rows = db.conn.execute(
-                """
-                SELECT provider_symbol
-                FROM universe_snapshot_members
-                WHERE snapshot_id = ?
-                  AND active_to IS NULL
-                  AND liquidity_eligible
-                  AND data_eligible
-                  AND paper_eligible
-                  AND provider_symbol IS NOT NULL
-                ORDER BY symbol
-                """,
-                [args.universe_snapshot],
-            ).fetchall()
-            universe = [str(row[0]) for row in rows]
+            universe = [str(item["symbol"]) for item in load_universe_snapshot_symbols(db, args.universe_snapshot)]
             if not universe:
                 raise ValueError(f"Universe snapshot has no eligible members: {args.universe_snapshot}")
         else:
@@ -899,6 +938,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "mass-research":
             strategy_names = [value.strip() for value in args.strategies.split(",") if value.strip()] or [args.strategy]
+            cost_model_version = str(
+                research_config.get("indian_delivery_costs", {}).get(
+                    "version", "angel-nse-delivery-2026-04"
+                )
+            )
+            if args.experiment_family_id == CAMPAIGN_1_ID:
+                _ensure_campaign_1_family(
+                    db,
+                    universe_snapshot_id=args.universe_snapshot,
+                    benchmark_symbol=args.benchmark,
+                    cost_model_version=cost_model_version,
+                )
             mass_result = MassExperimentManager(db, india_calendar, risk_engine).run(
                 MassExperimentSpec(
                     strategy_names=strategy_names,
@@ -909,9 +960,7 @@ def main(argv: list[str] | None = None) -> int:
                     benchmark_symbol=args.benchmark or None,
                     parameters={name: parameters for name in strategy_names},
                     cost_model=cost_model or research_config.get("indian_delivery_costs", {}),
-                    cost_model_version=str(
-                        research_config.get("indian_delivery_costs", {}).get("version", "angel-nse-delivery-2026-04")
-                    ),
+                    cost_model_version=cost_model_version,
                     max_workers=args.max_workers,
                     experiment_family_id=args.experiment_family_id,
                 ),

@@ -335,7 +335,25 @@ def load_universe_snapshot_symbols(db: DuckDBManager, snapshot_id: str) -> list[
     if snapshot_exists is None:
         raise RuntimeError(f"Universe snapshot not found: {snapshot_id}")
 
-    rows = db.conn.execute(
+    snapshot_name = db.conn.execute(
+        "SELECT name FROM universe_snapshots WHERE snapshot_id = ?",
+        [snapshot_id],
+    ).fetchone()
+    pit_rows = []
+    if snapshot_name:
+        pit_rows = db.conn.execute(
+            """
+            SELECT DISTINCT symbol, token, exchange
+            FROM index_constituents_pit
+            WHERE UPPER(universe_name) = UPPER(?)
+              AND symbol IS NOT NULL
+              AND token IS NOT NULL
+            ORDER BY symbol
+            """,
+            [snapshot_name[0]],
+        ).fetchall()
+
+    rows = pit_rows or db.conn.execute(
         """
         SELECT provider_symbol, provider_token, exchange
         FROM universe_snapshot_members

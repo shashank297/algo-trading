@@ -977,6 +977,36 @@ class MultiStrategyPlatformTests(unittest.TestCase):
             finally:
                 db.close()
 
+    def test_ingestion_uses_historical_pit_union_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = DuckDBManager(str(Path(directory) / "pit-universe.duckdb"))
+            try:
+                db._replace_rows("universe_snapshots", [{
+                    "snapshot_id": "PIT_UNIVERSE", "name": "Test Universe",
+                    "source_url": "https://example.test/universe.csv",
+                    "effective_date": date(2026, 1, 1), "content_hash": "pit-hash",
+                    "survivorship_bias": False,
+                }])
+                db.conn.execute(
+                    """
+                    INSERT INTO index_constituents_pit
+                    (universe_name, instrument_id, symbol, token, exchange,
+                     effective_from, effective_until, known_from, weight,
+                     inclusion_reason, exclusion_reason)
+                    VALUES ('Test Universe', '2', 'FORMER', '202', 'NSE',
+                            '2020-01-01', '2025-01-01', '2020-01-01', 0.5,
+                            'historical inclusion', NULL)
+                    """
+                )
+                symbols = load_universe_snapshot_symbols(db, "PIT_UNIVERSE")
+            finally:
+                db.close()
+
+        assert symbols == [{
+            "symbol": "FORMER", "token": "202", "exchange": "NSE",
+            "instrument_type": "EQUITY", "timeframes": ["1d"],
+        }]
+
     def test_synchronized_dataset_requires_requested_benchmark(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = DuckDBManager(str(Path(directory) / "benchmark.duckdb"))
