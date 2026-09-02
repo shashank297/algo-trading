@@ -10,6 +10,9 @@ from typing import Any
 import pandas as pd
 
 
+CAMPAIGN_COST_POLICY_IDENTITY = "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
+
+
 def marked_to_market_equity(
     cash: float,
     quantities: Mapping[str, float],
@@ -129,7 +132,7 @@ def cost_schedule_identity(
 
 
 def campaign_cost_policy_identity(schedules: Iterable[Any]) -> str:
-    """Hash the ordered, date-effective cost policy used by Campaign 1."""
+    """Return the identity of an ordered, date-effective Campaign 1 cost policy."""
 
     policy = [
         {
@@ -139,9 +142,16 @@ def campaign_cost_policy_identity(schedules: Iterable[Any]) -> str:
         }
         for schedule in schedules
     ]
-    identity = economic_contract_hash({"ordered_effective_schedules": policy})
-    # Preserve the published Campaign namespace while still deriving all
-    # non-baseline identities from the complete canonical payload.
-    if identity == "5a349db1f575d8317048f5bed418fe625e30d8ecde29dd6d2fe9d7ec15957267":
-        return "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
-    return identity
+    from trading_stack.costs import DEFAULT_COST_SCHEDULES
+
+    canonical = [
+        {
+            "effective_from": str(getattr(schedule, "effective_from", "")),
+            "version": str(getattr(schedule, "version", "")),
+            "schedule": dict(getattr(schedule, "__dict__", {})),
+        }
+        for schedule in DEFAULT_COST_SCHEDULES
+    ]
+    if policy == canonical:
+        return CAMPAIGN_COST_POLICY_IDENTITY
+    return economic_contract_hash({"ordered_effective_schedules": policy})

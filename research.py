@@ -52,6 +52,29 @@ CAMPAIGN_1_ID = "campaign-1-2d653914799e"
 CAMPAIGN_1_MAXIMUM_TRIALS = 74
 
 
+def _validate_campaign_cli_contract(args: argparse.Namespace, cost_model: dict[str, float]) -> None:
+    """Reject Campaign 1 inputs that could change its frozen runtime contract."""
+
+    if args.command != "mass-research" or args.experiment_family_id != CAMPAIGN_1_ID:
+        return
+    if args.mode != "event-driven":
+        raise ValueError("Campaign 1 requires --mode event-driven")
+    if args.timeframe != "1d":
+        raise ValueError("Campaign 1 requires --timeframe 1d")
+    if args.risk_override_max_pos is not None:
+        raise ValueError("Campaign 1 does not permit --risk-override-max-pos")
+    if cost_model:
+        raise ValueError("Campaign 1 does not permit --costs overrides")
+    if args.universe.strip():
+        raise ValueError("Campaign 1 does not permit --universe overrides")
+    from run_pipeline import _campaign_strategy_names
+
+    requested = tuple(sorted(value.strip() for value in args.strategies.split(",") if value.strip()))
+    frozen = tuple(sorted(_campaign_strategy_names()))
+    if requested != frozen:
+        raise ValueError("Campaign 1 requires the frozen strategy set")
+
+
 def materialize_campaign_1_configurations() -> list[dict[str, Any]]:
     """Materialize the frozen Campaign 1 roots in deterministic order."""
     configurations: list[dict[str, Any]] = []
@@ -370,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
             print("CAMPAIGN 1 DATA READINESS BLOCKED")
             print("EXTERNAL HISTORICAL CONSTITUENT DATA REQUIRED")
             return 2
+        _validate_campaign_cli_contract(args, cost_model)
     if args.command == "strategy-regime-analysis":
         cutoff = (
             datetime.fromisoformat(args.evidence_at.replace("Z", "+00:00"))

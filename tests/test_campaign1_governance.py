@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -11,12 +12,12 @@ import pytest
 from experiments.statistical_tests import _aggregate_campaign_root_evidence, resolve_authoritative_dsr
 from experiments.trials import ExperimentFamilySpec, ResearchTrial, TrialStatus
 from storage.duckdb_manager import DuckDBManager
-from research import materialize_campaign_1_configurations
+from research import _validate_campaign_cli_contract, build_parser, materialize_campaign_1_configurations
 from data_platform.universe import PointInTimeConstituent, PointInTimeUniverseManager
 from trading_stack.datasets import filter_frame_by_pit
 from trading_stack.costs import DEFAULT_COST_SCHEDULES
 from trading_stack.economic import campaign_cost_policy_identity
-from run_pipeline import _manifest_events
+from run_pipeline import _manifest_delisting_events, _manifest_events, _campaign_strategy_names
 
 
 CAMPAIGN_FAMILY = "campaign-1-2d653914799e"
@@ -269,3 +270,29 @@ def test_campaign_manifest_events_bind_symbol_and_effective_date() -> None:
     assert expected != swapped
     with pytest.raises(ValueError, match="require symbol and effective date"):
         _manifest_events(["AAA"], "ADDITION")
+
+
+def test_campaign_delisting_events_bind_date_and_reason() -> None:
+    event = [{"symbol": "AAA", "effective_until": "2025-06-30", "reason": "DELISTED"}]
+    assert _manifest_delisting_events(event) == (("AAA", "DELISTING", "2025-06-30", "DELISTED"),)
+    with pytest.raises(ValueError, match="date, or reason"):
+        _manifest_delisting_events([{"symbol": "AAA", "reason": "DELISTED"}])
+
+
+def test_campaign_cli_contract_rejects_runtime_overrides() -> None:
+    parser = build_parser()
+    frozen = ",".join(_campaign_strategy_names())
+    base = [
+        "--command", "mass-research", "--experiment-family-id", CAMPAIGN_FAMILY,
+        "--mode", "event-driven", "--strategies", frozen,
+    ]
+    for option in (
+        ["--risk-override-max-pos", "0.10"],
+        ["--costs", '{"fee_bps": 1}'],
+        ["--timeframe", "5m"],
+        ["--strategies", _campaign_strategy_names()[0]],
+        ["--universe", "AAA"],
+    ):
+        args = parser.parse_args(base + option)
+        with pytest.raises(ValueError, match="Campaign 1"):
+            _validate_campaign_cli_contract(args, json.loads(args.costs))

@@ -75,7 +75,7 @@ def _manifest_events(items: Any, event_type: str) -> tuple[tuple[str, str, str],
         if not isinstance(item, dict):
             raise ValueError("manifest membership events require symbol and effective date")
         symbol = item.get("symbol") or item.get("instrument_id")
-        effective = item.get("effective_from") or item.get("effective_date")
+        effective = item.get("effective_from") or item.get("effective_until") or item.get("effective_date")
         if symbol is None or effective is None:
             raise ValueError("manifest membership event is missing identity or effective date")
         boundary = _as_date(effective)
@@ -84,6 +84,29 @@ def _manifest_events(items: Any, event_type: str) -> tuple[tuple[str, str, str],
         events.append((str(symbol).strip().upper(), event_type, boundary.isoformat()))
     if len(set(events)) != len(events):
         raise ValueError("manifest contains duplicate membership events")
+    return tuple(sorted(events))
+
+
+def _manifest_delisting_events(items: Any) -> tuple[tuple[str, str, str, str], ...]:
+    """Normalize delistings with the effective boundary and authoritative reason."""
+
+    if not isinstance(items, list):
+        raise ValueError("manifest delisting event list is malformed")
+    events: list[tuple[str, str, str, str]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            raise ValueError("manifest delisting events require symbol, date, and reason")
+        symbol = item.get("symbol") or item.get("instrument_id")
+        effective = item.get("effective_until") or item.get("effective_date")
+        reason = item.get("exclusion_reason") or item.get("reason")
+        if symbol is None or effective is None or reason is None or not str(reason).strip():
+            raise ValueError("manifest delisting event is missing identity, date, or reason")
+        boundary = _as_date(effective)
+        if boundary is None:
+            raise ValueError("manifest delisting date is malformed")
+        events.append((str(symbol).strip().upper(), "DELISTING", boundary.isoformat(), str(reason).strip()))
+    if len(set(events)) != len(events):
+        raise ValueError("manifest contains duplicate delisting events")
     return tuple(sorted(events))
 
 
@@ -210,10 +233,16 @@ def _validate_pit_manifest(
         if effective_from is not None and effective_from > coverage_start:
             additions.add(str(row[0]).upper())
     removals = {str(row[0]).upper() for row in pit_rows if _as_date(row[2]) is not None}
-    delistings = {
-        str(row[0]).upper() for row in pit_rows
-        if row[3] and "DELIST" in str(row[3]).upper()
-    }
+    db_delisting_events = tuple(sorted(
+        (str(row[0]).upper(), "DELISTING", (_as_date(row[2]) or date.min).isoformat(), str(row[3]).strip())
+        for row in pit_rows
+        if row[2] is not None and row[3] and "DELIST" in str(row[3]).upper()
+    ))
+    if len(set(db_delisting_events)) != len(db_delisting_events):
+        raise ValueError("PIT delisting events are duplicated")
+    if _manifest_delisting_events(manifest["delistings"]) != db_delisting_events:
+        raise ValueError("manifest delisting events do not reconcile to PIT evidence")
+    delistings = {event[0] for event in db_delisting_events}
     if _manifest_values(manifest["additions"]) != additions:
         raise ValueError("manifest additions do not reconcile to PIT evidence")
     if _manifest_values(manifest["removals"]) != removals:
