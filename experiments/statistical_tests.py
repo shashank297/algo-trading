@@ -503,7 +503,25 @@ def resolve_authoritative_dsr(
     # Campaign 1 reserves one hypothesis per configuration. Symbol, fold, and
     # retry rows are execution children and must not inflate DSR multiplicity.
     if experiment_family_id == "campaign-1-2d653914799e":
-        trials_log = [tr for tr in trials_log if tr.get("parent_trial_id") is None]
+        roots = [tr for tr in trials_log if tr.get("parent_trial_id") is None]
+        children: dict[str, list[dict[str, Any]]] = {}
+        for child in trials_log:
+            parent_id = child.get("parent_trial_id")
+            if parent_id:
+                children.setdefault(str(parent_id), []).append(child)
+        enriched_roots: list[dict[str, Any]] = []
+        for root in roots:
+            root_copy = dict(root)
+            root_id = str(root.get("trial_id", ""))
+            child_rows = children.get(root_id, [])
+            successful = next((child for child in child_rows if str(child.get("status", "")).upper() == "SUCCEEDED"), None)
+            failed = next((child for child in child_rows if str(child.get("status", "")).upper() == "FAILED"), None)
+            evidence = successful or failed
+            if evidence is not None:
+                root_copy["status"] = evidence.get("status")
+                root_copy["metrics"] = evidence.get("metrics")
+            enriched_roots.append(root_copy)
+        trials_log = enriched_roots
 
     registry_sharpes: list[float] = []
     registry_trial_ids: list[str] = []
