@@ -29,6 +29,10 @@ CAMPAIGN_STARTING_CAPITAL = 100_000.0
 CAMPAIGN_ID = "campaign-1-2d653914799e"
 CAMPAIGN_BENCHMARK = "NIFTY200"
 CAMPAIGN_ECONOMIC_SEMANTICS_VERSION = "current_mark_to_market_equity_v1/floor_whole_share_v1"
+CAMPAIGN_FROZEN_RESEARCH_CONFIG_HASH = "ec50bff064bed0d2b4ff59a97961467d2225a4e3511ac8155f8555b8f66a1357"
+CAMPAIGN_FROZEN_RISK_POLICY_HASH = "8330bb013ffd1d22acb2c60d715066a43b239cd35b382e772c4a7d47c7d72a3c"
+CAMPAIGN_FROZEN_COST_POLICY_IDENTITY = "31dc1cec5ba3e715b1ec5e657cfa5c85199fe1cad87567420ad090bb749d9dd6"
+CAMPAIGN_FROZEN_STRATEGY_LIBRARY_HASH = "ef5e1492b81c4e76f4f1e9c6fae4d54de4597b8eabb1af223fc4eee8174742d8"
 REQUIRED_RESEARCH_TABLES = frozenset({
     "historical_candles",
     "market_datasets",
@@ -44,6 +48,125 @@ def _as_date(value: Any) -> date | None:
     if isinstance(value, datetime):
         return value.date()
     return value if isinstance(value, date) else date.fromisoformat(str(value))
+
+
+def _manifest_values(items: Any) -> set[str]:
+    if not isinstance(items, list):
+        raise ValueError("manifest membership change list is malformed")
+    values: set[str] = set()
+    for item in items:
+        if isinstance(item, dict):
+            value = item.get("symbol") or item.get("instrument_id")
+        else:
+            value = item
+        if value is None or not str(value).strip():
+            raise ValueError("manifest membership change item is malformed")
+        values.add(str(value).strip().upper())
+    return values
+
+
+def _validate_pit_manifest(
+    conn: duckdb.DuckDBPyConnection,
+    universe_name: str,
+    manifest: dict[str, Any],
+    *,
+    requested_start: date,
+) -> None:
+    required = {
+        "manifest_version", "universe_name", "source_name", "source_certification_id",
+        "source_hash", "coverage_start", "coverage_end", "periods", "additions",
+        "removals", "former_constituents", "delistings", "pit_evidence_hash",
+    }
+    if not required.issubset(manifest):
+        raise ValueError("manifest is missing required fields")
+    if str(manifest["universe_name"]).replace(" ", "").upper() != universe_name.replace(" ", "").upper():
+        raise ValueError("manifest universe does not match selected universe")
+    certification = conn.execute(
+        "SELECT dataset_id, checks_json FROM data_quality_certifications WHERE certification_id = ? AND status = 'CERTIFIED' AND issue_count = 0",
+        [manifest["source_certification_id"]],
+    ).fetchone()
+    if certification is None:
+        raise ValueError("manifest source certification is not authoritative")
+    try:
+        source_checks = json.loads(str(certification[1] or "{}"))
+    except json.JSONDecodeError as exc:
+        raise ValueError("manifest source certification payload is malformed") from exc
+    if source_checks.get("dataset_content_hash") != manifest["source_hash"]:
+        raise ValueError("manifest source hash does not match source certification")
+
+    coverage_start = _as_date(manifest["coverage_start"])
+    coverage_end = _as_date(manifest["coverage_end"])
+    if coverage_start is None or coverage_end is None:
+        raise ValueError("manifest coverage dates are malformed")
+    if coverage_start > coverage_end or coverage_start > requested_start:
+        raise ValueError("manifest coverage does not contain the requested start date")
+    data_bounds = conn.execute("SELECT MIN(timestamp), MAX(timestamp) FROM historical_candles WHERE timeframe = '1d'").fetchone()
+    data_end = _as_date(data_bounds[1]) if data_bounds else None
+    if data_end is not None and coverage_end < data_end:
+        raise ValueError("manifest coverage does not contain the available historical period")
+
+    periods = manifest["periods"]
+    if not isinstance(periods, list) or not periods:
+        raise ValueError("manifest periods are malformed")
+    period_dates: list[date] = []
+    for period in periods:
+        if not isinstance(period, dict) or "effective_from" not in period or "expected_member_count" not in period:
+            raise ValueError("manifest period is malformed")
+        boundary = _as_date(period["effective_from"])
+        if boundary is None or boundary < coverage_start or boundary > coverage_end or boundary in period_dates:
+            raise ValueError("manifest period boundaries are invalid")
+        period_dates.append(boundary)
+        count_row = conn.execute(
+            """
+            SELECT COUNT(DISTINCT instrument_id)
+            FROM index_constituents_pit
+            WHERE REPLACE(UPPER(universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
+              AND effective_from <= ?
+              AND (effective_until IS NULL OR effective_until > ?)
+            """,
+            [universe_name, boundary, boundary],
+        ).fetchone()
+        if int(count_row[0] if count_row else 0) != int(period["expected_member_count"]):
+            raise ValueError(f"manifest member count mismatch at {boundary}")
+    if sorted(period_dates) != period_dates:
+        raise ValueError("manifest periods are not ordered")
+
+    pit_rows = conn.execute(
+        """
+        SELECT symbol, effective_from, effective_until, exclusion_reason
+        FROM index_constituents_pit
+        WHERE REPLACE(UPPER(universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
+        ORDER BY symbol, effective_from
+        """,
+        [universe_name],
+    ).fetchall()
+    additions: set[str] = set()
+    for row in pit_rows:
+        effective_from = _as_date(row[1])
+        if effective_from is not None and effective_from > coverage_start:
+            additions.add(str(row[0]).upper())
+    removals = {str(row[0]).upper() for row in pit_rows if _as_date(row[2]) is not None}
+    delistings = {
+        str(row[0]).upper() for row in pit_rows
+        if row[3] and "DELIST" in str(row[3]).upper()
+    }
+    if _manifest_values(manifest["additions"]) != additions:
+        raise ValueError("manifest additions do not reconcile to PIT evidence")
+    if _manifest_values(manifest["removals"]) != removals:
+        raise ValueError("manifest removals do not reconcile to PIT evidence")
+    if _manifest_values(manifest["former_constituents"]) != removals:
+        raise ValueError("manifest former constituents do not reconcile to PIT evidence")
+    if _manifest_values(manifest["delistings"]) != delistings:
+        raise ValueError("manifest delistings do not reconcile to PIT evidence")
+
+    previous_by_symbol: dict[str, date | None] = {}
+    for symbol, effective_from, effective_until, _reason in pit_rows:
+        start = _as_date(effective_from)
+        end = _as_date(effective_until)
+        previous_end = previous_by_symbol.get(str(symbol).upper())
+        if previous_end is not None and start is not None and start < previous_end:
+            raise ValueError("PIT membership intervals overlap")
+        previous_by_symbol[str(symbol).upper()] = end
 
 
 @dataclass(frozen=True)
@@ -148,13 +271,8 @@ def _pit_preflight(
             else:
                 try:
                     manifest_data = load_yaml(str(manifest))
-                    required_manifest = {
-                        "manifest_version", "universe_name", "source_name", "source_certification_id",
-                        "source_hash", "coverage_start", "coverage_end", "periods", "additions",
-                        "removals", "former_constituents", "delistings", "pit_evidence_hash",
-                    }
-                    if not isinstance(manifest_data, dict) or not required_manifest.issubset(manifest_data):
-                        raise ValueError("manifest is missing required fields")
+                    if not isinstance(manifest_data, dict):
+                        raise ValueError("manifest is malformed")
                     supplied_hash = manifest_data.get("manifest_hash")
                     if supplied_hash:
                         content = {k: v for k, v in manifest_data.items() if k != "manifest_hash"}
@@ -164,22 +282,7 @@ def _pit_preflight(
                     actual_pit_hash = pit_evidence_hash(_ReadOnlyDatabase(conn), universe_name)  # type: ignore[arg-type]
                     if str(manifest_data["pit_evidence_hash"]) != actual_pit_hash:
                         raise ValueError("manifest PIT evidence hash mismatch")
-                    for period in manifest_data["periods"]:
-                        if not isinstance(period, dict) or "effective_from" not in period or "expected_member_count" not in period:
-                            raise ValueError("manifest period is malformed")
-                        boundary = str(period["effective_from"])
-                        count_row = conn.execute(
-                            """
-                            SELECT COUNT(DISTINCT instrument_id)
-                            FROM index_constituents_pit
-                            WHERE UPPER(universe_name) = ?
-                              AND effective_from <= ?
-                              AND (effective_until IS NULL OR effective_until > ?)
-                            """,
-                            [universe_name.upper(), boundary, boundary],
-                        ).fetchone()
-                        if int(count_row[0] if count_row else 0) != int(period["expected_member_count"]):
-                            raise ValueError(f"manifest member count mismatch at {boundary}")
+                    _validate_pit_manifest(conn, universe_name, manifest_data, requested_start=requested_start)
                     details["pit_manifest"] = manifest_data
                 except Exception as exc:
                     details["pit_manifest_error"] = str(exc)
@@ -305,18 +408,50 @@ def _certification_preflight(
             )
             frame_row = conn.execute(
                 """
-                SELECT COUNT(*) FROM research_frame_certifications
+                SELECT frame_certification_id, research_frame_hash,
+                       contributing_dataset_ids_json, timeframe,
+                       dataset_evidence_json, dq_certification_ids_json,
+                       pit_evidence_hash
+                FROM research_frame_certifications
                 WHERE UPPER(status) = 'CERTIFIED'
                   AND timeframe = ?
-                  AND (symbol = ? OR symbol = ?)
+                  AND symbol = ?
                   AND pit_evidence_hash = ?
+                ORDER BY verified_at DESC
+                LIMIT 1
                 """,
-                [timeframe, f"PORTFOLIO:{universe_snapshot}", benchmark_symbol, expected_pit_hash],
+                [timeframe, f"PORTFOLIO:{universe_snapshot}", expected_pit_hash],
             ).fetchone()
-            frame_count = int(frame_row[0]) if frame_row else 0
-            details["selected_universe_frame_certification_count"] = frame_count
-            if frame_count == 0:
+            details["selected_universe_frame_certification_count"] = 1 if frame_row else 0
+            if frame_row is None:
                 return details, ("DATA_QUALITY_NOT_CERTIFIED_FOR_SELECTED_UNIVERSE",)
+            frame_id, frame_hash, dataset_ids_json, frame_timeframe, dataset_json, dq_json, frame_pit_hash = frame_row
+            try:
+                dataset_ids = json.loads(str(dataset_ids_json or "[]"))
+                dataset_evidence = json.loads(str(dataset_json or "{}"))
+                dq_ids = json.loads(str(dq_json or "[]"))
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ValueError("selected frame certification lineage is malformed") from exc
+            if not frame_id or not frame_hash or frame_timeframe != timeframe or not dataset_ids or not dq_ids:
+                raise ValueError("selected frame certification lineage is incomplete")
+            if set(dataset_ids) != set(dataset_evidence):
+                raise ValueError("selected frame dataset evidence does not match contributing datasets")
+            for dataset_id in dataset_ids:
+                dataset_row = conn.execute(
+                    "SELECT transformation_hash, raw_hash FROM market_datasets WHERE dataset_id = ?",
+                    [dataset_id],
+                ).fetchone()
+                if dataset_row is None or str(dataset_evidence[dataset_id]) not in {str(value) for value in dataset_row if value}:
+                    raise ValueError("selected frame dataset content hash mismatch")
+            for certification_id in dq_ids:
+                dq_row = conn.execute(
+                    "SELECT dataset_id FROM data_quality_certifications WHERE certification_id = ? AND status = 'CERTIFIED' AND issue_count = 0",
+                    [certification_id],
+                ).fetchone()
+                if dq_row is None or str(dq_row[0]) not in {str(value) for value in dataset_ids}:
+                    raise ValueError("selected frame DQ certification lineage is incomplete")
+            details["selected_frame_certification_id"] = str(frame_id)
+            details["selected_frame_pit_hash"] = str(frame_pit_hash)
     except Exception as exc:
         details["certification_error"] = str(exc)
         return details, ("DATA_QUALITY_NOT_CERTIFIED",)
@@ -350,6 +485,7 @@ def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str,
             for name in _campaign_strategy_names()
         ],
     }
+    details["strategy_library_hash"] = economic_contract_hash(details["strategy_library"])
     blockers: list[str] = []
     research = config.get("research")
     if not isinstance(research, dict):
@@ -384,6 +520,21 @@ def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str,
     except Exception as exc:
         details["cost_error"] = str(exc)
         blockers.append("INDIAN_COST_POLICY_NOT_READY")
+    frozen_values = {
+        "research_config_hash": CAMPAIGN_FROZEN_RESEARCH_CONFIG_HASH,
+        "risk_policy_hash": CAMPAIGN_FROZEN_RISK_POLICY_HASH,
+        "cost_policy_identity": CAMPAIGN_FROZEN_COST_POLICY_IDENTITY,
+        "strategy_library_hash": CAMPAIGN_FROZEN_STRATEGY_LIBRARY_HASH,
+        "feature_version": "features-v1",
+        "economic_semantics_version": CAMPAIGN_ECONOMIC_SEMANTICS_VERSION,
+        "execution_mode": "event-driven",
+        "starting_capital": CAMPAIGN_STARTING_CAPITAL,
+        "benchmark_symbol": CAMPAIGN_BENCHMARK,
+        "live_trading": False,
+    }
+    for field_name, expected in frozen_values.items():
+        if details.get(field_name) != expected:
+            blockers.append(f"CAMPAIGN_BASELINE_{field_name.upper()}_MISMATCH")
     return details, tuple(dict.fromkeys(blockers))
 
 

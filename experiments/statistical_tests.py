@@ -369,6 +369,55 @@ def compute_dsr_statistic(
     )
 
 
+def _aggregate_campaign_root_evidence(
+    root: dict[str, Any],
+    children: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Reduce all execution children to one deterministic root hypothesis."""
+    if not children:
+        return dict(root)
+    ordered = sorted(children, key=lambda row: str(row.get("trial_id", "")))
+    successful = [row for row in ordered if str(row.get("status", "")).upper() == "SUCCEEDED"]
+    aggregate = dict(root)
+    if not successful:
+        aggregate["status"] = "FAILED"
+        return aggregate
+    metrics: dict[str, Any] = {}
+    metric_rows: list[dict[str, Any]] = []
+    for child in successful:
+        value = child.get("metrics") or child.get("metrics_json") or {}
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                value = {}
+        if isinstance(value, dict):
+            metric_rows.append(value)
+    metric_keys = sorted({key for row in metric_rows for key in row})
+    for key in metric_keys:
+        numeric: list[float] = []
+        for row in metric_rows:
+            if row.get(key) is None:
+                continue
+            try:
+                numeric.append(float(row[key]))
+            except (TypeError, ValueError):
+                continue
+        if not numeric:
+            continue
+        if key in {"max_drawdown", "worst_daily_loss", "worst_monthly_loss"}:
+            metrics[key] = min(numeric)
+        elif key in {"trade_count", "number_of_trades", "observations"}:
+            metrics[key] = sum(numeric)
+        else:
+            metrics[key] = math.fsum(numeric) / len(numeric)
+    aggregate["metrics"] = metrics
+    aggregate["status"] = "SUCCEEDED" if len(successful) == len(ordered) else "FAILED"
+    aggregate["child_trial_ids"] = [str(row.get("trial_id", "")) for row in ordered]
+    aggregate["child_evidence_aggregation"] = "ordered_successful_mean_v1"
+    return aggregate
+
+
 def resolve_authoritative_dsr(
     db: Any,
     returns: pd.Series | np.ndarray | list[float],
@@ -514,13 +563,7 @@ def resolve_authoritative_dsr(
             root_copy = dict(root)
             root_id = str(root.get("trial_id", ""))
             child_rows = children.get(root_id, [])
-            successful = next((child for child in child_rows if str(child.get("status", "")).upper() == "SUCCEEDED"), None)
-            failed = next((child for child in child_rows if str(child.get("status", "")).upper() == "FAILED"), None)
-            evidence = successful or failed
-            if evidence is not None:
-                root_copy["status"] = evidence.get("status")
-                root_copy["metrics"] = evidence.get("metrics")
-            enriched_roots.append(root_copy)
+            enriched_roots.append(_aggregate_campaign_root_evidence(root_copy, child_rows))
         trials_log = enriched_roots
 
     registry_sharpes: list[float] = []

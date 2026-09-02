@@ -1031,7 +1031,7 @@ def test_source_and_cross_sectional_run_execution(tmp_path: Any, monkeypatch: py
     )
 
     # 1. Single asset _source with mocked pipeline load_candles
-    monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf: candles.copy())
+    monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf, **_kwargs: candles.copy())
     ds_single = evaluator._source(spec_single, StrategyScope.SINGLE_ASSET, lookback=20)
     assert ds_single.universe_snapshot_id == spec_single.universe_snapshot_id
     assert not ds_single.panel.empty
@@ -1159,7 +1159,7 @@ def test_source_empty_candles_error(tmp_path: Any, monkeypatch: pytest.MonkeyPat
     evaluator = RobustnessEvaluator(db, policy=RobustnessPolicy(), risk_engine=RiskEngine())
     spec = ExperimentSpec(strategy_name="trend_following", universe=["NON_EXISTENT"], timeframe="1d")
 
-    monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf: pd.DataFrame())
+    monkeypatch.setattr("experiments.robustness.StrategyPipeline.load_candles", lambda self, sym, tf, **_kwargs: pd.DataFrame())
     from trading_stack.domain import StrategyScope
     with pytest.raises(ValueError, match="No candles found"):
         evaluator._source(spec, StrategyScope.SINGLE_ASSET, lookback=20)
@@ -1229,7 +1229,7 @@ def test_governance_and_registry_family_integration(tmp_path: Any, monkeypatch: 
     # Mock pipeline with _last_frame_certification_id
     class DummyPipeline:
         _last_frame_certification_id = "FC_TEST_01"
-        def load_candles(self, sym, tf):
+        def load_candles(self, sym, tf, **_kwargs):
             return candles.copy()
 
     monkeypatch.setattr("experiments.robustness.StrategyPipeline", lambda *args, **kwargs: DummyPipeline())
@@ -1283,7 +1283,7 @@ def test_source_calendar_validation_and_malformed_json_evidence(tmp_path: Any, m
 
     class MockPipeline:
         _last_frame_certification_id = "FC_MALFORMED"
-        def load_candles(self, sym, tf):
+        def load_candles(self, sym, tf, **_kwargs):
             return candles.copy()
 
     monkeypatch.setattr("experiments.robustness.StrategyPipeline", lambda *args, **kwargs: MockPipeline())
@@ -1520,7 +1520,7 @@ def test_registry_family_with_deduplicated_and_failed_trials(tmp_path: Any, monk
     candles = _make_dummy_candles(n_days=400, seed=42)
     class DummyPipeline:
         _last_frame_certification_id = "cert-01"
-        def load_candles(self, sym, tf):
+        def load_candles(self, sym, tf, **_kwargs):
             return candles.copy()
 
     monkeypatch.setattr("experiments.robustness.StrategyPipeline", lambda *args, **kwargs: DummyPipeline())

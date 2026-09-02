@@ -8,8 +8,8 @@ import uuid
 from dataclasses import dataclass, field, fields
 from threading import Lock
 from typing import Any, ClassVar
+from zoneinfo import ZoneInfo
 
-import numpy as np
 import pandas as pd
 from loguru import logger
 
@@ -53,18 +53,8 @@ def pit_evidence_hash(db: DuckDBManager, universe_name: str) -> str:
     return hashlib.sha256(json.dumps(normalized, sort_keys=False, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
-def filter_frame_by_pit(
-    db: DuckDBManager,
-    frame: pd.DataFrame,
-    universe_name: str | None,
-    *,
-    timezone_name: str = "Asia/Kolkata",
-    required: bool = False,
-) -> tuple[pd.DataFrame, str | None]:
-    """Apply effective-date and knowledge-time PIT eligibility to a candle frame."""
-    if not universe_name or universe_name in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}:
-        return frame, None
-    rows = db.conn.execute(
+def _pit_rows(db: DuckDBManager, universe_name: str) -> list[tuple[Any, ...]]:
+    return db.conn.execute(
         """
         SELECT pit.symbol, pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at
         FROM index_constituents_pit pit
@@ -77,21 +67,53 @@ def filter_frame_by_pit(
         """,
         [universe_name.upper()],
     ).fetchall()
+
+
+def _pit_eligibility_mask(
+    db: DuckDBManager,
+    frame: pd.DataFrame,
+    universe_name: str,
+    *,
+    timezone_name: str | ZoneInfo,
+    required: bool,
+    require_knowledge: bool | None = None,
+) -> tuple[pd.Series, str | None]:
+    if require_knowledge is None:
+        require_knowledge = required
+    rows = _pit_rows(db, universe_name)
     if not rows:
         if required:
             raise RuntimeError(f"Missing point-in-time constituent history for universe '{universe_name}'.")
-        return frame, None
-    pit_hash = pit_evidence_hash(db, universe_name)
+        return pd.Series(True, index=frame.index), None
+
     pit_df = pd.DataFrame(rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
     pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
     pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
     pit_df["known_from"] = pd.to_datetime(pit_df["known_from"]).dt.date
     pit_df["known_at"] = pd.to_datetime(pit_df["known_at"], utc=True)
-    if required and (pit_df["known_from"].isna() | pit_df["known_at"].isna()).any():
+    if require_knowledge and (pit_df["known_from"].isna() | pit_df["known_at"].isna()).any():
         raise RuntimeError(f"PIT evidence for universe '{universe_name}' has incomplete knowledge-time fields.")
+
+    invalid = pit_df[
+        pit_df["effective_until"].notna()
+        & (pit_df["effective_from"] >= pit_df["effective_until"])
+    ]
+    if not invalid.empty:
+        raise RuntimeError(f"Corrupt point-in-time intervals for '{universe_name}': effective_from >= effective_until.")
+    for _, group in pit_df.groupby("symbol", sort=False):
+        previous_end = None
+        for index, (effective_from, effective_until) in enumerate(
+            group[["effective_from", "effective_until"]].itertuples(index=False)
+        ):
+            if index > 0 and previous_end is None:
+                raise RuntimeError(f"Overlapping point-in-time intervals for '{universe_name}'.")
+            if previous_end is not None and effective_from < previous_end:
+                raise RuntimeError(f"Overlapping point-in-time intervals for '{universe_name}'.")
+            previous_end = effective_until
+
     timestamps = pd.to_datetime(frame["timestamp"], utc=True)
     local_dates = timestamps.dt.tz_convert(timezone_name).dt.date
-    symbols = frame["symbol"].astype(str).str.upper() if "symbol" in frame else pd.Series(["" for _ in frame.index], index=frame.index)
+    symbols = frame["symbol"].astype(str).str.upper() if "symbol" in frame else pd.Series("", index=frame.index)
     eligible = pd.Series(False, index=frame.index)
     for _, row in pit_df.iterrows():
         mask = symbols == str(row["symbol"]).upper()
@@ -101,8 +123,34 @@ def filter_frame_by_pit(
         if pd.notna(row["known_from"]):
             mask &= local_dates >= row["known_from"]
         if pd.notna(row["known_at"]):
-            mask &= timestamps <= row["known_at"]
+            mask &= timestamps >= row["known_at"]
         eligible |= mask
+
+    if required and not frame.empty:
+        min_frame_date = local_dates.min()
+        max_frame_date = local_dates.max()
+        if pit_df["effective_from"].min() > min_frame_date:
+            raise RuntimeError(f"PIT membership evidence for '{universe_name}' does not cover requested research start date.")
+        finite_ends = pit_df["effective_until"].dropna()
+        if not finite_ends.empty and finite_ends.max() <= max_frame_date:
+            raise RuntimeError(f"PIT membership evidence for '{universe_name}' does not cover the requested end date.")
+    return eligible, pit_evidence_hash(db, universe_name)
+
+
+def filter_frame_by_pit(
+    db: DuckDBManager,
+    frame: pd.DataFrame,
+    universe_name: str | None,
+    *,
+    timezone_name: str = "Asia/Kolkata",
+    required: bool = False,
+) -> tuple[pd.DataFrame, str | None]:
+    """Apply effective-date and knowledge-time PIT eligibility to a candle frame."""
+    if not universe_name or universe_name in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}:
+        return frame, None
+    eligible, pit_hash = _pit_eligibility_mask(
+        db, frame, universe_name, timezone_name=timezone_name, required=required
+    )
     return frame.loc[eligible.to_numpy()].reset_index(drop=True), pit_hash
 
 
@@ -342,93 +390,29 @@ class SynchronizedPanelBuilder:
         # Point-In-Time Universe Filtering
         survivorship_bias = True
         try:
-            pit_rows: list[tuple[str, Any, Any]] = []
-            if universe_name and universe_name != "CONFIGURED_UNIVERSE":
-                pit_rows = self.db.conn.execute(
-                    """
-                    SELECT pit.symbol, pit.effective_from, pit.effective_until,
-                           pit.known_from, knowledge.known_at
-                    FROM index_constituents_pit pit
-                    LEFT JOIN index_constituent_knowledge knowledge
-                      ON REPLACE(UPPER(knowledge.universe_name), ' ', '') = REPLACE(UPPER(pit.universe_name), ' ', '')
-                     AND knowledge.instrument_id = pit.instrument_id
-                     AND knowledge.effective_from = pit.effective_from
-                    WHERE REPLACE(UPPER(pit.universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
-                    """,
-                    [universe_name.upper()],
-                ).fetchall()
-
-            is_named_index = False
-            if (universe_name and universe_name not in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}) or (
-                universe_snapshot_id and universe_snapshot_id not in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}
-            ):
-                is_named_index = True
-
-            if pit_rows:
-                pit_df = pd.DataFrame(pit_rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
-                pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).dt.date
-                pit_df["effective_until"] = pd.to_datetime(pit_df["effective_until"]).dt.date
-                pit_df["known_from"] = pd.to_datetime(pit_df["known_from"]).dt.date
-                pit_df["known_at"] = pd.to_datetime(pit_df["known_at"], utc=True)
-                snapshot_exists = self.db.conn.execute(
-                    "SELECT 1 FROM universe_snapshots WHERE snapshot_id = ?",
-                    [universe_snapshot_id],
-                ).fetchone() is not None
-                if self.require_authoritative_certification and snapshot_exists and (pit_df["known_from"].isna() | pit_df["known_at"].isna()).any():
-                    raise RuntimeError(f"PIT evidence for '{universe_name}' has incomplete knowledge-time fields.")
-                
-                panel_dates = pd.to_datetime(panel["timestamp"]).dt.tz_convert(self.calendar.zone).dt.date
-                
-                # Validate interval integrity
-                invalid_intervals = pit_df[pit_df["effective_until"].notna() & (pit_df["effective_from"] >= pit_df["effective_until"])]
-                if not invalid_intervals.empty:
-                    raise RuntimeError(f"Corrupt point-in-time intervals for '{universe_name}': effective_from >= effective_until.")
-
-                if not panel.empty:
-                    min_panel_date = panel_dates.min()
-                    max_panel_date = panel_dates.max()
-                    min_pit_date = pit_df["effective_from"].min()
-                    if min_pit_date and min_pit_date > min_panel_date:
-                        raise RuntimeError(
-                            f"PIT membership evidence for '{universe_name}' begins on {min_pit_date}, which does not cover requested research start date {min_panel_date}. Failing closed to prevent survivorship bias."
-                        )
-                    max_pit_date = pit_df["effective_until"].dropna().max()
-                    if max_pit_date and max_pit_date < max_panel_date:
-                        raise RuntimeError(
-                            f"PIT membership evidence for '{universe_name}' ends on {max_pit_date}, which does not cover requested research end date {max_panel_date}. Failing closed to prevent survivorship bias."
-                        )
-
-                panel_syms = panel["symbol"].values
-                is_member_mask = np.zeros(len(panel), dtype=bool)
-                for sym, grp in pit_df.groupby("symbol"):
-                    sym_indices = np.where(panel_syms == sym)[0]
-                    if len(sym_indices) == 0:
-                        continue
-                    sym_dates = panel_dates.iloc[sym_indices].values
-                    for _, row in grp.iterrows():
-                        eff_from = row["effective_from"]
-                        eff_until = row["effective_until"]
-                        if pd.isna(eff_until) or eff_until is None:
-                            in_interval = sym_dates >= eff_from
-                        else:
-                            in_interval = (sym_dates >= eff_from) & (sym_dates < eff_until)
-                        known_from = row["known_from"]
-                        known_at = row["known_at"]
-                        if pd.notna(known_from):
-                            in_interval &= sym_dates >= known_from
-                        if pd.notna(known_at):
-                            timestamps = pd.to_datetime(panel.iloc[sym_indices]["timestamp"], utc=True)
-                            in_interval &= timestamps.to_numpy() <= known_at
-                        is_member_mask[sym_indices[in_interval]] = True
-                
-                panel["pit_eligible"] = is_member_mask
+            is_named_index = bool(
+                (universe_name and universe_name not in {"CONFIGURED_UNIVERSE", "CUSTOM", ""})
+                or (universe_snapshot_id and universe_snapshot_id not in {"CONFIGURED_UNIVERSE", "CUSTOM", ""})
+            )
+            if is_named_index:
+                snapshot_exists = bool(
+                    universe_snapshot_id
+                    and self.db.conn.execute(
+                        "SELECT 1 FROM universe_snapshots WHERE snapshot_id = ?",
+                        [universe_snapshot_id],
+                    ).fetchone()
+                )
+                is_member_mask, _ = _pit_eligibility_mask(
+                    self.db,
+                    panel,
+                    universe_name or str(universe_snapshot_id),
+                    timezone_name=self.calendar.zone,
+                    required=True,
+                    require_knowledge=self.require_authoritative_certification and snapshot_exists,
+                )
+                panel["pit_eligible"] = is_member_mask.to_numpy()
                 panel["eligible"] &= panel["pit_eligible"]
                 survivorship_bias = False
-            elif is_named_index:
-                raise RuntimeError(
-                    f"Missing point-in-time constituent history for universe '{universe_name}'. "
-                    f"Point-in-time constituent history is mandatory to eliminate survivorship bias."
-                )
             else:
                 panel["pit_eligible"] = True
                 survivorship_bias = True

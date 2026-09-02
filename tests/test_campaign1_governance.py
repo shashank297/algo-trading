@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import pytest
 
-from experiments.statistical_tests import resolve_authoritative_dsr
+from experiments.statistical_tests import _aggregate_campaign_root_evidence, resolve_authoritative_dsr
 from experiments.trials import ExperimentFamilySpec, ResearchTrial, TrialStatus
 from storage.duckdb_manager import DuckDBManager
 from research import materialize_campaign_1_configurations
+from data_platform.universe import PointInTimeConstituent, PointInTimeUniverseManager
+from trading_stack.datasets import filter_frame_by_pit
 
 
 CAMPAIGN_FAMILY = "campaign-1-2d653914799e"
@@ -119,3 +123,59 @@ def test_campaign_dsr_counts_roots_not_symbol_or_fold_children() -> None:
     assert result.effective_trials == 74
     assert result.total_trials == 74
     assert len(result.trial_ids) == 74
+
+
+def test_campaign_pit_known_at_is_causal_and_inclusive(tmp_path: Path) -> None:
+    db = DuckDBManager(str(tmp_path / "pit-known-at.duckdb"))
+    try:
+        PointInTimeUniverseManager.insert_constituent(
+            db,
+            PointInTimeConstituent(
+                universe_name="NIFTY200",
+                symbol="AAA",
+                token="1",
+                instrument_id="NSE:AAA:EQ",
+                exchange="NSE",
+                effective_from=date(2020, 1, 1),
+                known_from=date(2020, 1, 1),
+                known_at=datetime(2020, 1, 2, 10, 0, tzinfo=timezone.utc),
+            ),
+        )
+        frame = pd.DataFrame(
+            {
+                "symbol": ["AAA", "AAA"],
+                "timestamp": [
+                    pd.Timestamp("2020-01-02 09:59:59", tz="UTC"),
+                    pd.Timestamp("2020-01-02 10:00:00", tz="UTC"),
+                ],
+            }
+        )
+        filtered, pit_hash = filter_frame_by_pit(db, frame, "NIFTY200", required=True)
+        assert pit_hash
+        assert filtered["timestamp"].tolist() == [pd.Timestamp("2020-01-02 10:00:00", tz="UTC")]
+    finally:
+        db.close()
+
+
+def test_campaign_root_retry_is_rejected(tmp_path: Path) -> None:
+    db = DuckDBManager(str(tmp_path / "campaign-retry.duckdb"))
+    try:
+        db.register_experiment_family(_family(maximum_trials=2))
+        root = _trial({"p": 11})
+        assert db.create_research_trial(root) == root.trial_id
+        with pytest.raises(ValueError, match="root configuration has already been attempted"):
+            db.create_research_trial(root)
+    finally:
+        db.close()
+
+
+def test_campaign_root_evidence_aggregates_all_children_in_stable_order() -> None:
+    root = {"trial_id": "root", "status": "PLANNED"}
+    children = [
+        {"trial_id": "child-b", "status": "SUCCEEDED", "metrics": {"sharpe": 3.0, "run_id": "b"}},
+        {"trial_id": "child-a", "status": "SUCCEEDED", "metrics": {"sharpe": 1.0, "run_id": "a"}},
+    ]
+    aggregate = _aggregate_campaign_root_evidence(root, children)
+    assert aggregate["status"] == "SUCCEEDED"
+    assert aggregate["metrics"]["sharpe"] == 2.0
+    assert aggregate["child_trial_ids"] == ["child-a", "child-b"]

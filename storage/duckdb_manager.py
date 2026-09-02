@@ -1421,6 +1421,8 @@ class DuckDBManager:
                     ).fetchone()
                     attempt_count = int(attempts_row[0]) if attempts_row else 0
                     if attempt_count > 0:
+                        if campaign_family and parent_trial_id is None:
+                            raise ValueError("Campaign 1 root configuration has already been attempted.")
                         target_trial_id = f"{trial.trial_id}#attempt={attempt_count + 1}"
                         parent_trial_id = trial.trial_id
 

@@ -1490,6 +1490,7 @@ class RobustnessEvaluator:
                     feature_version=spec.feature_version,
                     frame_certification_id=train_source.frame_certification_id,
                     fold_id=fold_id,
+                    parent_trial_id=spec.parent_trial_id,
                     train_start=train_start.to_pydatetime() if train_start is not None and hasattr(train_start, "to_pydatetime") else None,
                     train_end=train_end.to_pydatetime() if train_end is not None and hasattr(train_end, "to_pydatetime") else None,
                     status=TrialStatus.PLANNED,
@@ -1587,7 +1588,14 @@ class RobustnessEvaluator:
             strict_calendar=self.india_calendar is not None,
         )
         symbol = spec.universe[0]
-        bars = pipeline.load_candles(symbol, spec.timeframe)
+        if spec.universe_snapshot_id:
+            bars = pipeline.load_candles(
+                symbol,
+                spec.timeframe,
+                universe_snapshot_id=spec.universe_snapshot_id,
+            )
+        else:
+            bars = pipeline.load_candles(symbol, spec.timeframe)
         if bars.empty:
             raise ValueError(f"No candles found for {symbol} {spec.timeframe}.")
         if self.india_calendar is not None:
