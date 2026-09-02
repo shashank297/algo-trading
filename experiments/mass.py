@@ -71,46 +71,50 @@ class MassExperimentManager:
                 campaign_roots[(config["strategy_name"], config["parameter_hash"])] = (
                     root.trial_id if existing_root is not None else self.db.create_research_trial(root)
                 )
+        campaign_configs: dict[str, list[dict[str, Any]]] = {}
+        if spec.experiment_family_id == "campaign-1-2d653914799e":
+            for config in materialize_campaign_1_configurations():
+                campaign_configs.setdefault(config["strategy_name"], []).append(config["parameters"])
         for strategy_name in spec.strategy_names:
             metadata = StrategyRegistry.metadata(strategy_name)
             targets: list[list[str]] = [spec.universe] if metadata.scope == StrategyScope.CROSS_SECTIONAL else [[symbol] for symbol in spec.universe]
             for universe in targets:
-                parameters = spec.parameters.get(strategy_name, {})
-                parent_trial_id = campaign_roots.get((strategy_name, canonical_hash(parameters)))
-                key = self._job_key(
-                    strategy_name, metadata.version, metadata.scope.value, universe,
-                    spec.universe_snapshot_id, parameters, spec.cost_model_version, revision,
-                    spec.walk_forward_train_size, spec.walk_forward_test_size,
-                    spec.timeframe, spec.mode, data_revision,
-                )
-                existing = self.db.get_experiment_job(key)
-                if existing and existing["state"] == "SUCCEEDED":
-                    jobs.append({"job_key": key, "state": "SUCCEEDED", "run_id": existing.get("run_id"), "resumed": True})
-                    continue
-                if existing and existing["state"] == "RUNNING":
-                    started_at = existing.get("started_at")
-                    if started_at and started_at > datetime.now(timezone.utc) - timedelta(seconds=spec.stale_job_seconds):
-                        jobs.append({"job_key": key, "state": "RUNNING", "run_id": existing.get("run_id"), "resumed": True})
+                parameter_sets = campaign_configs.get(strategy_name, []) if campaign_configs else [spec.parameters.get(strategy_name, {})]
+                for parameters in parameter_sets:
+                    parent_trial_id = campaign_roots.get((strategy_name, canonical_hash(parameters)))
+                    key = self._job_key(
+                        strategy_name, metadata.version, metadata.scope.value, universe,
+                        spec.universe_snapshot_id, parameters, spec.cost_model_version, revision,
+                        spec.walk_forward_train_size, spec.walk_forward_test_size,
+                        spec.timeframe, spec.mode, data_revision,
+                    )
+                    existing = self.db.get_experiment_job(key)
+                    if existing and existing["state"] == "SUCCEEDED":
+                        jobs.append({"job_key": key, "state": "SUCCEEDED", "run_id": existing.get("run_id"), "resumed": True})
                         continue
-                payload = {
-                    "job_key": key, "experiment_id": spec.experiment_id, "strategy_name": strategy_name,
-                    "strategy_version": metadata.version, "strategy_scope": metadata.scope.value,
-                    "symbol": universe[0] if metadata.scope == StrategyScope.SINGLE_ASSET else None,
-                    "universe_snapshot_id": spec.universe_snapshot_id, "fold_id": None,
-                    "parameters_hash": hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest(),
-                    "cost_model_version": spec.cost_model_version,
-                    "data_revision": data_revision,
-                    "source_revision": revision,
-                    "state": "RETRYING" if existing else "PENDING",
-                    "retry_count": min(int(existing.get("retry_count") or 0) + 1, spec.max_retries) if existing else 0,
-                    "max_retries": spec.max_retries,
-                }
-                # Attach per-symbol data coverage so the dashboard can display it.
-                if metadata.scope != StrategyScope.CROSS_SECTIONAL:
-                    coverage = self._candle_coverage(universe[0], spec.timeframe)
-                    payload.update(coverage)
-                self.db.log_experiment_job(payload)
-                jobs.append({**payload, "universe": universe, "parameters": parameters, "parent_trial_id": parent_trial_id})
+                    if existing and existing["state"] == "RUNNING":
+                        started_at = existing.get("started_at")
+                        if started_at and started_at > datetime.now(timezone.utc) - timedelta(seconds=spec.stale_job_seconds):
+                            jobs.append({"job_key": key, "state": "RUNNING", "run_id": existing.get("run_id"), "resumed": True})
+                            continue
+                    payload = {
+                        "job_key": key, "experiment_id": spec.experiment_id, "strategy_name": strategy_name,
+                        "strategy_version": metadata.version, "strategy_scope": metadata.scope.value,
+                        "symbol": universe[0] if metadata.scope == StrategyScope.SINGLE_ASSET else None,
+                        "universe_snapshot_id": spec.universe_snapshot_id, "fold_id": None,
+                        "parameters_hash": hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest(),
+                        "cost_model_version": spec.cost_model_version,
+                        "data_revision": data_revision,
+                        "source_revision": revision,
+                        "state": "RETRYING" if existing else "PENDING",
+                        "retry_count": min(int(existing.get("retry_count") or 0) + 1, spec.max_retries) if existing else 0,
+                        "max_retries": spec.max_retries,
+                    }
+                    if metadata.scope != StrategyScope.CROSS_SECTIONAL:
+                        coverage = self._candle_coverage(universe[0], spec.timeframe)
+                        payload.update(coverage)
+                    self.db.log_experiment_job(payload)
+                    jobs.append({**payload, "universe": universe, "parameters": parameters, "parent_trial_id": parent_trial_id})
         pending = [job for job in jobs if job.get("state") not in {"SUCCEEDED", "RUNNING"}]
         
         # Display progress bar for pending jobs

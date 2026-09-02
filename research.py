@@ -72,7 +72,12 @@ def materialize_campaign_1_configurations() -> list[dict[str, Any]]:
                 "strategy_version": metadata.version,
                 "parameters": parameters,
                 "parameter_hash": canonical_hash(parameters),
-                "root_trial_id": None,
+                "root_trial_id": canonical_hash({
+                    "experiment_family_id": CAMPAIGN_1_ID,
+                    "strategy_name": name,
+                    "strategy_version": metadata.version,
+                    "parameters": parameters,
+                }),
             })
     if len(configurations) != CAMPAIGN_1_MAXIMUM_TRIALS:
         raise ValueError(
