@@ -101,12 +101,15 @@ an immutable `ExperimentFamilySpec`. Failed, losing, and invalidated trials
 remain recorded. A losing configuration is never retried under a new label;
 any genuinely new hypothesis or budget requires a new family identity.
 
-For a provisional three-fold expanding nested design, the registry reservation
-ceiling is 74 screening reservations plus at most 222 candidate-fold
-reservations, or **296 expected maximum trial records** before final evidence.
-The exact family `maximum_trials` values must be registered before execution
-and may only be lower if the corresponding candidate set is explicitly reduced.
-FINAL OOS evaluation is not used to expand this budget or discover candidates.
+Campaign 1 has exactly 74 governed root strategy-parameter hypotheses.
+`ExperimentFamilySpec.maximum_trials = 74` applies only to root configuration
+trials with `parent_trial_id IS NULL`. Symbol executions, walk-forward folds,
+robustness candidates, retries, and other governed descendants remain fully
+auditable `ResearchTrial` rows linked to their root through `parent_trial_id`,
+but do not consume the 74-root hypothesis budget. The total number of audit
+rows may therefore exceed 74, while the effective Campaign hypothesis
+multiplicity and governed root budget remain exactly 74. FINAL OOS evaluation
+is not used to expand this budget or discover candidates.
 
 ## Screening Method
 
