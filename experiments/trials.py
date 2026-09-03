@@ -10,6 +10,9 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 
+CAMPAIGN_1_FAMILY_ID = "campaign-1-2d653914799e"
+
+
 class ResearchIntegrityError(RuntimeError):
     """Base error for a failure that must stop governed research."""
 
@@ -112,4 +115,11 @@ class ResearchTrial(BaseModel):
 
     @property
     def trial_id(self) -> str:
+        if self.experiment_family_id == CAMPAIGN_1_FAMILY_ID and self.parent_trial_id is None:
+            return canonical_hash({
+                "experiment_family_id": self.experiment_family_id,
+                "strategy_name": self.strategy_name,
+                "strategy_version": self.strategy_version,
+                "parameters": self.parameters,
+            })
         return canonical_hash(self.model_dump(mode="json", exclude={"status", "created_at"}))

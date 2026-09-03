@@ -19,6 +19,7 @@ from trading_stack.costs import IndianDeliveryCostSchedule, get_cost_schedule
 from trading_stack.economic import calculate_projected_var_pct
 from trading_stack.domain import AssetClass, OpeningTickObservation, PaperExecutionMode, StrategyScope, infer_asset_class
 from trading_stack.features import FeatureFactory
+from trading_stack.datasets import filter_frame_by_pit
 from trading_stack.strategies import StrategyRegistry
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
@@ -87,6 +88,7 @@ class StrategyPipeline:
         bypass_quality_gate: bool = False,
         require_authoritative_certification: bool | None = None,
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
+        universe_snapshot_id: str | None = None,
     ) -> pd.DataFrame:
         """Load stored candles for a symbol/timeframe from DuckDB, with optional corporate action adjustment."""
 
@@ -109,6 +111,22 @@ class StrategyPipeline:
         )
         ca_df = self.db.get_corporate_actions(symbol)
         frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
+        universe_name: str | None = None
+        if universe_snapshot_id and universe_snapshot_id not in {"CONFIGURED_UNIVERSE", "CUSTOM"}:
+            snapshot = self.db.conn.execute(
+                "SELECT name FROM universe_snapshots WHERE snapshot_id = ?",
+                [universe_snapshot_id],
+            ).fetchone()
+            if snapshot:
+                universe_name = str(snapshot[0])
+        frame, pit_hash = filter_frame_by_pit(
+            self.db,
+            frame,
+            universe_name,
+            required=bool(require_authoritative_certification if require_authoritative_certification is not None else self.require_authoritative_certification),
+        )
+        if frame.empty:
+            raise ValueError(f"No PIT-eligible candles found for {symbol} {timeframe}.")
 
         if not bypass_quality_gate:
             must_certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
@@ -215,7 +233,7 @@ class StrategyPipeline:
                             symbol, timeframe, len(frame), str(adj_enum.value), "validator-v1", "CERTIFIED", now_utc,
                             json.dumps(dataset_hashes, sort_keys=True),
                             json.dumps(sorted(dq_certification_ids)),
-                            None,
+                            pit_hash,
                         ],
                     )
                     self._last_frame_certification_id = frame_cert_id
@@ -250,6 +268,7 @@ class StrategyPipeline:
         cost_model: dict[str, Any] | None = None,
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
         require_authoritative_certification: bool | None = None,
+        universe_snapshot_id: str | None = None,
     ) -> dict[str, Any]:
         """Run a strategy and persist the result bundle."""
 
@@ -259,6 +278,7 @@ class StrategyPipeline:
         certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
         raw_bars = self.load_candles(
             symbol, timeframe, adjustment=adjustment, require_authoritative_certification=certify,
+            universe_snapshot_id=universe_snapshot_id,
         )
         asset_class = self._lookup_asset_class(symbol=symbol, exchange=str(raw_bars["exchange"].iloc[0]))
         if self.strict_calendar:

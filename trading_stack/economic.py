@@ -3,11 +3,20 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from statistics import NormalDist
 from typing import Any
 
 import pandas as pd
+
+
+CAMPAIGN_COST_POLICY_IDENTITY = "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
+_CAMPAIGN_FROZEN_COST_SCHEDULE_FINGERPRINTS = (
+    ("angel-nse-delivery-2010-01", "2010-01-01", "6f4c1b3fbaab964004d87fad973d59d22a88b2d662eb47895f028488e45456ec"),
+    ("angel-nse-delivery-2016-06", "2016-06-01", "fa4e0d50a01fecb358d8bbd142ae4418cf082d41efae3d3cd387e71173c7a0e2"),
+    ("angel-nse-delivery-2024-10", "2024-10-01", "0f34303f0ee909f4cc72a5c5c51b717abbbf3c7586a8036e9ac160269c395304"),
+    ("angel-nse-delivery-2026-04", "2026-04-01", "9e21abfdae92d5b9e6257a8d71e436865236c724b2ae05ab4005de2aaa37cb8f"),
+)
 
 
 def marked_to_market_equity(
@@ -126,3 +135,28 @@ def cost_schedule_identity(
             })
             previous = schedule_hash
     return economic_contract_hash({"regimes": regimes})
+
+
+def campaign_cost_policy_identity(schedules: Iterable[Any]) -> str:
+    """Return the identity of an ordered, date-effective Campaign 1 cost policy."""
+
+    schedules = tuple(schedules)
+    policy = [
+        {
+            "effective_from": str(getattr(schedule, "effective_from", "")),
+            "version": str(getattr(schedule, "version", "")),
+            "schedule": dict(getattr(schedule, "__dict__", {})),
+        }
+        for schedule in schedules
+    ]
+    fingerprints = tuple(
+        (
+            str(getattr(schedule, "version", "")),
+            str(getattr(schedule, "effective_from", "")),
+            economic_contract_hash(dict(getattr(schedule, "__dict__", {}))),
+        )
+        for schedule in schedules
+    )
+    if fingerprints == _CAMPAIGN_FROZEN_COST_SCHEDULE_FINGERPRINTS:
+        return CAMPAIGN_COST_POLICY_IDENTITY
+    return economic_contract_hash({"ordered_effective_schedules": policy})

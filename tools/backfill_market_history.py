@@ -56,6 +56,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--start-date", default="2012-01-01")
     parser.add_argument("--timeframes", default="1m,1d")
     parser.add_argument("--benchmark", default="NIFTY200")
+    parser.add_argument("--database-path", default=None, help="Optional database path override")
     parser.add_argument("--symbols", default="", help="Optional comma-separated provider symbols.")
     parser.add_argument("--full-backward", action="store_true", help="Attempt to download backwards to start-date even if data exists (useful for filling historical gaps).")
     parser.add_argument("--max-workers", type=int, default=3, choices=range(1, 4))
@@ -317,7 +318,11 @@ def main(argv: list[str] | None = None) -> int:
 
     config = apply_env_overrides(load_yaml(str(PROJECT_ROOT / "config" / "config.yaml")))
     validate_config(config)
-    config["database"]["path"] = str((PROJECT_ROOT / config["database"]["path"]).resolve())
+    configured_database = args.database_path or config["database"]["path"]
+    database_path = Path(configured_database)
+    if not database_path.is_absolute():
+        database_path = (PROJECT_ROOT / database_path).resolve()
+    config["database"]["path"] = str(database_path)
     config["logging"]["path"] = str((PROJECT_ROOT / config["logging"]["path"]).resolve())
     logger = LoggerSetup.setup(config, component="ingestion", command="historical-backfill")
     started = time.perf_counter()

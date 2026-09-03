@@ -369,6 +369,75 @@ def compute_dsr_statistic(
     )
 
 
+def _aggregate_campaign_descendants(
+    children: list[dict[str, Any]],
+    root_id: str,
+) -> list[dict[str, Any]]:
+    """Return all descendants in stable breadth-first trial order."""
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for child in children:
+        parent_id = child.get("parent_trial_id")
+        if parent_id:
+            by_parent.setdefault(str(parent_id), []).append(child)
+    result: list[dict[str, Any]] = []
+    pending = sorted(by_parent.get(root_id, []), key=lambda row: str(row.get("trial_id", "")))
+    while pending:
+        child = pending.pop(0)
+        result.append(child)
+        pending.extend(by_parent.get(str(child.get("trial_id", "")), []))
+        pending.sort(key=lambda row: str(row.get("trial_id", "")))
+    return result
+
+
+def _aggregate_campaign_root_evidence(
+    root: dict[str, Any],
+    children: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Reduce all execution children to one deterministic root hypothesis."""
+    if not children:
+        return dict(root)
+    ordered = sorted(children, key=lambda row: str(row.get("trial_id", "")))
+    successful = [row for row in ordered if str(row.get("status", "")).upper() == "SUCCEEDED"]
+    aggregate = dict(root)
+    if not successful:
+        aggregate["status"] = "FAILED"
+        return aggregate
+    metrics: dict[str, Any] = {}
+    metric_rows: list[dict[str, Any]] = []
+    for child in successful:
+        value = child.get("metrics") or child.get("metrics_json") or {}
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except (TypeError, json.JSONDecodeError):
+                value = {}
+        if isinstance(value, dict):
+            metric_rows.append(value)
+    metric_keys = sorted({key for row in metric_rows for key in row})
+    for key in metric_keys:
+        numeric: list[float] = []
+        for row in metric_rows:
+            if row.get(key) is None:
+                continue
+            try:
+                numeric.append(float(row[key]))
+            except (TypeError, ValueError):
+                continue
+        if not numeric:
+            continue
+        if key in {"max_drawdown", "worst_daily_loss", "worst_monthly_loss"}:
+            metrics[key] = min(numeric)
+        elif key in {"trade_count", "number_of_trades", "observations"}:
+            metrics[key] = sum(numeric)
+        else:
+            metrics[key] = math.fsum(numeric) / len(numeric)
+    aggregate["metrics"] = metrics
+    aggregate["status"] = "SUCCEEDED" if len(successful) == len(ordered) else "FAILED"
+    aggregate["child_trial_ids"] = [str(row.get("trial_id", "")) for row in ordered]
+    aggregate["child_evidence_aggregation"] = "ordered_successful_mean_v1"
+    return aggregate
+
+
 def resolve_authoritative_dsr(
     db: Any,
     returns: pd.Series | np.ndarray | list[float],
@@ -443,7 +512,7 @@ def resolve_authoritative_dsr(
             trials_log = db.list_research_trials(family_id=experiment_family_id)
         elif hasattr(db, "conn") and hasattr(db.conn, "execute"):
             rows = db.conn.execute(
-                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                "SELECT trial_id, status, trial_json, metrics_json, parent_trial_id FROM research_trials_log WHERE experiment_family_id = ?",
                 [experiment_family_id],
             ).fetchall()
             trials_log = [
@@ -452,12 +521,13 @@ def resolve_authoritative_dsr(
                     "trial_id": r[0],
                     "status": r[1],
                     "metrics": json.loads(str(r[3])) if r[3] else None,
+                    "parent_trial_id": r[4],
                 }
                 for r in rows
             ]
         elif hasattr(db, "execute"):
             rows = db.execute(
-                "SELECT trial_id, status, trial_json, metrics_json FROM research_trials_log WHERE experiment_family_id = ?",
+                "SELECT trial_id, status, trial_json, metrics_json, parent_trial_id FROM research_trials_log WHERE experiment_family_id = ?",
                 [experiment_family_id],
             ).fetchall()
             trials_log = [
@@ -466,6 +536,7 @@ def resolve_authoritative_dsr(
                     "trial_id": r[0],
                     "status": r[1],
                     "metrics": json.loads(str(r[3])) if r[3] else None,
+                    "parent_trial_id": r[4],
                 }
                 for r in rows
             ]
@@ -497,6 +568,24 @@ def resolve_authoritative_dsr(
             status=EvidenceStatus.INSUFFICIENT_EVIDENCE,
             reason="EXPERIMENT_FAMILY_NOT_FOUND_IN_DB",
         )
+
+    # Campaign 1 reserves one hypothesis per configuration. Symbol, fold, and
+    # retry rows are execution children and must not inflate DSR multiplicity.
+    if experiment_family_id == "campaign-1-2d653914799e":
+        roots = [tr for tr in trials_log if tr.get("parent_trial_id") is None]
+        children: dict[str, list[dict[str, Any]]] = {}
+        for child in trials_log:
+            parent_id = child.get("parent_trial_id")
+            if parent_id:
+                children.setdefault(str(parent_id), []).append(child)
+        enriched_roots: list[dict[str, Any]] = []
+        for root in roots:
+            root_copy = dict(root)
+            root_id = str(root.get("trial_id", ""))
+            all_children = [child for rows in children.values() for child in rows]
+            child_rows = _aggregate_campaign_descendants(all_children, root_id)
+            enriched_roots.append(_aggregate_campaign_root_evidence(root_copy, child_rows))
+        trials_log = enriched_roots
 
     registry_sharpes: list[float] = []
     registry_trial_ids: list[str] = []

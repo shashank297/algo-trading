@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import time
 from datetime import datetime, timedelta
@@ -14,7 +15,14 @@ from zoneinfo import ZoneInfo
 import duckdb
 import pandas as pd
 
-from main import apply_env_overrides, configured_nse_calendar, load_yaml, validate_config, validate_symbols
+from main import (
+    apply_env_overrides,
+    configured_nse_calendar,
+    load_universe_snapshot_symbols,
+    load_yaml,
+    validate_config,
+    validate_symbols,
+)
 from ai_research import OpenAIResearchClient, ResearchGoal, ResearchWorkflow
 from experiments import (
     ExperimentManager,
@@ -24,6 +32,7 @@ from experiments import (
     RobustnessEvaluator,
     RobustnessPolicy,
 )
+from experiments.trials import ExperimentFamilySpec, canonical_hash
 
 from data_platform.universe import PointInTimeUniverseManager
 from risk import build_risk_engine
@@ -39,6 +48,130 @@ from utils import LoggerSetup
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+CAMPAIGN_1_ID = "campaign-1-2d653914799e"
+CAMPAIGN_1_MAXIMUM_TRIALS = 74
+
+
+def _validate_campaign_cli_contract(args: argparse.Namespace, cost_model: dict[str, float]) -> None:
+    """Reject Campaign 1 inputs that could change its frozen runtime contract."""
+
+    if args.command != "mass-research" or args.experiment_family_id != CAMPAIGN_1_ID:
+        return
+    if args.mode != "event-driven":
+        raise ValueError("Campaign 1 requires --mode event-driven")
+    if args.timeframe != "1d":
+        raise ValueError("Campaign 1 requires --timeframe 1d")
+    if args.risk_override_max_pos is not None:
+        raise ValueError("Campaign 1 does not permit --risk-override-max-pos")
+    if cost_model:
+        raise ValueError("Campaign 1 does not permit --costs overrides")
+    if args.universe.strip():
+        raise ValueError("Campaign 1 does not permit --universe overrides")
+    from run_pipeline import _campaign_strategy_names
+
+    requested = tuple(sorted(value.strip() for value in args.strategies.split(",") if value.strip()))
+    frozen = tuple(sorted(_campaign_strategy_names()))
+    if requested != frozen:
+        raise ValueError("Campaign 1 requires the frozen strategy set")
+
+
+def materialize_campaign_1_configurations() -> list[dict[str, Any]]:
+    """Materialize the frozen Campaign 1 roots in deterministic order."""
+    configurations: list[dict[str, Any]] = []
+    names = sorted(
+        name for name in StrategyRegistry.available()
+        if StrategyRegistry.metadata(name).paper_eligible
+    )
+    for name in names:
+        metadata = StrategyRegistry.metadata(name)
+        grid = metadata.parameter_grid or {}
+        keys = sorted(grid)
+        values = [tuple(grid[key]) for key in keys]
+        combinations = itertools.product(*values) if values else [()]
+        for combination in combinations:
+            parameters = dict(zip(keys, combination))
+            configurations.append({
+                "strategy_name": name,
+                "strategy_version": metadata.version,
+                "parameters": parameters,
+                "parameter_hash": canonical_hash(parameters),
+                "root_trial_id": canonical_hash({
+                    "experiment_family_id": CAMPAIGN_1_ID,
+                    "strategy_name": name,
+                    "strategy_version": metadata.version,
+                    "parameters": parameters,
+                }),
+            })
+    if len(configurations) != CAMPAIGN_1_MAXIMUM_TRIALS:
+        raise ValueError(
+            f"Campaign 1 registry arithmetic changed: expected {CAMPAIGN_1_MAXIMUM_TRIALS} configurations, got {len(configurations)}."
+        )
+    return configurations
+
+
+def _ensure_campaign_1_family(
+    db: DuckDBManager,
+    *,
+    universe_snapshot_id: str,
+    benchmark_symbol: str | None,
+    cost_model_version: str,
+) -> None:
+    """Register or validate the immutable Campaign 1 trial family."""
+
+    configurations = materialize_campaign_1_configurations()
+    existing = db.get_experiment_family(CAMPAIGN_1_ID)
+    if existing is not None:
+        if int(existing["maximum_trials"]) != CAMPAIGN_1_MAXIMUM_TRIALS:
+            raise ValueError("Campaign 1 experiment family trial budget mismatch.")
+        if str(existing.get("universe_snapshot_id", universe_snapshot_id)) != universe_snapshot_id:
+            raise ValueError("Campaign 1 experiment family universe mismatch.")
+        return
+
+    strategy_names = sorted({item["strategy_name"] for item in configurations})
+    family = ExperimentFamilySpec(
+        experiment_family_id=CAMPAIGN_1_ID,
+        hypothesis="Campaign 1 authoritative event-driven Indian-equity screening",
+        strategy_names=strategy_names,
+        strategy_versions=[StrategyRegistry.metadata(name).version for name in strategy_names],
+        universe_snapshot_id=universe_snapshot_id,
+        timeframe="1d",
+        feature_versions=["features-v1"],
+        cost_model_version=cost_model_version,
+        parameter_space={
+            name: dict(StrategyRegistry.metadata(name).parameter_grid)
+            for name in strategy_names
+        },
+        maximum_trials=CAMPAIGN_1_MAXIMUM_TRIALS,
+        selection_metric="net_return_drawdown_turnover_stability",
+        walk_forward_design={"mode": "nested_expanding", "purge": "configured", "embargo": "configured"},
+        source_revision="campaign-1-baseline",
+        operator_notes=f"benchmark={benchmark_symbol or 'NIFTY200'}; authoritative event-driven only",
+    )
+    db.register_experiment_family(family)
+
+
+def campaign_1_mass_is_complete(result: dict[str, Any], db: DuckDBManager | None = None) -> bool:
+    """Return true only when all 74 Campaign 1 configurations succeeded."""
+    jobs = result.get("jobs") if isinstance(result, dict) else None
+    if not isinstance(jobs, list) or not jobs or not all(
+        isinstance(job, dict) and str(job.get("state", "")).upper() == "SUCCEEDED"
+        for job in jobs
+    ):
+        return False
+    configuration_keys = {
+        (str(job.get("strategy_name", "")), str(job.get("parameters_hash", "")))
+        for job in jobs
+    }
+    if len(configuration_keys) != CAMPAIGN_1_MAXIMUM_TRIALS or any(not key[0] or not key[1] for key in configuration_keys):
+        return False
+    if db is not None:
+        roots = db.conn.execute(
+            "SELECT COUNT(*) FROM research_trials_log WHERE experiment_family_id = ? AND parent_trial_id IS NULL",
+            [CAMPAIGN_1_ID],
+        ).fetchone()
+        if not roots or int(roots[0]) != CAMPAIGN_1_MAXIMUM_TRIALS:
+            return False
+    return True
 
 
 def _list_phase2_7_conditional_evidence_read_only(
@@ -243,6 +376,24 @@ def main(argv: list[str] | None = None) -> int:
     db_path = Path(args.database_path or config["database"]["path"])
     if not db_path.is_absolute():
         db_path = (PROJECT_ROOT / db_path).resolve()
+    if args.command == "mass-research" and args.experiment_family_id == CAMPAIGN_1_ID:
+        from run_pipeline import run_preflight
+
+        campaign_preflight = run_preflight(
+            config,
+            universe_snapshot=args.universe_snapshot,
+            database_path=str(db_path),
+            mode=args.mode,
+            benchmark_symbol=args.benchmark,
+            require_certification=True,
+            starting_capital=args.capital,
+        )
+        if not campaign_preflight.ready:
+            campaign_preflight.print()
+            print("CAMPAIGN 1 DATA READINESS BLOCKED")
+            print("EXTERNAL HISTORICAL CONSTITUENT DATA REQUIRED")
+            return 2
+        _validate_campaign_cli_contract(args, cost_model)
     if args.command == "strategy-regime-analysis":
         cutoff = (
             datetime.fromisoformat(args.evidence_at.replace("Z", "+00:00"))
@@ -303,21 +454,7 @@ def main(argv: list[str] | None = None) -> int:
         if requested_universe:
             universe = requested_universe
         elif args.universe_snapshot != "CONFIGURED_UNIVERSE" and args.command != "market-regime":
-            rows = db.conn.execute(
-                """
-                SELECT provider_symbol
-                FROM universe_snapshot_members
-                WHERE snapshot_id = ?
-                  AND active_to IS NULL
-                  AND liquidity_eligible
-                  AND data_eligible
-                  AND paper_eligible
-                  AND provider_symbol IS NOT NULL
-                ORDER BY symbol
-                """,
-                [args.universe_snapshot],
-            ).fetchall()
-            universe = [str(row[0]) for row in rows]
+            universe = [str(item["symbol"]) for item in load_universe_snapshot_symbols(db, args.universe_snapshot)]
             if not universe:
                 raise ValueError(f"Universe snapshot has no eligible members: {args.universe_snapshot}")
         else:
@@ -899,6 +1036,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "mass-research":
             strategy_names = [value.strip() for value in args.strategies.split(",") if value.strip()] or [args.strategy]
+            cost_model_version = str(
+                research_config.get("indian_delivery_costs", {}).get(
+                    "version", "angel-nse-delivery-2026-04"
+                )
+            )
+            if args.experiment_family_id == CAMPAIGN_1_ID:
+                _ensure_campaign_1_family(
+                    db,
+                    universe_snapshot_id=args.universe_snapshot,
+                    benchmark_symbol=args.benchmark,
+                    cost_model_version=cost_model_version,
+                )
             mass_result = MassExperimentManager(db, india_calendar, risk_engine).run(
                 MassExperimentSpec(
                     strategy_names=strategy_names,
@@ -909,15 +1058,16 @@ def main(argv: list[str] | None = None) -> int:
                     benchmark_symbol=args.benchmark or None,
                     parameters={name: parameters for name in strategy_names},
                     cost_model=cost_model or research_config.get("indian_delivery_costs", {}),
-                    cost_model_version=str(
-                        research_config.get("indian_delivery_costs", {}).get("version", "angel-nse-delivery-2026-04")
-                    ),
+                    cost_model_version=cost_model_version,
                     max_workers=args.max_workers,
                     experiment_family_id=args.experiment_family_id,
                 ),
                 starting_capital=args.capital,
             )
             print(json.dumps(mass_result, default=str, indent=2))
+            if args.experiment_family_id == CAMPAIGN_1_ID and not campaign_1_mass_is_complete(mass_result, db):
+                print("CAMPAIGN 1 MASS RESEARCH BLOCKED: unresolved jobs remain")
+                return 2
             return 0
         if args.command == "agent-research":
             workflow = ResearchWorkflow(

@@ -10,6 +10,8 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 import pytest
+import research
+import run_pipeline
 
 from risk.engine import RiskEngine
 from experiments.manager import ExperimentManager
@@ -935,6 +937,48 @@ def test_governed_mass_experiment_requires_injected_risk_engine(test_db: DuckDBM
 
     with pytest.raises(ValueError, match="injected configured RiskEngine"):
         MassExperimentManager(test_db).run(spec)
+
+
+def test_campaign_mass_research_readiness_precedes_database_mutation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Direct Campaign mass research cannot bypass the shared read-only gate."""
+
+    config = {
+        "database": {"path": str(tmp_path / "campaign.duckdb")},
+        "research": {"live_trading": False, "risk": {}},
+        "data": {"start_date": "2012-01-01"},
+    }
+    symbols = [{"symbol": "RELIANCE", "instrument_type": "EQUITY"}]
+    monkeypatch.setattr(
+        research,
+        "load_yaml",
+        lambda path: symbols if str(path).endswith("symbols.yaml") else config,
+    )
+    monkeypatch.setattr(research, "validate_config", lambda _config: None)
+    monkeypatch.setattr(research, "validate_symbols", lambda values: values)
+    monkeypatch.setattr(research.LoggerSetup, "setup", lambda *args, **kwargs: MagicMock())
+    monkeypatch.setattr(
+        run_pipeline,
+        "run_preflight",
+        lambda *args, **kwargs: run_pipeline.PreflightResult(
+            False, {"database_open": True}, ("PIT_COMPLETENESS_MANIFEST_REQUIRED",)
+        ),
+    )
+    monkeypatch.setattr(
+        research,
+        "DuckDBManager",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Campaign DB mutation occurred")),
+    )
+
+    result = research.main(
+        [
+            "--command", "mass-research",
+            "--experiment-family-id", "campaign-1-2d653914799e",
+            "--mode", "event-driven",
+            "--universe-snapshot", "PIT",
+            "--database-path", str(tmp_path / "campaign.duckdb"),
+        ]
+    )
+    assert result == 2
 
 
 def test_experiment_manager_successful_execution_and_metrics_linkage(test_db: DuckDBManager, sample_family: ExperimentFamilySpec) -> None:
