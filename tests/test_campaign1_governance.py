@@ -260,6 +260,14 @@ def test_campaign_cost_identity_matches_frozen_policy_and_binds_ordered_regimes(
     assert campaign_cost_policy_identity(reordered) != CAMPAIGN_COST_IDENTITY
 
 
+def test_campaign_cost_identity_detects_authoritative_default_drift(monkeypatch: pytest.MonkeyPatch) -> None:
+    import run_pipeline
+
+    changed = replace(DEFAULT_COST_SCHEDULES[0], stt_buy_bps=DEFAULT_COST_SCHEDULES[0].stt_buy_bps + 1.0)
+    monkeypatch.setattr(run_pipeline, "DEFAULT_COST_SCHEDULES", (changed, *DEFAULT_COST_SCHEDULES[1:]))
+    assert campaign_cost_policy_identity(run_pipeline.DEFAULT_COST_SCHEDULES) != CAMPAIGN_COST_IDENTITY
+
+
 def test_campaign_manifest_events_bind_symbol_and_effective_date() -> None:
     expected = _manifest_events(
         [{"symbol": "AAA", "effective_from": "2020-01-01"}], "ADDITION"
