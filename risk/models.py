@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from enum import Enum
 
 import math
+from typing import Any
 from pydantic import BaseModel, Field, StrictInt, field_validator
 
 from data_platform.contracts import OrderSide
@@ -35,6 +36,44 @@ class RiskPolicy(BaseModel):
     max_open_positions: int = Field(default=20, ge=1, le=500)
     max_var_pct: float = Field(default=0.02, gt=0, le=1)  # Max 2% daily portfolio VaR at 95%
     min_liquidity_crore: float = Field(default=0.0, ge=0)  # Skip stocks < specified daily turnover
+
+
+class CanonicalRiskPolicy(BaseModel):
+    """Authoritative, hash-bound canonical risk policy definition."""
+
+    policy_id: str
+    policy_version: str
+    effective_from: str
+    policy_hash: str
+    max_position_pct: float = Field(gt=0, le=0.50)
+    max_gross_exposure_pct: float = Field(gt=0, le=2.00)
+    max_daily_loss_pct: float = Field(gt=0, le=0.10)
+    max_drawdown_pct: float = Field(gt=0, le=0.25)
+    max_sector_exposure_pct: float = Field(gt=0, le=0.50)
+    max_open_positions: int = Field(ge=1, le=200)
+    max_var_pct: float = Field(gt=0, le=0.10)
+    min_liquidity_crore: float = Field(ge=0)
+    allow_permissive_defaults: bool = False
+
+    @field_validator("min_liquidity_crore")
+    @classmethod
+    def validate_liquidity(cls, v: float, info: Any) -> float:
+        allow_permissive = info.data.get("allow_permissive_defaults", False) if hasattr(info, "data") else False
+        if not allow_permissive and v <= 0:
+            raise ValueError("Authoritative risk policy requires min_liquidity_crore > 0")
+        return v
+
+    def to_risk_policy(self) -> RiskPolicy:
+        return RiskPolicy(
+            max_position_pct=self.max_position_pct,
+            max_gross_exposure_pct=self.max_gross_exposure_pct,
+            max_daily_loss_pct=self.max_daily_loss_pct,
+            max_drawdown_pct=self.max_drawdown_pct,
+            max_sector_exposure_pct=self.max_sector_exposure_pct,
+            max_open_positions=self.max_open_positions,
+            max_var_pct=self.max_var_pct,
+            min_liquidity_crore=self.min_liquidity_crore,
+        )
 
 
 class TradeProposal(BaseModel):

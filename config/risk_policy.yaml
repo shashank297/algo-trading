@@ -1,0 +1,32 @@
+# Canonical Portfolio Risk Policy
+# Single authoritative versioned source of risk parameters.
+
+policy_id: "canonical-risk-policy-v1"
+policy_version: "1.0.0"
+effective_from: "2026-09-06"
+description: "Authoritative risk limits for research and paper trading execution."
+
+limits:
+  max_position_pct: 0.05
+  max_gross_exposure_pct: 0.20
+  max_daily_loss_pct: 0.01
+  max_drawdown_pct: 0.05
+  max_sector_exposure_pct: 0.20
+  max_open_positions: 20
+  max_var_pct: 0.02
+  min_liquidity_crore: 5.0
+
+units:
+  max_position_pct: "decimal_fraction_of_capital"
+  max_gross_exposure_pct: "decimal_fraction_of_capital"
+  max_daily_loss_pct: "decimal_fraction_of_capital"
+  max_drawdown_pct: "decimal_fraction_of_capital"
+  max_sector_exposure_pct: "decimal_fraction_of_capital"
+  max_open_positions: "count"
+  max_var_pct: "decimal_fraction_of_capital"
+  min_liquidity_crore: "crores_average_daily_turnover"
+
+governance:
+  status: "PENDING_BOARD_RECONCILIATION"
+  board_decision_ref: "FAB-31"
+  allow_permissive_defaults: false

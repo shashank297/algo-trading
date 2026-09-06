@@ -8,15 +8,24 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any
 
+from dataclasses import dataclass
+
 from ai_research.llm import LLMClient
 from ai_research.models import AgentOutput, ResearchGoal
 from experiments.manager import ExperimentManager
 from experiments.models import ExperimentSpec
 from orchestration.engine import TaskOrchestrator
 from risk.engine import RiskEngine
-from risk.models import RiskAction, RiskDecision, TradeProposal
+from risk.models import RiskAction, RiskDecision, RiskPolicy, TradeProposal
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.features import FeatureFactory
+
+
+@dataclass(frozen=True)
+class NonExecutableResearchContext:
+    """Exploratory, non-executable context when no authoritative risk engine is injected."""
+    is_executable: bool = False
+    reason: str = "NON_EXECUTABLE_RESEARCH_CONTEXT_MISSING_AUTHORITATIVE_RISK"
 
 
 class ResearchWorkflow:
@@ -25,7 +34,12 @@ class ResearchWorkflow:
     def __init__(self, db: DuckDBManager, llm: LLMClient, risk_engine: RiskEngine | None = None) -> None:
         self.db = db
         self.llm = llm
-        self.risk_engine = risk_engine or RiskEngine()
+        if risk_engine is None:
+            self.risk_engine = None
+            self.context = NonExecutableResearchContext()
+        else:
+            self.risk_engine = risk_engine
+            self.context = None
         self.tasks = TaskOrchestrator(db)
         self.experiments = ExperimentManager(db, risk_engine=self.risk_engine)
 
@@ -99,7 +113,8 @@ class ResearchWorkflow:
             "synthesis": synthesis,
             "experiment_id": experiment_result["experiment_id"],
             "paper_eligible": bool(
-                goal.paper_approved
+                self.risk_engine is not None
+                and goal.paper_approved
                 and (goal.paper_session_id or goal.paper_portfolio_session_id)
                 and risk.approved_notional > 0
             ),
@@ -107,6 +122,12 @@ class ResearchWorkflow:
 
     def _authoritative_risk_decision(self, goal: ResearchGoal, starting_capital: float) -> RiskDecision:
         """Use an explicitly bound paper ledger or make the result non-executable."""
+        if self.risk_engine is None:
+            reason = self.context.reason if self.context else "MISSING_AUTHORITATIVE_RISK_ENGINE"
+            return RiskDecision(
+                symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
+                approved_notional=0.0, reasons=[reason], policy=RiskPolicy(max_position_pct=0.01, max_gross_exposure_pct=0.01, max_daily_loss_pct=0.01, max_drawdown_pct=0.01, max_sector_exposure_pct=0.01, max_open_positions=1, max_var_pct=0.01, min_liquidity_crore=0.0),
+            )
         if goal.paper_portfolio_session_id:
             return self._portfolio_risk_decision(goal, starting_capital)
         if not goal.paper_session_id:
@@ -202,6 +223,8 @@ class ResearchWorkflow:
             [session_id, session[3]],
         ).fetchone()
         peak = float(session[1] or equity)
+        if self.risk_engine is None:
+            return self._reject_authoritative(goal, equity, "MISSING_AUTHORITATIVE_RISK_ENGINE")
         return self.risk_engine.evaluate(TradeProposal(
             symbol=goal.symbol,
             requested_notional=equity * 0.05,
@@ -217,9 +240,18 @@ class ResearchWorkflow:
         ))
 
     def _reject_authoritative(self, goal: ResearchGoal, capital: float, reason: str) -> RiskDecision:
+        policy = (
+            self.risk_engine.policy
+            if self.risk_engine is not None
+            else RiskPolicy(
+                max_position_pct=0.01, max_gross_exposure_pct=0.01, max_daily_loss_pct=0.01,
+                max_drawdown_pct=0.01, max_sector_exposure_pct=0.01, max_open_positions=1,
+                max_var_pct=0.01, min_liquidity_crore=0.0
+            )
+        )
         return RiskDecision(
             symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=capital * 0.05,
-            approved_notional=0.0, reasons=[reason], policy=self.risk_engine.policy,
+            approved_notional=0.0, reasons=[reason], policy=policy,
         )
 
     def _authoritative_marks(self, symbols: set[str], as_of: Any) -> dict[str, float] | None:

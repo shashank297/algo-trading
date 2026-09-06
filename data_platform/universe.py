@@ -8,8 +8,11 @@ and announcement-time (known_from) isolation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
+from enum import StrEnum
+import hashlib
+import json
 from typing import Any
 
 import pandas as pd
@@ -21,7 +24,7 @@ class PointInTimeConstituent:
 
     universe_name: str
     symbol: str
-    token: str
+    token: str = ""
     instrument_id: str = ""
     exchange: str = "NSE"
     effective_from: date = date(2000, 1, 1)
@@ -31,10 +34,18 @@ class PointInTimeConstituent:
     weight: float | None = None
     inclusion_reason: str | None = None
     exclusion_reason: str | None = None
+    is_authoritative: bool = False
 
     def __post_init__(self) -> None:
-        if not self.instrument_id:
-            # Generate deterministic canonical instrument identity
+        if self.is_authoritative:
+            canonical_fallback = f"{self.exchange.upper()}:{self.symbol.upper()}:EQ"
+            if not self.instrument_id or self.instrument_id.strip() == "" or self.instrument_id.strip().upper() == canonical_fallback:
+                raise ValueError(
+                    f"Authoritative PIT constituent requires an explicit durable instrument identity "
+                    f"(such as ISIN or provider security ID); symbol-derived identity '{canonical_fallback}' is prohibited for {self.symbol}."
+                )
+        elif not self.instrument_id:
+            # Generate deterministic canonical instrument identity for non-authoritative/diagnostic use
             canonical = f"{self.exchange.upper()}:{self.symbol.upper()}:EQ"
             object.__setattr__(self, "instrument_id", canonical)
         if self.effective_until is not None and self.effective_until <= self.effective_from:
@@ -93,11 +104,20 @@ class PointInTimeUniverseManager:
         conn: Any,
         constituent: PointInTimeConstituent,
         allow_overlap: bool = False,
+        require_authoritative_identity: bool = False,
     ) -> None:
         """Insert a constituent membership record into DuckDB with interval overlap validation."""
         raw_conn = cls._get_raw_conn(conn)
         cls._ensure_knowledge_table(raw_conn)
-        
+
+        if require_authoritative_identity or constituent.is_authoritative:
+            canonical_fallback = f"{constituent.exchange.upper()}:{constituent.symbol.upper()}:EQ"
+            if not constituent.instrument_id or constituent.instrument_id.strip() == "" or constituent.instrument_id.strip().upper() == canonical_fallback:
+                raise ValueError(
+                    f"Authoritative PIT constituent requires an explicit durable instrument identity "
+                    f"(such as ISIN or provider security ID); symbol-derived identity '{canonical_fallback}' is prohibited for {constituent.symbol}."
+                )
+
         # Overlap validation
         if not allow_overlap:
             cls._validate_no_interval_overlap(raw_conn, constituent)
@@ -175,6 +195,7 @@ class PointInTimeUniverseManager:
         cls,
         conn: Any,
         records: list[PointInTimeConstituent] | pd.DataFrame,
+        require_authoritative_identity: bool = False,
     ) -> int:
         """Bulk insert multiple PIT membership records."""
         raw_conn = cls._get_raw_conn(conn)
@@ -188,6 +209,11 @@ class PointInTimeUniverseManager:
                 eff_from = cls._normalize_date(row["effective_from"])
                 eff_until = cls._normalize_date(row["effective_until"]) if pd.notna(row.get("effective_until")) else None
                 known_from = cls._normalize_date(row["known_from"]) if pd.notna(row.get("known_from")) else None
+                known_at = (
+                    pd.Timestamp(row["known_at"]).to_pydatetime()
+                    if ("known_at" in row and pd.notna(row.get("known_at")))
+                    else None
+                )
                 inst_id = str(row.get("instrument_id", ""))
                 const = PointInTimeConstituent(
                     universe_name=str(row["universe_name"]),
@@ -198,16 +224,18 @@ class PointInTimeUniverseManager:
                     effective_from=eff_from,
                     effective_until=eff_until,
                     known_from=known_from,
+                    known_at=known_at,
                     weight=float(row["weight"]) if pd.notna(row.get("weight")) else None,
                     inclusion_reason=str(row.get("inclusion_reason")) if pd.notna(row.get("inclusion_reason")) else None,
                     exclusion_reason=str(row.get("exclusion_reason")) if pd.notna(row.get("exclusion_reason")) else None,
+                    is_authoritative=require_authoritative_identity,
                 )
-                cls.insert_constituent(raw_conn, const)
+                cls.insert_constituent(raw_conn, const, require_authoritative_identity=require_authoritative_identity)
                 count += 1
             return count
         else:
             for const in records:
-                cls.insert_constituent(raw_conn, const)
+                cls.insert_constituent(raw_conn, const, require_authoritative_identity=require_authoritative_identity)
             return len(records)
 
     @classmethod
@@ -323,3 +351,156 @@ class PointInTimeUniverseManager:
             ORDER BY effective_from ASC, symbol ASC
         """
         return raw_conn.execute(query, [universe_name.upper()]).df()
+
+
+class PITEventType(StrEnum):
+    """Institutional PIT membership event types."""
+    ADDITION = "ADDITION"
+    REMOVAL = "REMOVAL"
+    REBALANCE = "REBALANCE"
+    SYMBOL_CHANGE = "SYMBOL_CHANGE"
+    MERGER = "MERGER"
+    DEMERGER = "DEMERGER"
+    DELISTING = "DELISTING"
+    SUSPENSION = "SUSPENSION"
+
+
+@dataclass(frozen=True, slots=True)
+class AuthoritativePITEvent:
+    """Provider-neutral authoritative PIT event import record."""
+    universe_name: str
+    index_code: str
+    instrument_id: str
+    isin: str
+    symbol_at_event: str
+    security_name: str
+    exchange: str
+    instrument_type: str
+    announcement_at: datetime
+    effective_from: date
+    effective_until: date | None
+    event_type: PITEventType | str
+    inclusion_status: str
+    source_identifier: str
+    source_version: str
+    retrieved_at: datetime
+    batch_hash: str
+
+    def __post_init__(self) -> None:
+        if not self.instrument_id or not self.instrument_id.strip():
+            raise ValueError("AuthoritativePITEvent requires non-empty instrument_id")
+        if not self.isin or not self.isin.strip():
+            raise ValueError("AuthoritativePITEvent requires non-empty isin")
+        if not self.symbol_at_event or not self.symbol_at_event.strip():
+            raise ValueError("AuthoritativePITEvent requires non-empty symbol_at_event")
+        if not self.source_identifier or not self.source_identifier.strip():
+            raise ValueError("AuthoritativePITEvent requires non-empty source_identifier")
+        if not self.batch_hash or not self.batch_hash.strip():
+            raise ValueError("AuthoritativePITEvent requires non-empty batch_hash")
+
+    def to_dict(self) -> dict[str, Any]:
+        d = asdict(self)
+        d["event_type"] = str(self.event_type.value if isinstance(self.event_type, PITEventType) else self.event_type)
+        d["announcement_at"] = self.announcement_at.isoformat()
+        d["effective_from"] = self.effective_from.isoformat()
+        d["effective_until"] = self.effective_until.isoformat() if self.effective_until else None
+        d["retrieved_at"] = self.retrieved_at.isoformat()
+        return d
+
+
+class PITCertificationStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    BLOCKED_EXTERNAL_DATA = "BLOCKED_EXTERNAL_DATA"
+
+
+@dataclass(frozen=True)
+class PITCertificationRecord:
+    pit_certification_id: str
+    universe_name: str
+    horizon_start: date
+    horizon_end: date
+    status: PITCertificationStatus
+    reasons: list[str]
+    evidence_hash: str
+    certified_at: str
+
+
+class PITCertificationService:
+    """Validates PIT coverage, identity continuity, intervals, and returns certification."""
+
+    def __init__(self, conn: Any) -> None:
+        self.conn = conn
+
+    def certify_universe(
+        self,
+        universe_name: str,
+        start_date: date,
+        end_date: date,
+        min_required_constituents: int = 1,
+    ) -> PITCertificationRecord:
+        """Evaluate PIT dataset integrity across requested horizon.
+        
+        Fails closed as BLOCKED_EXTERNAL_DATA when authoritative membership is unavailable.
+        """
+        raw_conn = PointInTimeUniverseManager._get_raw_conn(self.conn)
+        query = """
+            SELECT COUNT(DISTINCT instrument_id), COUNT(*)
+            FROM index_constituents_pit
+            WHERE universe_name = ?
+              AND effective_from <= ?
+              AND (effective_until IS NULL OR effective_until >= ?)
+        """
+        row = raw_conn.execute(query, [universe_name.upper(), end_date.isoformat(), start_date.isoformat()]).fetchone()
+        distinct_instruments = int(row[0]) if row else 0
+        total_records = int(row[1]) if row else 0
+
+        reasons: list[str] = []
+        if total_records == 0 or distinct_instruments < min_required_constituents:
+            status = PITCertificationStatus.BLOCKED_EXTERNAL_DATA
+            reasons.append(
+                f"Authoritative historical PIT membership for {universe_name} across "
+                f"[{start_date}, {end_date}] is unpopulated or insufficient "
+                f"(observed {distinct_instruments} instruments, required {min_required_constituents})."
+            )
+        else:
+            # Check for invalid interval overlaps
+            overlap_query = """
+                SELECT a.instrument_id, a.symbol
+                FROM index_constituents_pit a
+                JOIN index_constituents_pit b
+                  ON a.universe_name = b.universe_name
+                 AND a.instrument_id = b.instrument_id
+                 AND a.effective_from < b.effective_from
+                 AND (a.effective_until IS NULL OR a.effective_until > b.effective_from)
+                WHERE a.universe_name = ?
+            """
+            overlaps = raw_conn.execute(overlap_query, [universe_name.upper()]).fetchall()
+            if overlaps:
+                status = PITCertificationStatus.FAIL
+                reasons.append(f"Found {len(overlaps)} overlapping PIT intervals in {universe_name}.")
+            else:
+                status = PITCertificationStatus.PASS
+                reasons.append("PIT interval integrity and constituent coverage verified.")
+
+        canonical = json.dumps({
+            "universe_name": universe_name.upper(),
+            "start": start_date.isoformat(),
+            "end": end_date.isoformat(),
+            "status": status.value,
+            "distinct_instruments": distinct_instruments,
+            "reasons": reasons,
+        }, sort_keys=True)
+        evidence_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        cert_id = f"pit-cert-{universe_name.lower()}-{evidence_hash[:12]}"
+
+        return PITCertificationRecord(
+            pit_certification_id=cert_id,
+            universe_name=universe_name.upper(),
+            horizon_start=start_date,
+            horizon_end=end_date,
+            status=status,
+            reasons=reasons,
+            evidence_hash=evidence_hash,
+            certified_at=datetime.now(timezone.utc).isoformat(),
+        )

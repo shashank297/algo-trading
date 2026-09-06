@@ -91,10 +91,20 @@ def build_foundation_certification(
             "BLOCKED" if any(status_by_name[name] == "BLOCKED" for name in REQUIRED_GATES) else "FAIL"
         ),
         "derived_flags": {
+            "CAN_GENERATE_HYPOTHESES": all_pass,
+            "CAN_DO_ENGINEERING_DIAGNOSTICS": all_pass,
+            "CAN_RUN_NON_ECONOMIC_TESTS": all_pass,
+            "CAN_RUN_DIAGNOSTIC_BACKTEST": all_pass,
+            "CAN_RUN_CERTIFIED_BACKTEST": all_pass,
+            "CAN_CLAIM_ECONOMIC_EVIDENCE": all_pass,
+            "CAN_SUBMIT_QA": all_pass,
+            "CAN_PROMOTE_TO_PAPER_CANDIDATE": all_pass and qa_pass,
+            "CAN_RUN_FORWARD_PAPER": all_pass and pit_pass and qa_pass,
+            "CAN_RUN_REAL_TIME_PAPER": all_pass and pit_pass and qa_pass,
+            "CAN_MARK_LIVE_CANDIDATE": False,
+            "CAN_DEPLOY_REAL_CAPITAL": False,
             "CAN_RESEARCH": all_pass,
             "CAN_BACKTEST_DIAGNOSTICALLY": all_pass,
-            "CAN_PROMOTE_TO_PAPER_CANDIDATE": all_pass and qa_pass,
-            "CAN_RUN_REAL_TIME_PAPER": all_pass and pit_pass and qa_pass,
         },
         "safety": {
             "live_trading": False,
@@ -108,8 +118,25 @@ def build_foundation_certification(
     return artifact
 
 
+def verify_foundation_artifact_integrity(artifact: Mapping[str, Any]) -> str:
+    """Verify artifact checksum against canonical serialization. Returns computed SHA-256."""
+    if not isinstance(artifact, Mapping):
+        raise PermissionError("Certification artifact must be a mapping/dict")
+    stored_hash = artifact.get("artifact_sha256")
+    if not stored_hash:
+        raise PermissionError("Foundation certification artifact missing 'artifact_sha256'")
+    payload = {k: v for k, v in artifact.items() if k != "artifact_sha256"}
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+    computed_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    if computed_hash != stored_hash:
+        raise PermissionError(
+            f"Foundation certification checksum mismatch: stored={stored_hash}, computed={computed_hash}"
+        )
+    return computed_hash
+
+
 def require_realtime_paper_certification(path: str | Path) -> dict[str, Any]:
-    """Fail closed before a real-time paper session can be started."""
+    """Fail closed before a paper session can be started. Verifies file, SHA-256 and PASS status."""
 
     artifact_path = Path(path)
     if not artifact_path.is_file():
@@ -118,10 +145,123 @@ def require_realtime_paper_certification(path: str | Path) -> dict[str, Any]:
         artifact = json.loads(artifact_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise PermissionError("Foundation certification artifact is unreadable") from exc
+
+    verify_foundation_artifact_integrity(artifact)
+
     flags = artifact.get("derived_flags")
     if not isinstance(flags, Mapping) or flags.get("CAN_RUN_REAL_TIME_PAPER") is not True:
         raise PermissionError("Foundation certification does not authorize real-time paper")
     if artifact.get("final_verdict") != "PASS":
         raise PermissionError("Foundation certification verdict is not PASS")
     return artifact
+
+
+class FoundationCertificationRegistry:
+    """Authoritative registry for persisting and resolving foundation certifications in DuckDB."""
+
+    @classmethod
+    def register_artifact(
+        cls,
+        conn: Any,
+        artifact: Mapping[str, Any],
+        certification_id: str | None = None,
+        is_active: bool = True,
+        code_sha: str = "HEAD",
+        pit_certification_id: str | None = None,
+        pit_hash: str | None = None,
+        cost_policy_id: str | None = None,
+        cost_policy_hash: str | None = None,
+        risk_policy_id: str | None = None,
+        risk_policy_hash: str | None = None,
+        robustness_policy_id: str | None = None,
+        qa_review_id: str | None = None,
+        supersedes_id: str | None = None,
+    ) -> str:
+        """Register a foundation certification artifact into DuckDB table foundation_certifications."""
+        computed_sha = verify_foundation_artifact_integrity(artifact)
+        cid = certification_id or str(artifact.get("artifact_id", "")) or f"cert_{computed_sha[:16]}"
+        raw_conn = getattr(conn, "conn", conn)
+
+        gates = artifact.get("gates", [])
+        status = str(artifact.get("final_verdict", "BLOCKED"))
+        lineage_status = "UNKNOWN"
+        for g in gates:
+            if isinstance(g, dict) and g.get("name") == "LINEAGE":
+                lineage_status = str(g.get("status", "BLOCKED"))
+
+        flags = artifact.get("derived_flags", {})
+        if not isinstance(flags, Mapping):
+            flags = {}
+
+        if is_active:
+            raw_conn.execute("UPDATE foundation_certifications SET is_active = FALSE WHERE is_active = TRUE")
+
+        query = """
+            INSERT OR REPLACE INTO foundation_certifications (
+                foundation_certification_id, artifact_version, generated_at, status,
+                code_sha, pit_certification_id, pit_hash, lineage_status,
+                cost_policy_id, cost_policy_hash, risk_policy_id, risk_policy_hash,
+                robustness_policy_id, qa_review_id, gates_json, derived_flags_json,
+                artifact_sha256, artifact_json, supersedes_id, is_active
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """
+        raw_conn.execute(
+            query,
+            [
+                cid,
+                str(artifact.get("artifact_version", "unknown")),
+                str(artifact.get("generated_at")),
+                status,
+                code_sha,
+                pit_certification_id,
+                pit_hash,
+                lineage_status,
+                cost_policy_id,
+                cost_policy_hash,
+                risk_policy_id,
+                risk_policy_hash,
+                robustness_policy_id,
+                qa_review_id,
+                json.dumps(gates, sort_keys=True),
+                json.dumps(flags, sort_keys=True),
+                computed_sha,
+                json.dumps(dict(artifact), sort_keys=True),
+                supersedes_id,
+                is_active,
+            ],
+        )
+        return cid
+
+    @classmethod
+    def get_active_certification(cls, conn: Any) -> dict[str, Any] | None:
+        """Load the active foundation certification from DuckDB, reconstructing the artifact dict."""
+        raw_conn = getattr(conn, "conn", conn)
+        try:
+            row = raw_conn.execute(
+                """SELECT artifact_json, artifact_sha256
+                   FROM foundation_certifications
+                   WHERE is_active = TRUE
+                   ORDER BY recorded_at DESC LIMIT 1"""
+            ).fetchone()
+        except Exception:
+            return None
+        if not row:
+            return None
+        artifact = json.loads(row[0])
+        verify_foundation_artifact_integrity(artifact)
+        return artifact
+
+    @classmethod
+    def require_active_certification(cls, conn: Any) -> dict[str, Any]:
+        """Load and fail-closed verify active foundation certification from DuckDB."""
+        cert = cls.get_active_certification(conn)
+        if cert is None:
+            raise PermissionError("No active foundation certification found in registry.")
+        flags = cert.get("derived_flags", {})
+        if not isinstance(flags, Mapping) or flags.get("CAN_RUN_REAL_TIME_PAPER") is not True:
+            raise PermissionError("Active foundation certification does not authorize paper trading.")
+        if cert.get("final_verdict") != "PASS":
+            raise PermissionError(f"Active foundation certification verdict is '{cert.get('final_verdict')}', not PASS.")
+        return cert
+
 

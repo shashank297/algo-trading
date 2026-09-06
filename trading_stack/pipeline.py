@@ -25,7 +25,10 @@ from trading_stack.strategies import StrategyRegistry
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
 from trading_stack.promotion import PromotionEngine
-from trading_stack.foundation_certification import require_realtime_paper_certification
+from trading_stack.foundation_certification import (
+    FoundationCertificationRegistry,
+    require_realtime_paper_certification,
+)
 
 
 class DataQualityError(ValueError):
@@ -354,11 +357,18 @@ class StrategyPipeline:
     ) -> dict[str, Any]:
         """Advance a persisted forward-only paper session by newly observed bars."""
 
-        # TRUE_NEXT_OPEN is the real-time paper path.  Keep the foundation
-        # certification check at the composition root so callers cannot bypass
-        # it by constructing a lower-level session engine.
-        if execution_mode in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN"):
-            if self.require_authoritative_certification:
+        # Keep the foundation certification check at the composition root uniformly
+        # across all paper execution modes (TRUE_NEXT_OPEN, EOD_BATCH, etc.) so callers
+        # cannot bypass it.
+        if self.require_authoritative_certification:
+            active_cert = FoundationCertificationRegistry.get_active_certification(self.db.conn)
+            if active_cert is not None:
+                flags = active_cert.get("derived_flags", {})
+                if not isinstance(flags, dict) or flags.get("CAN_RUN_REAL_TIME_PAPER") is not True:
+                    raise PermissionError("Active foundation certification does not authorize paper trading")
+                if active_cert.get("final_verdict") != "PASS":
+                    raise PermissionError(f"Active foundation certification verdict is '{active_cert.get('final_verdict')}', not PASS")
+            else:
                 require_realtime_paper_certification(
                     Path(__file__).resolve().parents[1]
                     / "reports"

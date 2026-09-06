@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any
 
 from storage.duckdb_manager import DuckDBManager
 
@@ -42,8 +43,16 @@ class PromotionEngine:
         self.db = db
         self.policy = policy or PromotionPolicy()
 
-    def assert_paper_authorized(self, run_id: str, strategy_name: str) -> None:
-        """Fail closed unless a human-approved promotion permits paper execution."""
+    def assert_paper_authorized(
+        self,
+        run_id: str,
+        strategy_name: str,
+        approval_evidence: Any = None,
+        *,
+        expected_foundation_cert_id: str | None = None,
+        expected_risk_policy_hash: str | None = None,
+    ) -> None:
+        """Fail closed unless a human-approved promotion permits paper execution and valid external approval evidence is verified."""
 
         review = self.db.conn.execute(
             """SELECT stage, decision, human_approved FROM promotion_reviews
@@ -58,6 +67,24 @@ class PromotionEngine:
             raise PermissionError(f"Run {run_id} is at stage {stage}, not a paper-authorized stage.")
         if decision != "PASS" or not human_approved:
             raise PermissionError(f"Run {run_id} does not have a passing human approval.")
+
+        from trading_stack.approval import ExternalApprovalVerifier
+        if approval_evidence is None:
+            approval_evidence = ExternalApprovalVerifier.load_active_approval(self.db.conn, run_id, strategy_name)
+
+        if approval_evidence is None:
+            raise PermissionError(
+                f"Run {run_id} lacks authoritative external human/board approval evidence in database."
+            )
+
+        ExternalApprovalVerifier.verify_approval(
+            approval_evidence,
+            expected_run_id=run_id,
+            expected_strategy_name=strategy_name,
+            expected_stage=stage,
+            expected_foundation_cert_id=expected_foundation_cert_id,
+            expected_risk_policy_hash=expected_risk_policy_hash,
+        )
 
     def review(
         self,
@@ -74,6 +101,17 @@ class PromotionEngine:
             raise ValueError(f"Unknown run: {run_id}")
         strategy_name = str(run[0])
         run_mode = str(run[1])
+        if "DIAGNOSTIC" in run_mode.upper() or "OVERRIDE" in run_mode.upper():
+            return {
+                "run_id": run_id,
+                "strategy_name": strategy_name,
+                "stage": "NOT_PROMOTABLE",
+                "decision": "REJECT",
+                "score": 0.0,
+                "reasons": ["RUN_USES_RISK_OVERRIDE_OR_DIAGNOSTIC_MODE_NOT_PROMOTABLE"],
+                "human_approved": False,
+                "reviewed_at": datetime.now(timezone.utc),
+            }
         run_data_hash = str(run[2])
         run_frame_certification_id = str(run[3]) if run[3] else None
         has_authoritative_frame = run_frame_certification_id is not None
