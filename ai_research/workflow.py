@@ -34,6 +34,7 @@ class ResearchWorkflow:
     def __init__(self, db: DuckDBManager, llm: LLMClient, risk_engine: RiskEngine | None = None) -> None:
         self.db = db
         self.llm = llm
+        self.context: NonExecutableResearchContext | None
         if risk_engine is None:
             self.risk_engine = None
             self.context = NonExecutableResearchContext()
