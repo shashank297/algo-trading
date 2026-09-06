@@ -1,7 +1,12 @@
-# Default Portfolio Risk Limits
+# LEGACY COMPATIBILITY ONLY — DEPRECATED
+# The single authoritative source of portfolio risk limits is: config/risk_policy.yaml
+# These legacy values mirror the Board-approved canonical policy (FAB-31) and must not be used as an authoritative runtime fallback.
 
 max_position_pct: 0.05
 max_gross_exposure_pct: 1.00
+max_daily_loss_pct: 0.01
+max_drawdown_pct: 0.05
 max_sector_exposure_pct: 0.20
-max_daily_loss_pct: 0.02
-max_drawdown_pct: 0.10
+max_open_positions: 20
+max_var_pct: 0.02
+min_liquidity_crore: 5.0

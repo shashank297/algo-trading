@@ -1028,4 +1028,78 @@ CREATE INDEX IF NOT EXISTS idx_robustness_family
 CREATE INDEX IF NOT EXISTS idx_robustness_evidence
     ON strategy_robustness_evaluations(evidence_hash);
 
+CREATE TABLE IF NOT EXISTS foundation_certifications (
+    foundation_certification_id VARCHAR PRIMARY KEY,
+    artifact_version VARCHAR NOT NULL,
+    generated_at TIMESTAMPTZ NOT NULL,
+    status VARCHAR NOT NULL,
+    code_sha VARCHAR NOT NULL,
+    pit_certification_id VARCHAR,
+    pit_hash VARCHAR,
+    lineage_status VARCHAR NOT NULL,
+    cost_policy_id VARCHAR,
+    cost_policy_hash VARCHAR,
+    risk_policy_id VARCHAR,
+    risk_policy_hash VARCHAR,
+    robustness_policy_id VARCHAR,
+    qa_review_id VARCHAR,
+    gates_json TEXT NOT NULL,
+    derived_flags_json TEXT NOT NULL,
+    artifact_sha256 VARCHAR NOT NULL,
+    artifact_json TEXT NOT NULL,
+    supersedes_id VARCHAR,
+    is_active BOOLEAN NOT NULL DEFAULT FALSE,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS external_approval_evidence (
+    approval_id VARCHAR PRIMARY KEY,
+    approval_type VARCHAR NOT NULL,
+    subject_type VARCHAR NOT NULL,
+    strategy_candidate_id VARCHAR,
+    run_id VARCHAR NOT NULL,
+    strategy_name VARCHAR NOT NULL,
+    requested_stage VARCHAR NOT NULL,
+    approved_stage VARCHAR NOT NULL,
+    approved_by_type VARCHAR NOT NULL,
+    approved_by_identifier VARCHAR NOT NULL,
+    approved_at TIMESTAMPTZ NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    scope VARCHAR NOT NULL,
+    status VARCHAR NOT NULL,
+    foundation_certification_id VARCHAR NOT NULL,
+    risk_policy_id VARCHAR NOT NULL,
+    risk_policy_hash VARCHAR NOT NULL,
+    promotion_review_id VARCHAR,
+    code_sha VARCHAR NOT NULL,
+    evidence_hash VARCHAR NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS dataset_lineage_manifests (
+    manifest_id VARCHAR PRIMARY KEY,
+    dataset_id VARCHAR NOT NULL,
+    dataset_version VARCHAR NOT NULL,
+    provider VARCHAR NOT NULL,
+    source_reference VARCHAR NOT NULL,
+    retrieved_at TIMESTAMPTZ NOT NULL,
+    available_at TIMESTAMPTZ,
+    coverage_start DATE NOT NULL,
+    coverage_end DATE NOT NULL,
+    frequency VARCHAR NOT NULL,
+    timezone VARCHAR NOT NULL,
+    calendar VARCHAR NOT NULL,
+    universe VARCHAR NOT NULL,
+    raw_artifact_hash VARCHAR NOT NULL,
+    canonical_artifact_hash VARCHAR NOT NULL,
+    transformation_version VARCHAR NOT NULL,
+    transformation_hash VARCHAR NOT NULL,
+    corporate_action_policy VARCHAR NOT NULL,
+    missing_data_policy VARCHAR NOT NULL,
+    dq_certification_id VARCHAR,
+    pit_certification_id VARCHAR,
+    status VARCHAR NOT NULL,
+    recorded_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 

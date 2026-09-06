@@ -114,15 +114,16 @@ research:
   mass_research:
     max_workers: 1
     max_retries: 2
+  # Mirror canonical risk policy (config/risk_policy.yaml) approved under Board Decision FAB-31.
   risk:
     max_position_pct: 0.05
-    max_gross_exposure_pct: 0.20
+    max_gross_exposure_pct: 1.00
     max_daily_loss_pct: 0.01
     max_drawdown_pct: 0.05
-    max_sector_exposure_pct: 0.40
+    max_sector_exposure_pct: 0.20
     max_open_positions: 20
     max_var_pct: 0.02
-    min_liquidity_crore: 0.0
+    min_liquidity_crore: 5.0
   regime_transition:
     policy_version: "2.4.0"
     minimum_confidence: 0.70

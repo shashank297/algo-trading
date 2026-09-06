@@ -9,6 +9,7 @@ import concurrent.futures
 import argparse
 import hashlib
 import json
+import math
 from collections import Counter
 from datetime import date, datetime, time as time_value, timedelta, timezone
 from pathlib import Path
@@ -263,6 +264,34 @@ def validate_config(config: dict[str, Any]) -> None:
 
     if config.get("research", {}).get("live_trading") is not False:
         raise RuntimeError("research.live_trading must remain false; live order routing is unavailable.")
+
+    research = config.get("research")
+    if not isinstance(research, dict) or not isinstance(research.get("risk"), dict):
+        raise RuntimeError("Configuration requires the authoritative research.risk mapping.")
+
+    from risk.factory import AUTHORITATIVE_RISK_FIELDS, load_canonical_risk_policy
+
+    configured_risk = research["risk"]
+    configured_fields = set(configured_risk)
+    missing_risk = sorted(AUTHORITATIVE_RISK_FIELDS - configured_fields)
+    unknown_risk = sorted(configured_fields - AUTHORITATIVE_RISK_FIELDS)
+    if missing_risk:
+        raise RuntimeError("research.risk is missing required fields: " + ", ".join(missing_risk))
+    if unknown_risk:
+        raise RuntimeError("research.risk contains unknown fields: " + ", ".join(unknown_risk))
+
+    canonical = load_canonical_risk_policy().to_risk_policy()
+    for field in sorted(AUTHORITATIVE_RISK_FIELDS):
+        value = configured_risk[field]
+        expected = getattr(canonical, field)
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise RuntimeError(f"research.risk.{field} must be a finite numeric value.")
+        if not math.isfinite(float(value)):
+            raise RuntimeError(f"research.risk.{field} must be a finite numeric value.")
+        if value != expected:
+            raise RuntimeError(
+                f"research.risk.{field} must match canonical policy value {expected!r}."
+            )
 
 
 def validate_symbols(symbols_config: dict[str, Any]) -> list[dict[str, Any]]:

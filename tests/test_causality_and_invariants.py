@@ -1280,7 +1280,6 @@ def test_p1_8_strict_int_position_count_contract():
             open_position_count=5.5,
         )
 
-
 def test_p0_3_pipeline_paper_session_forwarding(tmp_path):
     """P0-3: StrategyPipeline forwards OpeningTickObservation end-to-end."""
     from trading_stack.domain import OpeningTickObservation
@@ -1291,7 +1290,7 @@ def test_p0_3_pipeline_paper_session_forwarding(tmp_path):
         "high": [105.0] * 10,
         "low": [95.0] * 10,
         "close": [102.0] * 10,
-        "volume": [1000] * 10,
+        "volume": [600_000] * 10,
     })
     db.upsert_candles(candle_frame, "RELIANCE", "2885", "NSE", "1d")
 
@@ -1300,6 +1299,30 @@ def test_p0_3_pipeline_paper_session_forwarding(tmp_path):
         INSERT INTO promotion_reviews (review_id, run_id, strategy_name, stage, decision, human_approved, score, reasons_json, reviewed_at)
         VALUES ('rev-1', 'approved-run-1', 'cross_sectional_momentum', 'PAPER_ACTIVE', 'PASS', true, 1.0, '[]', CURRENT_TIMESTAMP);
     """)
+
+    from trading_stack.approval import ExternalApprovalVerifier, ExternalApprovalEvidence, ApprovalAuthorityType, ApprovalStatus
+    from datetime import timedelta
+    now_app = datetime.now(timezone.utc)
+    ExternalApprovalVerifier.record_approval(db.conn, ExternalApprovalEvidence(
+        approval_id="app-approved-run-1",
+        approval_type="PROMOTION_TO_PAPER",
+        subject_type="RUN",
+        run_id="approved-run-1",
+        strategy_name="cross_sectional_momentum",
+        requested_stage="PAPER_ACTIVE",
+        approved_stage="PAPER_ACTIVE",
+        approved_by_type=ApprovalAuthorityType.HUMAN,
+        approved_by_identifier="test_reviewer",
+        approved_at=now_app - timedelta(hours=1),
+        expires_at=now_app + timedelta(days=7),
+        scope="PAPER_SESSION",
+        status=ApprovalStatus.ACTIVE,
+        foundation_certification_id="test_cert",
+        risk_policy_id="canonical-risk-policy-v1",
+        risk_policy_hash="9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
+        code_sha="0" * 40,
+        evidence_hash="0" * 64,
+    ))
 
     obs = OpeningTickObservation(
         symbol="RELIANCE",

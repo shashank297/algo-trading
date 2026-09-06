@@ -468,7 +468,10 @@ def main(argv: list[str] | None = None) -> int:
         if risk_required:
             risk_policy_kwargs = dict(research_config.get("risk", {}))
             if args.risk_override_max_pos is not None:
+                if args.command == "paper" or args.mode == "paper":
+                    raise ValueError("Risk overrides are strictly prohibited in paper execution and authoritative promotion paths.")
                 risk_policy_kwargs["max_position_pct"] = args.risk_override_max_pos
+                args.mode = "NON_EXECUTABLE_DIAGNOSTIC"
             runtime_config = dict(config)
             runtime_research = dict(runtime_config.get("research", {}))
             runtime_research["risk"] = risk_policy_kwargs

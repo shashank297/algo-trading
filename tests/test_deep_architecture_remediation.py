@@ -239,7 +239,7 @@ def test_ai_workflow_risk_proposal_has_complete_state():
         current_drawdown=0.0,
         current_sector_exposure=0.0,
         open_position_count=0,
-        daily_turnover_crore=0.0,
+        daily_turnover_crore=10.0,
         estimated_portfolio_var_pct=0.01,
     )
     decision = risk_eng.evaluate(proposal)
@@ -314,8 +314,8 @@ def test_paper_engine_token_resolution_and_untrusted_tick_rejection(tmp_path):
         exchange_timestamp=datetime(2026, 1, 6, 3, 45, 0, tzinfo=timezone.utc),
         quality_state="TRUSTED", sequence_number=1,
     )
-    bar_snap = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 100.0, "close": 102.0, "volume": 1000, "exchange": "NSE", "open_tick_observation": obs_trusted}
-    pending = {"target_position": 0.10, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
+    bar_snap = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 100.0, "close": 102.0, "volume": 600_000, "exchange": "NSE", "open_tick_observation": obs_trusted}
+    pending = {"target_position": 0.05, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
 
     _, _, _, _, _, _, _, order_snap, _, _, _, _ = engine._execute_pending(
         "sess_snap", "SYM_SNAP", bar_snap, pending, 100000.0, 0.0, 0.0,
@@ -333,7 +333,7 @@ def test_paper_engine_token_resolution_and_untrusted_tick_rejection(tmp_path):
         exchange_timestamp=datetime(2026, 1, 6, 3, 45, 0, tzinfo=timezone.utc),
         quality_state="TRUSTED", sequence_number=1,
     )
-    bar_pit = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 200.0, "close": 202.0, "volume": 1000, "exchange": "NSE", "open_tick_observation": obs_pit}
+    bar_pit = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 200.0, "close": 202.0, "volume": 300_000, "exchange": "NSE", "open_tick_observation": obs_pit}
     _, _, _, _, _, _, _, order_pit, _, _, _, _ = engine._execute_pending(
         "sess_pit", "SYM_PIT", bar_pit, pending, 100000.0, 0.0, 0.0,
         100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,
@@ -350,7 +350,7 @@ def test_paper_engine_token_resolution_and_untrusted_tick_rejection(tmp_path):
         exchange_timestamp=datetime(2026, 1, 6, 3, 45, 0, tzinfo=timezone.utc),
         quality_state="TRUSTED", sequence_number=1,
     )
-    bar_candle = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 50.0, "close": 52.0, "volume": 1000, "exchange": "NSE", "open_tick_observation": obs_candle}
+    bar_candle = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 50.0, "close": 52.0, "volume": 1_200_000, "exchange": "NSE", "open_tick_observation": obs_candle}
     _, _, _, _, _, _, _, order_candle, _, _, _, _ = engine._execute_pending(
         "sess_candle", "SYM_CANDLE", bar_candle, pending, 100000.0, 0.0, 0.0,
         100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,
@@ -366,7 +366,7 @@ def test_paper_engine_token_resolution_and_untrusted_tick_rejection(tmp_path):
         exchange_timestamp=datetime(2026, 1, 6, 3, 45, 0, tzinfo=timezone.utc),
         quality_state="QUARANTINED", sequence_number=1,
     )
-    bar_untrusted = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 50.0, "close": 52.0, "volume": 1000, "exchange": "NSE", "open_tick_observation": obs_untrusted}
+    bar_untrusted = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 50.0, "close": 52.0, "volume": 1_200_000, "exchange": "NSE", "open_tick_observation": obs_untrusted}
     _, _, _, _, _, _, _, order_untrusted, _, _, _, _ = engine._execute_pending(
         "sess_untrusted", "SYM_CANDLE", bar_untrusted, pending, 100000.0, 0.0, 0.0,
         100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,

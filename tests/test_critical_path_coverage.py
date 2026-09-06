@@ -2881,7 +2881,7 @@ def test_forward_paper_session_engine_single_asset_full_coverage(tmp_path):
     # 1. _execute_pending with open_tick_price passed directly as float
     bar = {
         "timestamp": "2026-01-06 09:15:00+05:30", "open": 2000.0, "high": 2010.0, "low": 1990.0,
-        "close": 2005.0, "volume": 10000, "exchange": "NSE", "token": "2885",
+        "close": 2005.0, "volume": 50000, "exchange": "NSE", "token": "2885",
         "open_tick_price": 2002.0,
     }
     pending = {"target_position": 10.0, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}

@@ -5,12 +5,13 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 
 from ai_research import FakeLLMClient, OpenAIResearchClient, ResearchGoal, ResearchWorkflow
+from trading_stack.approval import ExternalApprovalVerifier, ExternalApprovalEvidence, ApprovalAuthorityType, ApprovalStatus
 from data_platform import BarRequest, DataPlatform, DatasetSnapshot, DuckDBCacheProvider, Instrument, PriceAdjustment, ProviderRegistry
 from data_platform.providers import ProviderUnavailable
 from data_platform.providers import OpenBBHttpProvider
@@ -226,7 +227,7 @@ class ResearchPlatformTests(unittest.TestCase):
             }
             for role in ("technical_analyst", "quant_analyst", "risk_analyst", "research_manager")
         }
-        report = ResearchWorkflow(self.db, FakeLLMClient(responses)).run(
+        report = ResearchWorkflow(self.db, FakeLLMClient(responses), risk_engine=RiskEngine(RiskPolicy())).run(
             ResearchGoal(symbol="NIFTY", timeframe="1d", strategy_name="trend_following"),
         )
         self.assertFalse(report["paper_eligible"])
@@ -281,6 +282,27 @@ class ResearchPlatformTests(unittest.TestCase):
             "score": 1.0, "reasons_json": "[]", "human_approved": True,
             "reviewed_at": datetime.now(timezone.utc),
         }])
+        now_app = datetime.now(timezone.utc)
+        ExternalApprovalVerifier.record_approval(self.db.conn, ExternalApprovalEvidence(
+            approval_id="app-approved-run-res",
+            approval_type="PROMOTION_TO_PAPER",
+            subject_type="RUN",
+            run_id="approved-run",
+            strategy_name="trend_following",
+            requested_stage="PAPER_ACTIVE",
+            approved_stage="PAPER_ACTIVE",
+            approved_by_type=ApprovalAuthorityType.HUMAN,
+            approved_by_identifier="test_reviewer",
+            approved_at=now_app - timedelta(hours=1),
+            expires_at=now_app + timedelta(days=7),
+            scope="PAPER_SESSION",
+            status=ApprovalStatus.ACTIVE,
+            foundation_certification_id="test_cert",
+            risk_policy_id="canonical-risk-policy-v1",
+            risk_policy_hash="9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
+            code_sha="0" * 40,
+            evidence_hash="0" * 64,
+        ))
         outcome = StrategyPipeline(self.db, require_authoritative_certification=False).run_paper_session(
             strategy_name="trend_following",
             approved_run_id="approved-run",

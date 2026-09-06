@@ -250,10 +250,10 @@ def test_paper_engine_candle_token_resolution_and_identity_mismatch(tmp_path):
     )
     bar_dict = {
         "timestamp": "2026-01-06 09:15:00+05:30", "open": 1500.0, "close": 1510.0,
-        "volume": 10000, "exchange": "NSE",
+        "volume": 50000, "exchange": "NSE",
         "open_tick_observation": correct_obs,
     }
-    pending = {"target_position": 0.10, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
+    pending = {"target_position": 0.05, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
     _, _, _, _, _, _, _, order_ok, _, _, _, _ = engine._execute_pending(
         "sess_tokfb", "TOKFB", bar_dict, pending, 100000.0, 0.0, 0.0,
         100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,
@@ -270,7 +270,7 @@ def test_paper_engine_candle_token_resolution_and_identity_mismatch(tmp_path):
     )
     bar_dict2 = {
         "timestamp": "2026-01-06 09:15:00+05:30", "open": 1500.0, "close": 1510.0,
-        "volume": 10000, "exchange": "NSE",
+        "volume": 50000, "exchange": "NSE",
         "open_tick_observation": wrong_exchange_obs,
     }
     _, _, _, _, _, _, _, order_rej, _, _, _, _ = engine._execute_pending(

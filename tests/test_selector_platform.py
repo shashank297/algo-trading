@@ -1263,7 +1263,7 @@ def test_t2_10_zj_final_risk_state_updates_sequentially_after_sell():
     assert [row["symbol"] for row in rows] == ["ABC", "XYZ"]
     assert rows[0]["risk_batch_id"] == rows[1]["risk_batch_id"] == "risk-batch"
     assert rows[0]["prior_state_hash"] != rows[1]["prior_state_hash"]
-    assert rows[1]["current_gross_exposure"] == pytest.approx(20_000.0)
+    assert rows[1]["current_gross_exposure"] == pytest.approx(5_000.0)
 
 
 def test_t2_10_zk_final_risk_state_missing_field_fails_closed():
