@@ -155,7 +155,9 @@ def main():
     with pr_out.open("w", newline="", encoding="utf-8") as f:
         fields = ["source_file","sha256","contains_nifty200","effective_date_text",
                   "candidate_section","parse_error","parser_version"]
-        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(pr_rows)
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(pr_rows)
 
     # Monthly checkpoint candidates.
     snap_rows = []
@@ -166,7 +168,9 @@ def main():
     snap_out = derived / "monthly_snapshot_candidates.csv"
     with snap_out.open("w", newline="", encoding="utf-8") as f:
         fields = ["zip_file","member","evidence_type","match_count","sample"]
-        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(snap_rows)
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(snap_rows)
 
     # Fail-closed coverage seed. It intentionally starts unresolved.
     coverage = [
@@ -194,7 +198,9 @@ def main():
     cov_out = derived / "coverage_matrix_seed.csv"
     with cov_out.open("w", newline="", encoding="utf-8") as f:
         fields = ["period_start","period_end","planned_primary_evidence","status","qa_note"]
-        w = csv.DictWriter(f, fieldnames=fields); w.writeheader(); w.writerows(coverage)
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        w.writerows(coverage)
 
     summary = {
         "generated_at": datetime.now(timezone.utc).isoformat(),

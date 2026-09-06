@@ -95,7 +95,9 @@ def main():
     session.headers.update({"User-Agent": UA, "Accept": "*/*"})
 
     rows = []
-    now = lambda: datetime.now(timezone.utc).isoformat()
+
+    def now() -> str:
+        return datetime.now(timezone.utc).isoformat()
 
     # 1) Official inclusion/exclusion workbook
     try:
