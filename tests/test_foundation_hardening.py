@@ -15,7 +15,7 @@ from data_platform.lineage import (
     DatasetLineageVerifier,
 )
 from risk.factory import load_canonical_risk_policy
-from risk.models import CanonicalRiskPolicy
+from risk.models import CanonicalRiskPolicy, RiskPolicy
 from ai_research.workflow import ResearchWorkflow, NonExecutableResearchContext
 from trading_stack.approval import (
     ExternalApprovalEvidence,
@@ -184,13 +184,89 @@ def test_canonical_risk_policy_load_and_validation():
     policy = load_canonical_risk_policy()
     assert isinstance(policy, CanonicalRiskPolicy)
     assert policy.allow_permissive_defaults is False
+    assert policy.policy_version == "1.1.0"
+    assert policy.policy_hash == "9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092"
     assert policy.max_position_pct == 0.05
-    assert policy.max_gross_exposure_pct == 0.20
+    assert policy.max_gross_exposure_pct == 1.00
     assert policy.max_daily_loss_pct == 0.01
     assert policy.max_drawdown_pct == 0.05
     assert policy.max_sector_exposure_pct == 0.20
     assert policy.max_open_positions == 20
-    assert len(policy.policy_hash) == 64
+    assert policy.max_var_pct == 0.02
+    assert policy.min_liquidity_crore == 5.0
+
+
+def test_canonical_risk_policy_gross_exposure_above_100_percent_rejected():
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        CanonicalRiskPolicy(
+            policy_id="test",
+            policy_version="1.1.0",
+            effective_from="2026-09-06",
+            policy_hash="test",
+            max_position_pct=0.05,
+            max_gross_exposure_pct=1.05,  # > 1.00 is strictly rejected
+            max_daily_loss_pct=0.01,
+            max_drawdown_pct=0.05,
+            max_sector_exposure_pct=0.20,
+            max_open_positions=20,
+            max_var_pct=0.02,
+            min_liquidity_crore=5.0,
+        )
+    with pytest.raises(ValidationError):
+        RiskPolicy(max_gross_exposure_pct=1.05)
+
+
+def test_canonical_risk_policy_missing_and_mismatched_hash_fails_closed(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_canonical_risk_policy(tmp_path / "nonexistent.yaml")
+
+    # Mismatched hash
+    bad_hash_yaml = tmp_path / "bad_hash.yaml"
+    bad_hash_yaml.write_text(
+        """
+policy_id: "test"
+policy_version: "1.1.0"
+effective_from: "2026-09-06"
+policy_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+limits:
+  max_position_pct: 0.05
+  max_gross_exposure_pct: 1.00
+  max_daily_loss_pct: 0.01
+  max_drawdown_pct: 0.05
+  max_sector_exposure_pct: 0.20
+  max_open_positions: 20
+  max_var_pct: 0.02
+  min_liquidity_crore: 5.0
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="hash mismatch"):
+        load_canonical_risk_policy(bad_hash_yaml)
+
+    # Unknown field
+    unknown_field_yaml = tmp_path / "unknown_field.yaml"
+    unknown_field_yaml.write_text(
+        """
+policy_id: "test"
+policy_version: "1.1.0"
+effective_from: "2026-09-06"
+policy_hash: "9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092"
+limits:
+  max_position_pct: 0.05
+  max_gross_exposure_pct: 1.00
+  max_daily_loss_pct: 0.01
+  max_drawdown_pct: 0.05
+  max_sector_exposure_pct: 0.20
+  max_open_positions: 20
+  max_var_pct: 0.02
+  min_liquidity_crore: 5.0
+  unknown_limit: 123
+""",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="unknown fields"):
+        load_canonical_risk_policy(unknown_field_yaml)
 
 
 def test_research_workflow_rejects_missing_authoritative_risk(tmp_path):

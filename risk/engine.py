@@ -21,7 +21,14 @@ class RiskEngine:
     """Apply conservative portfolio and loss limits to one proposed trade."""
 
     def __init__(self, policy: RiskPolicy | None = None) -> None:
-        self.policy = policy or RiskPolicy()
+        if policy is None:
+            # Production callers must inherit the versioned canonical policy;
+            # permissive model defaults remain available only for explicit
+            # test/diagnostic policy construction.
+            from risk.factory import load_canonical_risk_policy
+
+            policy = load_canonical_risk_policy().to_risk_policy()
+        self.policy = policy
         self.validators: list[RiskValidator] = [
             RequiredRiskStateValidator(),
             DailyLossValidator(),

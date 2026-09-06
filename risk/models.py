@@ -26,16 +26,16 @@ class RiskAction(str, Enum):
 class RiskPolicy(BaseModel):
     """Declarative safety parameters applied to every execution proposal."""
 
-    max_position_pct: float = Field(default=0.20, gt=0, le=1)
-    max_gross_exposure_pct: float = Field(default=1.00, gt=0, le=3)
-    max_daily_loss_pct: float = Field(default=0.03, gt=0, le=1)
-    max_drawdown_pct: float = Field(default=0.15, gt=0, le=1)
-    max_sector_exposure_pct: float = Field(default=0.40, gt=0, le=1)
+    max_position_pct: float = Field(default=0.05, gt=0, le=1)
+    max_gross_exposure_pct: float = Field(default=1.00, gt=0, le=1.00)
+    max_daily_loss_pct: float = Field(default=0.01, gt=0, le=1)
+    max_drawdown_pct: float = Field(default=0.05, gt=0, le=1)
+    max_sector_exposure_pct: float = Field(default=0.20, gt=0, le=1)
 
-    # New production-grade limits
+    # Production-grade limits matching canonical Board-approved policy (FAB-31)
     max_open_positions: int = Field(default=20, ge=1, le=500)
     max_var_pct: float = Field(default=0.02, gt=0, le=1)  # Max 2% daily portfolio VaR at 95%
-    min_liquidity_crore: float = Field(default=0.0, ge=0)  # Skip stocks < specified daily turnover
+    min_liquidity_crore: float = Field(default=5.0, ge=0)  # Skip stocks < specified daily turnover
 
 
 class CanonicalRiskPolicy(BaseModel):
@@ -46,7 +46,7 @@ class CanonicalRiskPolicy(BaseModel):
     effective_from: str
     policy_hash: str
     max_position_pct: float = Field(gt=0, le=0.50)
-    max_gross_exposure_pct: float = Field(gt=0, le=2.00)
+    max_gross_exposure_pct: float = Field(gt=0, le=1.00)
     max_daily_loss_pct: float = Field(gt=0, le=0.10)
     max_drawdown_pct: float = Field(gt=0, le=0.25)
     max_sector_exposure_pct: float = Field(gt=0, le=0.50)

@@ -45,12 +45,20 @@ def load_canonical_risk_policy(path: str | Path | None = None) -> CanonicalRiskP
     canonical_str = json.dumps(limits, sort_keys=True, separators=(",", ":"))
     computed_hash = hashlib.sha256(canonical_str.encode("utf-8")).hexdigest()
 
+    expected_hash = data.get("policy_hash")
+    if not expected_hash:
+        raise ValueError(f"Canonical risk policy {policy_path} is missing required 'policy_hash'")
+    if expected_hash != computed_hash:
+        raise ValueError(
+            f"Canonical risk policy hash mismatch in {policy_path}: declared {expected_hash}, computed {computed_hash}"
+        )
+
     governance = data.get("governance", {})
     allow_permissive = bool(governance.get("allow_permissive_defaults", False))
 
     return CanonicalRiskPolicy(
         policy_id=str(data.get("policy_id", "canonical-risk-policy-v1")),
-        policy_version=str(data.get("policy_version", "1.0.0")),
+        policy_version=str(data.get("policy_version", "1.1.0")),
         effective_from=str(data.get("effective_from", "2026-09-06")),
         policy_hash=computed_hash,
         allow_permissive_defaults=allow_permissive,

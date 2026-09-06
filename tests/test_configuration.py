@@ -10,6 +10,30 @@ from main import validate_config
 
 
 class ConfigurationSafetyTests(unittest.TestCase):
+    def test_risk_policy_is_required_and_canonical(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "config" / "config.example.yaml"
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        config = copy.deepcopy(config)
+        config["smartapi"].update({
+            "api_key": "test", "client_code": "test", "pin": "test", "totp_secret": "test",
+        })
+        config["research"].pop("risk")
+
+        with self.assertRaisesRegex(RuntimeError, "research.risk"):
+            validate_config(config)
+
+    def test_risk_policy_rejects_permissive_liquidity_and_sector_values(self) -> None:
+        path = Path(__file__).resolve().parents[1] / "config" / "config.example.yaml"
+        config = yaml.safe_load(path.read_text(encoding="utf-8"))
+        config = copy.deepcopy(config)
+        config["smartapi"].update({
+            "api_key": "test", "client_code": "test", "pin": "test", "totp_secret": "test",
+        })
+        config["research"]["risk"]["max_sector_exposure_pct"] = 0.40
+
+        with self.assertRaisesRegex(RuntimeError, "max_sector_exposure_pct"):
+            validate_config(config)
+
     def test_live_trading_cannot_be_enabled(self) -> None:
         path = Path(__file__).resolve().parents[1] / "config" / "config.example.yaml"
         config = yaml.safe_load(path.read_text(encoding="utf-8"))

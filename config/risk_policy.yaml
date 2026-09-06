@@ -2,13 +2,14 @@
 # Single authoritative versioned source of risk parameters.
 
 policy_id: "canonical-risk-policy-v1"
-policy_version: "1.0.0"
+policy_version: "1.1.0"
 effective_from: "2026-09-06"
-description: "Authoritative risk limits for research and paper trading execution."
+policy_hash: "9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092"
+description: "Authoritative risk limits for research and paper trading execution approved by Human Board under FAB-31."
 
 limits:
   max_position_pct: 0.05
-  max_gross_exposure_pct: 0.20
+  max_gross_exposure_pct: 1.00
   max_daily_loss_pct: 0.01
   max_drawdown_pct: 0.05
   max_sector_exposure_pct: 0.20
@@ -27,6 +28,8 @@ units:
   min_liquidity_crore: "crores_average_daily_turnover"
 
 governance:
-  status: "PENDING_BOARD_RECONCILIATION"
+  status: "BOARD_APPROVED"
   board_decision_ref: "FAB-31"
   allow_permissive_defaults: false
+  approved_by: "HUMAN_BOARD"
+  approved_at: "2026-09-06"

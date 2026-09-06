@@ -55,19 +55,17 @@ class MigrationRunner:
 
                 logger.info("Applying migration {}", version)
                 try:
-                    self.conn.execute("BEGIN TRANSACTION;")
                     self.conn.execute(sql_content)
                     self.conn.execute(
                         "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)",
                         [version, datetime.now(timezone.utc), checksum],
                     )
-                    self.conn.execute("COMMIT;")
-                    applied_now.append(version)
-                except Exception as exc:
                     try:
-                        self.conn.execute("ROLLBACK;")
+                        self.conn.execute("CHECKPOINT;")
                     except Exception:
                         pass
+                    applied_now.append(version)
+                except Exception as exc:
                     logger.error("Failed to apply migration {}: {}", version, exc)
                     raise RuntimeError(f"Failed to apply migration {version}: {exc}") from exc
             return applied_now

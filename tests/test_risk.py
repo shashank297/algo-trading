@@ -46,6 +46,17 @@ def test_authoritative_risk_factory_uses_research_config_and_rejects_missing_sec
         build_risk_engine({"research": {}})
 
 
+def test_default_risk_engine_uses_canonical_policy():
+    canonical = build_risk_engine().policy
+
+    assert canonical.max_position_pct == 0.05
+    assert canonical.max_gross_exposure_pct == 1.00
+    assert canonical.max_daily_loss_pct == 0.01
+    assert canonical.max_drawdown_pct == 0.05
+    assert canonical.max_sector_exposure_pct == 0.20
+    assert canonical.min_liquidity_crore == 5.0
+
+
 @pytest.mark.parametrize("missing", [
     "max_position_pct", "max_gross_exposure_pct", "max_daily_loss_pct",
     "max_drawdown_pct", "max_sector_exposure_pct", "max_open_positions",
