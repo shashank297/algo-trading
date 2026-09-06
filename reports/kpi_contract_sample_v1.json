@@ -1,0 +1,27 @@
+{
+  "frequency": "daily",
+  "metrics": {
+    "capacity.max_participation": {"annualization_factor": null, "basis": "requires_participation_limit_and_volume", "status": "unavailable", "unit": "fraction", "value": null, "window": "full_sample"},
+    "costs.total": {"annualization_factor": null, "basis": "fees_plus_slippage_plus_explicit_costs", "status": "available", "unit": "currency", "value": 3.0, "window": "full_sample"},
+    "exposure.gross_mean": {"annualization_factor": null, "basis": "gross_exposure_over_equity", "status": "available", "unit": "fraction", "value": 0.3, "window": "full_sample"},
+    "gross.cagr": {"annualization_factor": 252.0, "basis": "gross_equity_curve", "status": "available", "unit": "fraction", "value": 292.9255405422818, "window": "full_sample"},
+    "gross.max_drawdown": {"annualization_factor": 252.0, "basis": "gross_equity_curve", "status": "available", "unit": "fraction", "value": 0.0, "window": "full_sample"},
+    "gross.sharpe": {"annualization_factor": 252.0, "basis": "gross_equity_curve", "status": "available", "unit": "fraction", "value": 21.914945349168445, "window": "full_sample"},
+    "gross.sortino": {"annualization_factor": 252.0, "basis": "gross_equity_curve", "status": "unavailable", "unit": "fraction", "value": null, "window": "full_sample"},
+    "gross.total_return": {"annualization_factor": 252.0, "basis": "gross_equity_curve", "status": "available", "unit": "fraction", "value": 0.07, "window": "full_sample"},
+    "gross.volatility": {"annualization_factor": 252.0, "basis": "gross_equity_curve", "status": "available", "unit": "fraction", "value": 0.2638444144032282, "window": "full_sample"},
+    "liquidity.median_daily_value": {"annualization_factor": null, "basis": "requires_point_in_time_volume", "status": "unavailable", "unit": "currency", "value": null, "window": "full_sample"},
+    "net.cagr": {"annualization_factor": 252.0, "basis": "net_period_returns", "status": "available", "unit": "fraction", "value": 25.96500474817131, "window": "full_sample"},
+    "net.max_drawdown": {"annualization_factor": 252.0, "basis": "net_period_returns", "status": "available", "unit": "fraction", "value": -0.009803921568627416, "window": "full_sample"},
+    "net.sharpe": {"annualization_factor": 252.0, "basis": "net_period_returns", "status": "available", "unit": "fraction", "value": 12.559466693889737, "window": "full_sample"},
+    "net.sortino": {"annualization_factor": 252.0, "basis": "net_period_returns", "status": "unavailable", "unit": "fraction", "value": null, "window": "full_sample"},
+    "net.total_return": {"annualization_factor": 252.0, "basis": "net_period_returns", "status": "available", "unit": "fraction", "value": 0.04, "window": "full_sample"},
+    "net.volatility": {"annualization_factor": 252.0, "basis": "net_period_returns", "status": "available", "unit": "fraction", "value": 0.2668521024715425, "window": "full_sample"},
+    "trades.count": {"annualization_factor": null, "basis": "completed_trade_pnls", "status": "available", "unit": "count", "value": 2, "window": "full_sample"},
+    "trades.hit_rate": {"annualization_factor": null, "basis": "completed_trade_pnls", "status": "available", "unit": "fraction", "value": 0.5, "window": "full_sample"},
+    "turnover.notional": {"annualization_factor": null, "basis": "filled_notional", "status": "available", "unit": "currency", "value": 3000.0, "window": "full_sample"},
+    "uncertainty.return_ci_95": {"annualization_factor": null, "basis": "requires_declared_resampling_method", "status": "unavailable", "unit": "fraction", "value": null, "window": "full_sample"}
+  },
+  "observation_count": 3,
+  "schema_version": "1.0.0"
+}

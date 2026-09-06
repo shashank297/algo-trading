@@ -1,0 +1,8 @@
+source_url,source_organization,source_type,purpose,coverage_note
+https://archives.nseindia.com/content/indices/IndexInclExcl.xls,NSE/NSE Indices,official_workbook,Historical inclusion/exclusion workbook; public archive URL,2011+ through reported Jul-2020 coverage; must verify bytes locally
+https://www.niftyindices.com/reports/monthly-reports,NSE Indices,official_report_page,Current monthly report page; includes Indices Market Capitalisation & Weightage ZIP,Current
+https://www.niftyindices.com/reports/historical-data,NSE Indices,official_archive_page,Historical data / archives of daily-monthly reports,Historical archive
+https://www.niftyindices.com/press-release,NSE Indices,official_press_archive,Historical press-release archive containing index changes and corporate actions,2011 through 2026 and earlier
+https://www.nseindia.com/static/products-services/indices-nifty200-index,NSE,official_index_page,NIFTY 200 definition/current download/factsheet links,Current
+https://archives.nseindia.com/content/indices/Method_NIFTY_Equity_Indices.pdf,NSE Indices,official_methodology,NIFTY equity-index methodology; NIFTY 200 derived from NIFTY 100 + NIFTY Midcap 100,Current methodology
+https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2022.zip,NSE Indices,official_monthly_zip_example,Confirmed public URL pattern for monthly market-cap/weightage ZIP,March 2022

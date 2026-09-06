@@ -1,0 +1,22 @@
+{
+  "generated_at": "2026-09-06T00:22:59.230747+00:00",
+  "required_horizon": {
+    "start": "2012-01-02",
+    "end": "2026-08-20"
+  },
+  "press_release_files_scanned": 247,
+  "press_release_files_containing_nifty200": 98,
+  "monthly_candidate_records": 1,
+  "disposition": "BLOCKED",
+  "reason": "Candidate extraction is not certification. Coverage remains UNRESOLVED_GAP until event normalization and independent reconciliation are complete.",
+  "safety": {
+    "strategy": "NO",
+    "backtest": "NO",
+    "paper_session": "NO",
+    "broker_api": "NO",
+    "credential": "NO",
+    "order": "NO",
+    "live_endpoint": "NO",
+    "capital_deployment": "NO"
+  }
+}

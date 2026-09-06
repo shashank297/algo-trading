@@ -1,0 +1,44 @@
+{
+  "status": "DIAGNOSTIC_ONLY",
+  "candidate": "long-only 200-session close>SMA trend filter",
+  "symbol": "NIFTY200",
+  "timeframe": "1d",
+  "execution": "signal at t close; target applied at t+1 open; mark to t+1 close",
+  "data_adjustment": [
+    "SPLIT_ADJUSTED"
+  ],
+  "provider_names": [
+    "angel_one"
+  ],
+  "dataset_ids": [
+    "2fb0ebeb-4eb0-46c1-b064-06658a47b4fe",
+    "4ece996e-3b52-4458-9bc1-c6277444cad1"
+  ],
+  "data_sha256": "e0eeccd1c148ca3396a059fdccacab6a58484c1d202dea3363ff71923b6e863e",
+  "cost_assumption": {
+    "spread_bps_per_side": 2.0,
+    "slippage_bps_per_side": 3.0,
+    "stt_bps_per_side": 10.0,
+    "fixed_brokerage_and_dp": "excluded from percentage-only diagnostic"
+  },
+  "metrics": {
+    "start_date": "2012-10-15 00:00:00",
+    "end_date": "2026-08-20 00:00:00",
+    "observations": 3429,
+    "total_return": 1.101381918403149,
+    "annualized_return": 0.055099565832837705,
+    "annualized_volatility": 0.11490653476933414,
+    "sharpe_no_risk_rate": 0.5326205439387808,
+    "max_drawdown": -0.25550866154171037,
+    "trade_events": 113,
+    "exposure": 0.7515310586176728,
+    "gross_return": 1.490165135819085,
+    "cost_drag": 0.16950000000000032
+  },
+  "pit_status": "FAIL: index series is not historical constituent membership evidence; index_constituents_pit is empty in the source database",
+  "leakage_controls": [
+    "rolling SMA is unshifted for the signal but position is shifted one session",
+    "execution uses next row open, never same-row close",
+    "rows are sorted by date and duplicate dates are removed deterministically"
+  ]
+}

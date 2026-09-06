@@ -77,6 +77,133 @@ class CostBreakdown:
 
 
 @dataclass(frozen=True)
+class TransactionCostConfig:
+    """Provider-neutral, explicit transaction-cost assumptions.
+
+    Rates are basis points of executed notional; fixed charges are in the
+    configured currency. Zero-cost operation is opt-in so a missing cost
+    model cannot silently make a backtest permissive.
+    """
+
+    version: str
+    brokerage_bps: float = 0.0
+    brokerage_min: float = 0.0
+    brokerage_max: float | None = None
+    buy_tax_bps: float = 0.0
+    sell_tax_bps: float = 0.0
+    exchange_bps: float = 0.0
+    regulatory_bps: float = 0.0
+    other_bps: float = 0.0
+    buy_fixed: float = 0.0
+    sell_fixed: float = 0.0
+    gst_rate: float = 0.0
+    buy_stamp_bps: float = 0.0
+    spread_bps: float = 0.0
+    slippage_bps: float = 0.0
+    impact_bps_at_full_participation: float = 0.0
+    max_participation: float = 1.0
+    allow_zero_costs: bool = False
+
+    def with_multiplier(self, multiplier: float, *, version: str) -> "TransactionCostConfig":
+        if not math.isfinite(multiplier) or multiplier <= 0:
+            raise ValueError("multiplier must be positive and finite")
+        values = asdict(self)
+        values["version"] = version
+        values["allow_zero_costs"] = self.allow_zero_costs
+        for key in (
+            "brokerage_bps", "brokerage_min", "brokerage_max", "buy_tax_bps",
+            "sell_tax_bps", "exchange_bps", "regulatory_bps", "other_bps",
+            "buy_fixed", "sell_fixed", "buy_stamp_bps", "spread_bps",
+            "slippage_bps", "impact_bps_at_full_participation",
+        ):
+            if values[key] is not None:
+                values[key] *= multiplier
+        return TransactionCostConfig(**values)
+
+
+@dataclass(frozen=True)
+class TransactionCostResult:
+    """Auditable component reconciliation for one executed order."""
+
+    version: str
+    notional: float
+    side: str
+    participation: float
+    components: dict[str, float]
+
+    @property
+    def execution_drag(self) -> float:
+        return self.components["spread"] + self.components["slippage"] + self.components["market_impact"]
+
+    @property
+    def total(self) -> float:
+        return sum(self.components.values())
+
+
+class TransactionCostCalculator:
+    """Calculate explicit, side-aware costs without broker-specific code."""
+
+    def __init__(self, config: TransactionCostConfig) -> None:
+        if not config.version.strip():
+            raise ValueError("version must be non-empty")
+        if not math.isfinite(config.max_participation) or config.max_participation <= 0:
+            raise ValueError("max_participation must be positive and finite")
+        self.config = config
+
+    def calculate(
+        self,
+        notional: float,
+        side: OrderSide,
+        participation: float = 0.0,
+    ) -> TransactionCostResult:
+        if not math.isfinite(notional) or notional < 0:
+            raise ValueError("notional must be finite and non-negative")
+        if not math.isfinite(participation) or participation < 0:
+            raise ValueError("participation must be finite and non-negative")
+        charge_fields = (
+            "brokerage_bps", "brokerage_min", "brokerage_max", "buy_tax_bps",
+            "sell_tax_bps", "exchange_bps", "regulatory_bps", "other_bps",
+            "buy_fixed", "sell_fixed", "gst_rate", "buy_stamp_bps", "spread_bps",
+            "slippage_bps", "impact_bps_at_full_participation",
+        )
+        if not self.config.allow_zero_costs and not any(
+            getattr(self.config, field) not in (None, 0.0) for field in charge_fields
+        ):
+            raise ValueError("zero-cost configuration requires allow_zero_costs=True")
+        c = self.config
+        brokerage = max(c.brokerage_min, notional * c.brokerage_bps / 10_000) if notional else 0.0
+        if c.brokerage_max is not None:
+            brokerage = min(c.brokerage_max, brokerage)
+        tax_bps = c.buy_tax_bps if side == OrderSide.BUY else c.sell_tax_bps
+        fixed = c.buy_fixed if side == OrderSide.BUY else c.sell_fixed
+        impact_bps = c.impact_bps_at_full_participation * min(participation, c.max_participation) / c.max_participation
+        exchange = notional * c.exchange_bps / 10_000
+        regulatory = notional * c.regulatory_bps / 10_000
+        other = notional * c.other_bps / 10_000
+        gst = c.gst_rate * (brokerage + exchange + regulatory + other + fixed)
+        components = {
+            "brokerage": brokerage,
+            "tax": notional * tax_bps / 10_000,
+            "exchange": exchange,
+            "regulatory": regulatory,
+            "other": other,
+            "fixed_charge": fixed if notional else 0.0,
+            "gst": gst,
+            "stamp_duty": notional * c.buy_stamp_bps / 10_000 if side == OrderSide.BUY else 0.0,
+            "spread": notional * c.spread_bps / 10_000,
+            "slippage": notional * c.slippage_bps / 10_000,
+            "market_impact": notional * impact_bps / 10_000,
+        }
+        return TransactionCostResult(
+            version=c.version,
+            notional=notional,
+            side=str(getattr(side, "value", side)),
+            participation=participation,
+            components=components,
+        )
+
+
+@dataclass(frozen=True)
 class IndianDeliveryCostSchedule:
     """Configurable Angel One/NSE delivery assumptions; rates are not strategy code."""
 

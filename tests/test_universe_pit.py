@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 import unittest
 
@@ -119,7 +119,7 @@ class TestPointInTimeUniverse(unittest.TestCase):
             token="888",
             effective_from=date(2023, 1, 1),
             effective_until=None,
-            known_from=date(2022, 12, 15),
+            known_from=date(2022, 12, 14),
         )
         PointInTimeUniverseManager.insert_constituent(self.con, c)
 
@@ -134,6 +134,62 @@ class TestPointInTimeUniverse(unittest.TestCase):
             self.con, "NIFTY50", as_of="2023-01-02", as_of_knowledge="2022-12-20"
         )
         self.assertEqual(syms_after, ["NEWCO"])
+
+
+    def test_membership_not_visible_before_precise_known_at(self) -> None:
+        """An exact announcement timestamp must gate visibility within known_from's date."""
+        constituent = PointInTimeConstituent(
+            universe_name="NIFTY50",
+            symbol="TIMEDCO",
+            token="889",
+            effective_from=date(2023, 1, 1),
+            known_from=date(2022, 12, 14),
+            known_at=datetime(2022, 12, 15, 12, 0, tzinfo=timezone.utc),
+        )
+        PointInTimeUniverseManager.insert_constituent(self.con, constituent)
+
+        before_announcement = PointInTimeUniverseManager.get_constituent_symbols(
+            self.con,
+            "NIFTY50",
+            as_of="2023-01-02",
+            as_of_knowledge="2022-12-15T11:59:59Z",
+        )
+        at_announcement = PointInTimeUniverseManager.get_constituent_symbols(
+            self.con,
+            "NIFTY50",
+            as_of="2023-01-02",
+            as_of_knowledge="2022-12-15T12:00:00Z",
+        )
+
+        self.assertEqual(before_announcement, [])
+        self.assertEqual(at_announcement, ["TIMEDCO"])
+
+    def test_canonical_identity_is_stable_for_symbol_history(self) -> None:
+        """A symbol rename can retain one canonical instrument identity across intervals."""
+        first = PointInTimeConstituent(
+            universe_name="NIFTY50",
+            symbol="OLDNAME",
+            token="900",
+            instrument_id="NSE:RENAMEDCO:EQ",
+            effective_from=date(2020, 1, 1),
+            effective_until=date(2022, 1, 1),
+            known_from=date(2020, 1, 1),
+        )
+        second = PointInTimeConstituent(
+            universe_name="NIFTY50",
+            symbol="NEWNAME",
+            token="900",
+            instrument_id="NSE:RENAMEDCO:EQ",
+            effective_from=date(2022, 1, 1),
+            known_from=date(2021, 12, 1),
+        )
+        PointInTimeUniverseManager.insert_constituent(self.con, first)
+        PointInTimeUniverseManager.insert_constituent(self.con, second)
+
+        old = PointInTimeUniverseManager.get_constituents(self.con, "NIFTY50", "2021-06-01")
+        new = PointInTimeUniverseManager.get_constituents(self.con, "NIFTY50", "2022-06-01")
+        self.assertEqual([(item.instrument_id, item.symbol) for item in old], [("NSE:RENAMEDCO:EQ", "OLDNAME")])
+        self.assertEqual([(item.instrument_id, item.symbol) for item in new], [("NSE:RENAMEDCO:EQ", "NEWNAME")])
 
     def test_cross_sectional_strategy_enforces_pit_universe_at_rebalance(self) -> None:
         """Cross-sectional strategy ranks only active PIT constituents on each rebalance date."""
@@ -195,4 +251,3 @@ class TestPointInTimeUniverse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
