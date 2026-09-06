@@ -1,0 +1,23 @@
+{
+  "artifact_sha256": "40c7447855c7545f2fe7617b6a0ec0d0e56f7e704b6ca1dc9e97714940ef332e",
+  "artifact_type": "algo_trading_foundation_certification",
+  "artifact_version": "foundation-certification-v1",
+  "generated_at": "2026-09-06T00:00:00Z",
+  "final_verdict": "BLOCKED",
+  "derived_flags": {
+    "CAN_BACKTEST_DIAGNOSTICALLY": false,
+    "CAN_PROMOTE_TO_PAPER_CANDIDATE": false,
+    "CAN_RESEARCH": false,
+    "CAN_RUN_REAL_TIME_PAPER": false
+  },
+  "gates": [
+    {"name":"PIT","status":"BLOCKED","reason":"Authoritative historical NIFTY 200 membership is unavailable; current constituents are not historical PIT evidence.","evidence":["reports/FAB-17_pit_readiness_20260906.md","reports/campaign1_data_readiness_20260903.md"]},
+    {"name":"LINEAGE","status":"BLOCKED","reason":"Readable authoritative database/manifest certification is unavailable; incomplete manifests fail closed.","evidence":["reports/FAB-17_pit_readiness_20260906.md"]},
+    {"name":"TRANSACTION_COSTS","status":"PASS","reason":"Mandatory explicit cost components and focused tests are present; assumptions unchanged.","evidence":["reports/FAB-19_transaction_cost_reconciliation_20260906.md","tests/test_transaction_cost_framework.py"]},
+    {"name":"ROBUSTNESS","status":"FAIL","reason":"Regime, missing-bar, and PIT constituent sensitivity gates are not yet complete.","evidence":["reports/FAB-20_robustness_validation_qa_20260906.md"]},
+    {"name":"KPI","status":"PASS","reason":"Canonical KPI contract and deterministic tests are present.","evidence":["docs/kpi_contract_v1.md","tests/test_kpi_contract.py"]},
+    {"name":"RISK_CONFIGURATION","status":"BLOCKED","reason":"Material policy conflicts remain; no permissive value is selected without Board decision.","evidence":["reports/FAB-23_risk_configuration_reconciliation_20260906.md","config/risk_limits.yaml","config/config.example.yaml"]},
+    {"name":"INDEPENDENT_QA_RISK","status":"BLOCKED","reason":"Fresh independent QA/Risk review is required after remediation and must return exactly PASS, PASS_WITH_CONDITIONS, FAIL, or BLOCKED.","evidence":[]}
+  ],
+  "safety": {"capital_deployment": false,"current_constituents_used_as_historical_pit": false,"live_trading": false,"unknown_is_pass": false}
+}

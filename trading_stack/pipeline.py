@@ -3,6 +3,7 @@ import json
 import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -24,6 +25,7 @@ from trading_stack.strategies import StrategyRegistry
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
 from trading_stack.promotion import PromotionEngine
+from trading_stack.foundation_certification import require_realtime_paper_certification
 
 
 class DataQualityError(ValueError):
@@ -351,6 +353,17 @@ class StrategyPipeline:
         adjustment: PriceAdjustment | str = PriceAdjustment.SPLIT_ADJUSTED,
     ) -> dict[str, Any]:
         """Advance a persisted forward-only paper session by newly observed bars."""
+
+        # TRUE_NEXT_OPEN is the real-time paper path.  Keep the foundation
+        # certification check at the composition root so callers cannot bypass
+        # it by constructing a lower-level session engine.
+        if execution_mode in (PaperExecutionMode.TRUE_NEXT_OPEN.value, "TRUE_NEXT_OPEN"):
+            if self.require_authoritative_certification:
+                require_realtime_paper_certification(
+                    Path(__file__).resolve().parents[1]
+                    / "reports"
+                    / "FAB-25_foundation_certification_20260906.json"
+                )
 
         risk_engine = self._require_authoritative_risk()
 

@@ -79,6 +79,9 @@ research:
   openai_input_cost_per_million: null
   openai_output_cost_per_million: null
   costs:
+    model: "explicit-component-v1"
+    allow_zero_costs: false
+    stress_multipliers: [1.0, 1.5, 2.0, 3.0]
     fee_bps: 0.0
     slippage_bps: 0.0
     spread_bps: 0.0

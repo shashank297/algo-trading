@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "FAB-27 zero-cost NSE PIT liquid equity candidate",
+  "type": "object",
+  "required": ["universe_id", "as_of", "effective_from", "effective_to", "isin", "symbol_at_event", "security_type", "nse_listed", "isin_verified", "suspended_or_delisted", "median_daily_turnover", "trading_days", "turnover_window_end", "observation_complete", "source_url", "source_sha256"],
+  "properties": {
+    "universe_id": {"const": "NSE_PIT_LIQUID_EQUITY_ZERO_COST_V1"},
+    "as_of": {"type": "string", "format": "date"},
+    "effective_from": {"type": "string", "format": "date"},
+    "effective_to": {"type": ["string", "null"], "format": "date"},
+    "isin": {"type": "string", "pattern": "^[A-Z]{2}[A-Z0-9]{9}[0-9]$"},
+    "symbol_at_event": {"type": "string", "minLength": 1},
+    "security_type": {"const": "EQUITY"},
+    "nse_listed": {"type": "boolean", "const": true},
+    "isin_verified": {"type": "boolean", "const": true},
+    "suspended_or_delisted": {"type": "boolean", "const": false},
+    "median_daily_turnover": {"type": "number", "minimum": 0},
+    "trading_days": {"type": "integer", "minimum": 0},
+    "turnover_window_end": {"type": "string", "format": "date"},
+    "observation_complete": {"type": "boolean", "const": true},
+    "source_url": {"type": "string", "format": "uri"},
+    "source_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+  },
+  "additionalProperties": false
+}
