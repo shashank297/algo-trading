@@ -268,7 +268,7 @@ def test_portfolio_backtester_and_paper_engine_fallbacks(tmp_path):
 
     # Paper engine: True next open with token lookup in instrument_master
     bar_infy = {
-        "timestamp": "2026-01-06 09:15:00+05:30", "open": 1500.0, "close": 1510.0, "volume": 10000, "exchange": "NSE",
+        "timestamp": "2026-01-06 09:15:00+05:30", "open": 1500.0, "close": 1510.0, "volume": 50000, "exchange": "NSE",
         "open_tick_observation": OpeningTickObservation(
             symbol="INFY", token="40806", exchange="NSE", price=1505.0,
             received_at_utc=datetime(2026, 1, 6, 3, 45, 1, tzinfo=timezone.utc),
@@ -276,7 +276,7 @@ def test_portfolio_backtester_and_paper_engine_fallbacks(tmp_path):
             quality_state="TRUSTED", sequence_number=1,
         ),
     }
-    pending_infy = {"target_position": 0.10, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
+    pending_infy = {"target_position": 0.05, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
     _, qty, _, _, _, _, _, order, fill, _, _, _ = engine._execute_pending(
         "sess_infy", "INFY", bar_infy, pending_infy, 100000.0, 0.0, 0.0, 100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,
         execution_mode="TRUE_NEXT_OPEN",
@@ -286,7 +286,7 @@ def test_portfolio_backtester_and_paper_engine_fallbacks(tmp_path):
 
     # Paper engine: True next open with token lookup in historical_candles
     bar_wipro = {
-        "timestamp": "2026-01-06 09:15:00+05:30", "open": 400.0, "close": 405.0, "volume": 10000, "exchange": "NSE",
+        "timestamp": "2026-01-06 09:15:00+05:30", "open": 400.0, "close": 405.0, "volume": 200000, "exchange": "NSE",
         "open_tick_observation": OpeningTickObservation(
             symbol="WIPRO", token="3787", exchange="NSE", price=402.0,
             received_at_utc=datetime(2026, 1, 6, 3, 45, 1, tzinfo=timezone.utc),
@@ -294,7 +294,7 @@ def test_portfolio_backtester_and_paper_engine_fallbacks(tmp_path):
             quality_state="TRUSTED", sequence_number=1,
         ),
     }
-    pending_wipro = {"target_position": 0.10, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
+    pending_wipro = {"target_position": 0.05, "reason": "signal", "signal_timestamp": "2026-01-05 15:30:00+05:30"}
     _, qty, _, _, _, _, _, order_w, fill_w, _, _, _ = engine._execute_pending(
         "sess_wipro", "WIPRO", bar_wipro, pending_wipro, 100000.0, 0.0, 0.0, 100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,
         execution_mode="TRUE_NEXT_OPEN",
@@ -303,7 +303,7 @@ def test_portfolio_backtester_and_paper_engine_fallbacks(tmp_path):
     assert fill_w["price"] == 402.0
 
     # Paper engine: Mismatched symbol or missing open tick observation rejection
-    bar_rej = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 400.0, "close": 405.0, "volume": 10000, "exchange": "NSE"}
+    bar_rej = {"timestamp": "2026-01-06 09:15:00+05:30", "open": 400.0, "close": 405.0, "volume": 200000, "exchange": "NSE"}
     _, _, _, _, _, _, _, order_rej, _, _, _, _ = engine._execute_pending(
         "sess_rej", "WIPRO", bar_rej, pending_wipro, 100000.0, 0.0, 0.0, 100000.0, 100000.0, 100000.0, None, "ENTRY", 0.0, 0.0,
         execution_mode="TRUE_NEXT_OPEN",

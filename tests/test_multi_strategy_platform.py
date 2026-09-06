@@ -31,6 +31,7 @@ from trading_stack.pipeline import StrategyPipeline
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
 from trading_stack.features import FeatureFactory
+from trading_stack.approval import ExternalApprovalVerifier, ExternalApprovalEvidence, ApprovalAuthorityType, ApprovalStatus
 from risk import RiskEngine, RiskPolicy
 from utils.timezone import IST
 
@@ -44,7 +45,7 @@ def panel_fixture(periods: int = 320, symbols: int = 6) -> pd.DataFrame:
         frames.append(pd.DataFrame({
             "timestamp": dates, "symbol": f"STOCK{index}", "exchange": "NSE", "timeframe": "1d",
             "open": close - 0.1, "high": close + 1.0, "low": close - 1.0, "close": close,
-            "volume": 200_000 + index * 10_000, "benchmark_close": 100 + np.arange(periods) * 0.04,
+            "volume": 600_000 + index * 10_000, "benchmark_close": 100 + np.arange(periods) * 0.04,
             "sector": f"SECTOR{index % 2}",
         }))
     return pd.concat(frames, ignore_index=True)
@@ -106,11 +107,11 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     price = 120.0 + index
                     db.upsert_candles(pd.DataFrame({
                         "timestamp": [next_timestamp], "open": [price], "high": [price + 1],
-                        "low": [price - 1], "close": [price + 0.2], "volume": [200_000],
+                        "low": [price - 1], "close": [price + 0.2], "volume": [500_000],
                     }), symbol, symbol, "NSE", "1d")
                 db.upsert_candles(pd.DataFrame({
                     "timestamp": [next_timestamp], "open": [120.0], "high": [121.0],
-                    "low": [119.0], "close": [120.2], "volume": [200_000],
+                    "low": [119.0], "close": [120.2], "volume": [500_000],
                 }), "NIFTY200", "INDEX", "NSE", "1d")
                 second = engine.run(
                     strategy_name="cross_sectional_momentum", approved_run_id="approved-portfolio",
@@ -127,11 +128,11 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     price = 121.0 + index
                     db.upsert_candles(pd.DataFrame({
                         "timestamp": [third_timestamp], "open": [price], "high": [price + 1],
-                        "low": [price - 1], "close": [price + 0.2], "volume": [200_000],
+                        "low": [price - 1], "close": [price + 0.2], "volume": [500_000],
                     }), symbol, symbol, "NSE", "1d")
                 db.upsert_candles(pd.DataFrame({
                     "timestamp": [third_timestamp], "open": [121.0], "high": [122.0],
-                    "low": [120.0], "close": [121.2], "volume": [200_000],
+                    "low": [120.0], "close": [121.2], "volume": [500_000],
                 }), "NIFTY200", "INDEX", "NSE", "1d")
                 third = engine.run(
                     strategy_name="cross_sectional_momentum", approved_run_id="approved-portfolio",
@@ -164,8 +165,8 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 symbols = ["EXIT", "KEEP1", "KEEP2", "KEEP3", "ENTER"]
                 day = pd.DataFrame({
                     "symbol": symbols, "open": [100.0] * 5, "close": [100.0] * 5,
-                    "volume": [200_000] * 5, "volatility_20": [0.01] * 5,
-                    "lagged_traded_value": [20_000_000.0] * 5, "sector": ["TEST"] * 5,
+                    "volume": [600_000] * 5, "volatility_20": [0.01] * 5,
+                    "lagged_traded_value": [60_000_000.0] * 5, "sector": ["TEST"] * 5,
                 }).set_index("symbol", drop=False)
                 targets = pd.DataFrame({
                     "timestamp": [timestamp] * 5, "symbol": symbols,
@@ -275,7 +276,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     "timestamp": pd.bdate_range(end="2026-08-13", periods=60, tz=IST),
                     "open": initial_close, "high": initial_close + 1,
                     "low": initial_close - 1, "close": initial_close + 0.5,
-                    "volume": [100_000] * 60,
+                    "volume": [600_000] * 60,
                 })
                 db.upsert_candles(initial, "TEST-EQ", "1", "NSE", "1d")
                 db._replace_rows("promotion_reviews", [{
@@ -284,6 +285,27 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     "score": 1.0, "reasons_json": "[]", "human_approved": True,
                     "reviewed_at": datetime.now(timezone.utc),
                 }])
+                now_app = datetime.now(timezone.utc)
+                ExternalApprovalVerifier.record_approval(db.conn, ExternalApprovalEvidence(
+                    approval_id="app-approved-run",
+                    approval_type="PROMOTION_TO_PAPER",
+                    subject_type="RUN",
+                    run_id="approved-run",
+                    strategy_name="trend_following",
+                    requested_stage="PAPER_ACTIVE",
+                    approved_stage="PAPER_ACTIVE",
+                    approved_by_type=ApprovalAuthorityType.HUMAN,
+                    approved_by_identifier="test_reviewer",
+                    approved_at=now_app - timedelta(hours=1),
+                    expires_at=now_app + timedelta(days=7),
+                    scope="PAPER_SESSION",
+                    status=ApprovalStatus.ACTIVE,
+                    foundation_certification_id="test_cert",
+                    risk_policy_id="canonical-risk-policy-v1",
+                    risk_policy_hash="9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
+                    code_sha="0" * 40,
+                    evidence_hash="0" * 64,
+                ))
                 pipeline = StrategyPipeline(db, require_authoritative_certification=False)
                 first = pipeline.run_paper_session(
                     strategy_name="trend_following", approved_run_id="approved-run",
@@ -292,7 +314,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 )["forward_result"]
                 next_bar = pd.DataFrame({
                     "timestamp": [datetime(2026, 8, 14, tzinfo=IST)], "open": [160], "high": [161],
-                    "low": [159], "close": [160.5], "volume": [100_000],
+                    "low": [159], "close": [160.5], "volume": [600_000],
                 })
                 db.upsert_candles(next_bar, "TEST-EQ", "1", "NSE", "1d")
                 second = pipeline.run_paper_session(
@@ -382,7 +404,7 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                 bars = pd.DataFrame({
                     "timestamp": pd.date_range("2026-01-01", periods=len(close), freq="B", tz=IST),
                     "open": close, "high": close + 1, "low": close - 1, "close": close,
-                    "volume": [100_000] * len(close),
+                    "volume": [600_000] * len(close),
                 })
                 db.upsert_candles(bars, "TEST-EQ", "1", "NSE", "1d")
                 outcome = StrategyPipeline(db, require_authoritative_certification=False).run(
