@@ -9,7 +9,7 @@ remaining blocked until identity and causality gaps are independently closed.
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 import json
 from pathlib import Path
 import re
@@ -24,7 +24,6 @@ from tools.nifty200_pit.models import Action, Conflict, Observation, SourceRecor
 from tools.nifty200_pit.parse_pdf import (
     extract_pdf_pages,
     find_document_date,
-    find_effective_date,
     parse_nifty200_text,
 )
 from tools.nifty200_pit.reconciliation import reconcile_observations

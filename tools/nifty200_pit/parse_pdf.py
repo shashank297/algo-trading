@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from io import BytesIO
 import re
-from datetime import date, datetime
+from datetime import date
 from pathlib import Path
 from tools.nifty200_pit.causality import derive_known_at
 from tools.nifty200_pit.models import Action, Observation, ReviewStatus
