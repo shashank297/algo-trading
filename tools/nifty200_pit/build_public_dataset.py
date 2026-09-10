@@ -9,7 +9,7 @@ remaining blocked until identity and causality gaps are independently closed.
 from __future__ import annotations
 
 import csv
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import json
 from pathlib import Path
 import re
@@ -27,10 +27,17 @@ from tools.nifty200_pit.parse_pdf import (
     parse_nifty200_text,
 )
 from tools.nifty200_pit.reconciliation import reconcile_observations
+from tools.nifty200_pit.source_catalogue import sha256_file
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
 
 CAMPAIGN_FROM = date(2012, 1, 2)
 CAMPAIGN_TO = date(2026, 8, 20)
+CHALLENGER_EVENTS_URL = "https://raw.githubusercontent.com/deshpanda/nse-screener-data/main/reconstitution/events.parquet"
+CHALLENGER_EVENTS_ARCHIVE_URL = "https://github.com/deshpanda/nse-screener-data/blob/main/reconstitution/events.parquet"
+CHALLENGER_EVENTS_PATH = Path(
+    "data/raw/nifty200_pit_public_sources/challengers/"
+    "deshpanda_nse_screener_reconstitution_events.parquet"
+)
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
 MONTH_NAME = {name.lower(): number for number, name in enumerate(
     ("", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
@@ -68,6 +75,25 @@ def load_legacy_sources(root: Path) -> list[SourceRecord]:
                 source_tier="A1", file_size=int(row["file_size"] or 0),
             ))
     return records
+
+
+def load_challenger_sources(root: Path) -> list[SourceRecord]:
+    """Register downloaded B1 evidence without promoting it to authority."""
+    path = root / CHALLENGER_EVENTS_PATH
+    if not path.is_file():
+        return []
+    return [SourceRecord(
+        source_url=CHALLENGER_EVENTS_URL,
+        original_url=CHALLENGER_EVENTS_URL,
+        archive_url=CHALLENGER_EVENTS_ARCHIVE_URL,
+        local_path=str(path),
+        source_sha256=sha256_file(path),
+        retrieved_at=datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+        content_type="application/vnd.apache.parquet",
+        status="downloaded",
+        source_tier="B1",
+        file_size=path.stat().st_size,
+    )]
 
 
 def _parse_day(value: object) -> date | None:
@@ -128,6 +154,57 @@ def parse_press_releases(records: list[SourceRecord]) -> list[Observation]:
                 announcement_date=announcement, source_page=page_number, source_tier="A1",
                 extractor_version="nifty200-pit-parser-v2",
             ))
+    return observations
+
+
+def parse_challenger_events(source: SourceRecord) -> list[Observation]:
+    """Load traceable public reconstruction rows as unresolved B1 candidates."""
+    import pandas as pd
+
+    frame = pd.read_parquet(source.local_path)
+    required = {"announce", "effective", "index", "action", "symbol", "company", "pdf"}
+    if not required.issubset(frame.columns):
+        return []
+    index = frame["index"].astype("string").str.strip().str.casefold()
+    selected = frame[index.isin({"nifty 200", "nifty 200 index"})].copy()
+    selected["announce"] = pd.to_datetime(selected["announce"], errors="coerce").dt.date
+    selected["effective"] = pd.to_datetime(selected["effective"], errors="coerce").dt.date
+    selected["action"] = selected["action"].astype("string").str.strip().str.casefold()
+    selected["symbol"] = selected["symbol"].astype("string").str.strip()
+    selected = selected[
+        selected["action"].isin({"add", "drop"})
+        & selected["announce"].notna()
+        & selected["effective"].notna()
+        & selected["symbol"].notna()
+        & ~selected["symbol"].str.casefold().isin({"isin", "sr. no.", "security"})
+        & (selected["effective"] >= CAMPAIGN_FROM)
+        & (selected["effective"] <= CAMPAIGN_TO)
+    ]
+    observations: list[Observation] = []
+    for row in selected.itertuples(index=False):
+        action = Action.ADD if row.action == "add" else Action.DROP
+        observations.append(Observation(
+            source_index_name=str(row.index),
+            symbol=str(row.symbol),
+            company_name=str(row.company) if pd.notna(row.company) else None,
+            announcement_date=row.announce,
+            effective_date=row.effective,
+            action=action,
+            reason="B1_PUBLIC_RECONSTRUCTION_CANDIDATE",
+            source_url=source.source_url,
+            archive_url=source.archive_url,
+            source_sha256=source.source_sha256,
+            source_tier="B1",
+            extraction_method="B1_PARQUET",
+            extractor_version="nifty200-pit-builder-v2",
+            confidence="PROVISIONAL",
+            review_status="UNRESOLVED",
+            raw_text=json.dumps({
+                "index": row.index, "action": row.action, "symbol": row.symbol,
+                "company": row.company, "announce": str(row.announce),
+                "effective": str(row.effective), "pdf": row.pdf,
+            }, sort_keys=True, default=str),
+        ))
     return observations
 
 
@@ -313,11 +390,14 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     derived.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    sources = load_legacy_sources(root)
+    sources = load_legacy_sources(root) + load_challenger_sources(root)
     source_errors = verify_source_hashes(sources)
     workbook = next((source for source in sources if source.source_url.endswith("IndexInclExcl.xls")), None)
     observations = parse_workbook_events(root, workbook) if workbook else []
     observations.extend(parse_press_releases(sources))
+    challenger = next((source for source in sources if source.source_url == CHALLENGER_EVENTS_URL), None)
+    if challenger:
+        observations.extend(parse_challenger_events(challenger))
     snapshots = parse_monthly_snapshots(sources)
     aliases = _identity_aliases(snapshots)
 
@@ -385,7 +465,8 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     (artifact_dir / "evidence_report.md").write_text(
         "# NIFTY-200 PIT public evidence build\n\n"
         "## Scope and safety\n\n"
-        f"This build covers {CAMPAIGN_FROM} through {CAMPAIGN_TO}. It parses cached official NSE/Nifty Indices evidence only; "
+        f"This build covers {CAMPAIGN_FROM} through {CAMPAIGN_TO}. It parses cached official NSE/Nifty Indices evidence "
+        "and a separately labelled non-authoritative B1 public reconstruction challenger; "
         "it does not alter `market_data.duckdb`, import authoritative rows, start Stage A, or enable trading. "
         "Independent QA remains `NOT_ASSERTED`.\n\n"
         "## Evidence sources\n\n"
@@ -394,8 +475,11 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "- [Monthly reports](https://niftyindices.com/reports/monthly-reports)\n"
         "- [Nifty rebalancing schedule](https://www.niftyindices.com/resources/index-rebalancing-schedule)\n"
         "- [NSE equity market-data downloads](https://www.nseindia.com/static/products-services/equity-market-data-reports-download)\n\n"
+        f"- [B1 challenger event reconstruction]({CHALLENGER_EVENTS_ARCHIVE_URL})\n\n"
         "## Results\n\n"
         f"- Source records: {len(sources)}; source hash errors: {len(source_errors)}.\n"
+        f"- Source tiers: A1={sum(source.source_tier == 'A1' for source in sources)}, "
+        f"B1={sum(source.source_tier == 'B1' for source in sources)}.\n"
         f"- Event observations: {len(observations)}; canonical events: {len(reconciliation.events)}.\n"
         f"- Monthly snapshot rows: {len(snapshots)} across {len(by_date)} checkpoints.\n"
         f"- Durable identity mappings: 0 certified; symbol rows remain manual-review candidates.\n"
