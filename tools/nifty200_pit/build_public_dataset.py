@@ -28,6 +28,7 @@ from tools.nifty200_pit.parse_pdf import (
     parse_nifty200_text,
 )
 from tools.nifty200_pit.reconciliation import reconcile_observations
+from tools.nifty200_pit.instrument_resolver import resolve_observations
 from tools.nifty200_pit.source_catalogue import sha256_file
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
 
@@ -39,6 +40,7 @@ CHALLENGER_EVENTS_PATH = Path(
     "data/raw/nifty200_pit_public_sources/challengers/"
     "deshpanda_nse_screener_reconstitution_events.parquet"
 )
+SECURITIES_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
 MONTH_NAME = {name.lower(): number for number, name in enumerate(
     ("", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
@@ -78,6 +80,37 @@ def load_legacy_sources(root: Path) -> list[SourceRecord]:
     return records
 
 
+def load_catalogue_sources(root: Path) -> list[SourceRecord]:
+    """Load harvested immutable records while preserving the legacy manifest."""
+    path = root / "data/raw/nifty200_pit_public_sources/source_catalogue.json"
+    if not path.is_file():
+        return []
+    rows = json.loads(path.read_text(encoding="utf-8"))
+    records: list[SourceRecord] = []
+    for row in rows:
+        if not isinstance(row, dict) or not row.get("source_url") or not row.get("source_sha256"):
+            continue
+        local_path = _normalise_local_path(root, str(row.get("local_path", "")))
+        records.append(SourceRecord(
+            source_url=str(row["source_url"]), original_url=row.get("original_url") or str(row["source_url"]),
+            archive_url=row.get("archive_url"), local_path=str(local_path),
+            source_sha256=str(row["source_sha256"]), retrieved_at=str(row.get("retrieved_at", "")),
+            content_type=str(row.get("content_type", "")), status=str(row.get("status", "downloaded")),
+            document_date=row.get("document_date"), source_tier=str(row.get("source_tier", "A1")),
+            http_status=row.get("http_status"), etag=row.get("etag"), last_modified=row.get("last_modified"),
+            file_size=int(row.get("file_size", 0) or 0),
+        ))
+    return records
+
+
+def load_sources(root: Path) -> list[SourceRecord]:
+    records = load_legacy_sources(root) + load_catalogue_sources(root) + load_challenger_sources(root)
+    unique: dict[tuple[str, str], SourceRecord] = {}
+    for record in records:
+        unique.setdefault((record.source_url, record.source_sha256), record)
+    return list(unique.values())
+
+
 def load_challenger_sources(root: Path) -> list[SourceRecord]:
     """Register downloaded B1 evidence without promoting it to authority."""
     path = root / CHALLENGER_EVENTS_PATH
@@ -106,7 +139,7 @@ def _parse_day(value: object) -> date | None:
         except (TypeError, ValueError):
             pass
     value = str(value).strip().replace(".", "/")
-    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%B %d, %Y", "%B %d %Y"):
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d-%b-%Y", "%d-%B-%Y", "%B %d, %Y", "%B %d %Y"):
         try:
             return datetime.strptime(value, fmt).date()
         except ValueError:
@@ -143,7 +176,7 @@ def parse_workbook_events(root: Path, source: SourceRecord) -> list[Observation]
 def parse_press_releases(records: list[SourceRecord]) -> list[Observation]:
     observations: list[Observation] = []
     for source in records:
-        if not source.local_path.lower().endswith(".pdf") or "Press_Release" not in source.source_url:
+        if not source.local_path.lower().endswith(".pdf") or not re.search(r"press[_-]release", source.source_url, re.I):
             continue
         pages = extract_pdf_pages(source.local_path)
         document_effective = find_effective_date("\n".join(pages))
@@ -158,6 +191,36 @@ def parse_press_releases(records: list[SourceRecord]) -> list[Observation]:
                 extractor_version="nifty200-pit-parser-v3", effective_date=effective,
             ))
     return observations
+
+
+def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
+    """Parse official NSE rows into period-valid identity evidence."""
+    with Path(source.local_path).open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        required = {"SYMBOL", "NAME OF COMPANY", "DATE OF LISTING", "ISIN NUMBER"}
+        if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
+            return []
+        rows: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for original in reader:
+            raw = {str(key).strip().upper(): value for key, value in original.items() if key is not None}
+            symbol = str(raw.get("SYMBOL") or "").strip()
+            isin = str(raw.get("ISIN NUMBER") or "").strip()
+            if not symbol or not isin or isin.casefold() in {"na", "nan"}:
+                continue
+            key = (symbol.casefold(), isin.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            listing_date = _parse_day(raw.get("DATE OF LISTING"))
+            rows.append({
+                "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
+                "company_name": str(raw.get("NAME OF COMPANY") or "").strip() or None,
+                "valid_from": listing_date.isoformat() if listing_date else None,
+                "valid_until": None, "source_url": source.source_url,
+                "source_sha256": source.source_sha256, "source_tier": source.source_tier,
+            })
+        return rows
 
 
 def parse_challenger_events(source: SourceRecord) -> list[Observation]:
@@ -320,8 +383,14 @@ def parse_monthly_snapshots(records: list[SourceRecord]) -> list[dict[str, Any]]
     return snapshots
 
 
-def _identity_aliases(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Create review candidates only; no row receives an invented durable ID."""
+def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Combine official identities with unresolved snapshot symbol candidates."""
+    aliases: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in master:
+        aliases[(str(row["instrument_id"]), str(row["symbol"]).casefold())] = {
+            **row, "alias_symbol": row["symbol"], "confidence": "CERTIFIED",
+            "resolution_status": "ACCEPTED",
+        }
     candidates: dict[str, dict[str, Any]] = {}
     for row in snapshots:
         symbol = str(row.get("symbol") or "").strip()
@@ -335,7 +404,10 @@ def _identity_aliases(snapshots: list[dict[str, Any]]) -> list[dict[str, Any]]:
         })
         if not item.get("company_name") and row.get("company_name"):
             item["company_name"] = row["company_name"]
-    return sorted(candidates.values(), key=lambda row: row["alias_symbol"])
+    for row in candidates.values():
+        key = (str(row["instrument_id"]), str(row["alias_symbol"]).casefold())
+        aliases.setdefault(key, row)
+    return sorted(aliases.values(), key=lambda row: (str(row.get("alias_symbol", "")), str(row.get("instrument_id", ""))))
 
 
 def _write_json(path: Path, rows: Any) -> None:
@@ -400,7 +472,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     derived.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    sources = load_legacy_sources(root) + load_challenger_sources(root)
+    sources = load_sources(root)
     source_errors = verify_source_hashes(sources)
     workbook = next((source for source in sources if source.source_url.endswith("IndexInclExcl.xls")), None)
     observations = parse_workbook_events(root, workbook) if workbook else []
@@ -409,7 +481,10 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     if challenger:
         observations.extend(parse_challenger_events(challenger))
     snapshots = parse_monthly_snapshots(sources)
-    aliases = _identity_aliases(snapshots)
+    security_master = next((source for source in sources if source.source_url == SECURITIES_MASTER_URL), None)
+    instrument_master = parse_security_master(security_master) if security_master else []
+    aliases = _identity_aliases(snapshots, instrument_master)
+    observations = resolve_observations(observations, instrument_master, aliases=aliases)
 
     reconciliation = reconcile_observations(observations)
     interval_result = build_intervals(reconciliation.events, horizon_start=CAMPAIGN_FROM, horizon_end=CAMPAIGN_TO)
@@ -492,7 +567,8 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         f"B1={sum(source.source_tier == 'B1' for source in sources)}.\n"
         f"- Event observations: {len(observations)}; canonical events: {len(reconciliation.events)}.\n"
         f"- Monthly snapshot rows: {len(snapshots)} across {len(by_date)} checkpoints.\n"
-        f"- Durable identity mappings: 0 certified; symbol rows remain manual-review candidates.\n"
+        f"- Durable identity mappings: {sum(row.get('confidence') == 'CERTIFIED' for row in aliases)} certified; "
+        f"{sum(row.get('confidence') != 'CERTIFIED' for row in aliases)} remain manual-review candidates.\n"
         f"- Coverage gaps or non-200 checkpoints: {len(coverage_gaps)} campaign months.\n"
         f"- Automated validation: **{report.status.value}**.\n\n"
         "The package is intentionally blocked because the available evidence does not yet provide a complete, causally timestamped, "
