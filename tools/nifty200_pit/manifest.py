@@ -8,14 +8,14 @@ import json
 import csv
 from pathlib import Path
 import subprocess
-from typing import Any, Iterable, cast
+from typing import Any, Iterable
 
 from tools.nifty200_pit.source_catalogue import sha256_file
 
 
 def _row(value: Any) -> dict[str, Any]:
-    if is_dataclass(value):
-        value = asdict(cast(Any, value))
+    if is_dataclass(value) and not isinstance(value, type):
+        value = asdict(value)
     if hasattr(value, "to_dict"):
         value = value.to_dict()
     result = dict(value)

@@ -14,7 +14,7 @@ from tools.nifty200_pit.harvest_wayback import discover_captures
 from tools.nifty200_pit.instrument_resolver import resolve_observations
 from tools.nifty200_pit.intervals import build_intervals
 from tools.nifty200_pit.manifest import write_artifacts
-from tools.nifty200_pit.models import Action, CanonicalEvent, Conflict, Observation, SourceRecord
+from tools.nifty200_pit.models import Action, CanonicalEvent, Observation, SourceRecord
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
 from tools.nifty200_pit.reconciliation import reconcile_observations
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("harvest-nse", "harvest-wayback", "import-candidates", "parse", "resolve-instruments", "reconcile", "build-intervals", "validate", "manifest"):
+    for name in ("harvest-nse", "harvest-wayback", "import-candidates", "parse", "resolve-instruments", "reconcile", "build-intervals", "validate", "manifest", "build-public-dataset"):
         command = sub.add_parser(name)
         if name == "harvest-wayback":
             command.add_argument("--url", action="append", required=True)
@@ -110,16 +110,16 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Resolved {len(resolved)} observations")
     elif args.command == "reconcile":
         observations = [_observation(row) for row in _load(derived / "event_observations_resolved.json") or _load(derived / "event_observations.json")]
-        reconciled = reconcile_observations(observations, fail_on_official_conflict=args.fail_on_official_conflict)
-        _dump(derived / "events_canonical.json", reconciled.events)
-        _dump(derived / "conflicts.json", reconciled.conflicts)
-        print(f"Canonical events: {len(reconciled.events)}; conflicts: {len(reconciled.conflicts)}")
+        result = reconcile_observations(observations, fail_on_official_conflict=args.fail_on_official_conflict)
+        _dump(derived / "events_canonical.json", result.events)
+        _dump(derived / "conflicts.json", result.conflicts)
+        print(f"Canonical events: {len(result.events)}; conflicts: {len(result.conflicts)}")
     elif args.command == "build-intervals":
         events = [_event(row) for row in _load(derived / "events_canonical.json") if row.get("index_id", args.index) == args.index]
-        built = build_intervals(events)
-        _dump(derived / "constituent_intervals.json", built.intervals)
-        _dump(derived / "interval_conflicts.json", built.conflicts)
-        print(f"Built {len(built.intervals)} intervals; conflicts: {len(built.conflicts)}")
+        interval_result = build_intervals(events)
+        _dump(derived / "constituent_intervals.json", interval_result.intervals)
+        _dump(derived / "interval_conflicts.json", interval_result.conflicts)
+        print(f"Built {len(interval_result.intervals)} intervals; conflicts: {len(interval_result.conflicts)}")
     elif args.command == "validate":
         events = [_event(row) for row in _load(derived / "events_canonical.json")]
         intervals = [_interval(row) for row in _load(derived / "constituent_intervals.json")]
@@ -134,6 +134,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             Path(args.output).write_bytes(manifest_path.read_bytes())
         print(f"Wrote {manifest_path}")
+    elif args.command == "build-public-dataset":
+        from tools.nifty200_pit.build_public_dataset import build_dataset
+        print(json.dumps(build_dataset(root), indent=2))
     return 0
 
 
@@ -150,12 +153,6 @@ def _event(row: dict[str, Any]) -> CanonicalEvent:
     return CanonicalEvent(**row)
 
 
-def _conflict(row: dict[str, Any]) -> Conflict:
-    if row.get("date"):
-        row["date"] = date.fromisoformat(str(row["date"])[:10])
-    return Conflict(**row)
-
-
 def _interval(row: dict[str, Any]):
     from tools.nifty200_pit.models import ConstituentInterval, Confidence
     for key in ("effective_from", "effective_until", "known_from"):
@@ -164,6 +161,13 @@ def _interval(row: dict[str, Any]):
     row["known_at"] = datetime.fromisoformat(str(row["known_at"]))
     row["confidence"] = Confidence(row["confidence"])
     return ConstituentInterval(**row)
+
+
+def _conflict(row: dict[str, Any]):
+    from tools.nifty200_pit.models import Conflict
+    if row.get("date"):
+        row["date"] = date.fromisoformat(str(row["date"])[:10])
+    return Conflict(**row)
 
 
 if __name__ == "__main__":
