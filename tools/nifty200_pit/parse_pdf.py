@@ -119,6 +119,7 @@ def parse_nifty200_text(
     source_url: str,
     source_sha256: str,
     announcement_date: date | None = None,
+    effective_date: date | None = None,
     source_page: int | None = None,
     source_tier: str = "A1",
     extractor_version: str = "nifty200-pit-parser-v1",
@@ -131,7 +132,7 @@ def parse_nifty200_text(
     """
     if not INDEX_RE.search(text):
         return []
-    effective = find_effective_date(text)
+    effective = effective_date if effective_date is not None else find_effective_date(text)
     sections = extract_nifty200_sections(text)
     section = "\n---SECTION---\n".join(value for _, value in sections)
     if not section or effective is None:
