@@ -14,7 +14,7 @@ from tools.nifty200_pit.harvest_wayback import discover_captures
 from tools.nifty200_pit.instrument_resolver import resolve_observations
 from tools.nifty200_pit.intervals import build_intervals
 from tools.nifty200_pit.manifest import write_artifacts
-from tools.nifty200_pit.models import Action, CanonicalEvent, Observation, SourceRecord
+from tools.nifty200_pit.models import Action, CanonicalEvent, Conflict, Observation, SourceRecord
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
 from tools.nifty200_pit.reconciliation import reconcile_observations
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
@@ -110,20 +110,20 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Resolved {len(resolved)} observations")
     elif args.command == "reconcile":
         observations = [_observation(row) for row in _load(derived / "event_observations_resolved.json") or _load(derived / "event_observations.json")]
-        result = reconcile_observations(observations, fail_on_official_conflict=args.fail_on_official_conflict)
-        _dump(derived / "events_canonical.json", result.events)
-        _dump(derived / "conflicts.json", result.conflicts)
-        print(f"Canonical events: {len(result.events)}; conflicts: {len(result.conflicts)}")
+        reconciled = reconcile_observations(observations, fail_on_official_conflict=args.fail_on_official_conflict)
+        _dump(derived / "events_canonical.json", reconciled.events)
+        _dump(derived / "conflicts.json", reconciled.conflicts)
+        print(f"Canonical events: {len(reconciled.events)}; conflicts: {len(reconciled.conflicts)}")
     elif args.command == "build-intervals":
         events = [_event(row) for row in _load(derived / "events_canonical.json") if row.get("index_id", args.index) == args.index]
-        result = build_intervals(events)
-        _dump(derived / "constituent_intervals.json", result.intervals)
-        _dump(derived / "interval_conflicts.json", result.conflicts)
-        print(f"Built {len(result.intervals)} intervals; conflicts: {len(result.conflicts)}")
+        built = build_intervals(events)
+        _dump(derived / "constituent_intervals.json", built.intervals)
+        _dump(derived / "interval_conflicts.json", built.conflicts)
+        print(f"Built {len(built.intervals)} intervals; conflicts: {len(built.conflicts)}")
     elif args.command == "validate":
         events = [_event(row) for row in _load(derived / "events_canonical.json")]
         intervals = [_interval(row) for row in _load(derived / "constituent_intervals.json")]
-        report = validate_campaign(intervals, events, campaign_from=date.fromisoformat(args.campaign_from), campaign_to=date.fromisoformat(args.campaign_to), required_member_count=args.require_member_count, conflicts=_load(derived / "conflicts.json"), source_hash_errors=verify_source_hashes([SourceRecord(**row) for row in _load(raw / "source_catalogue.json")]))
+        report = validate_campaign(intervals, events, campaign_from=date.fromisoformat(args.campaign_from), campaign_to=date.fromisoformat(args.campaign_to), required_member_count=args.require_member_count, conflicts=[_conflict(row) for row in _load(derived / "conflicts.json")], source_hash_errors=verify_source_hashes([SourceRecord(**row) for row in _load(raw / "source_catalogue.json")]))
         (derived / "validation_report.json").write_text(json.dumps(report.to_dict(), indent=2, default=str), encoding="utf-8")
         print(json.dumps(report.to_dict(), indent=2, default=str))
         return 0 if report.passed else 2
@@ -148,6 +148,12 @@ def _event(row: dict[str, Any]) -> CanonicalEvent:
     row["confidence"] = Confidence(row["confidence"])
     row["review_status"] = ReviewStatus(row["review_status"])
     return CanonicalEvent(**row)
+
+
+def _conflict(row: dict[str, Any]) -> Conflict:
+    if row.get("date"):
+        row["date"] = date.fromisoformat(str(row["date"])[:10])
+    return Conflict(**row)
 
 
 def _interval(row: dict[str, Any]):

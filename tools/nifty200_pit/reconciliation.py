@@ -64,6 +64,8 @@ def _canonical(row: Observation, *, holidays: set[date] | None = None) -> Canoni
         known_at, basis, same_day_reason = derive_known_at(announcement, effective_date=effective, holidays=holidays)
         if same_day_reason:
             return None
+        if known_at is None:
+            return None
     event_payload = {
         "index_id": row.index_id, "instrument_id": row.instrument_id, "isin": row.isin,
         "symbol": row.symbol, "announcement_date": announcement.isoformat(), "effective_date": effective.isoformat(),

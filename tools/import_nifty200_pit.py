@@ -61,9 +61,12 @@ def load_constituents(input_path: str | Path) -> list[PointInTimeConstituent]:
     for row in frame.to_dict(orient="records"):
         if str(row.get("confidence")) != "CERTIFIED" or bool(row.get("synthetic", False)):
             raise ValueError("Only certified, non-synthetic intervals may be imported")
+        effective_from = _optional_date(row["effective_from"])
+        if effective_from is None:
+            raise ValueError("Canonical interval artifact contains a missing effective_from")
         constituents.append(PointInTimeConstituent(
             universe_name=str(row["index_id"]), symbol=str(row["symbol_at_entry"]), instrument_id=str(row["instrument_id"]),
-            token=str(row.get("token") or ""), exchange="NSE", effective_from=_optional_date(row["effective_from"]),
+            token=str(row.get("token") or ""), exchange="NSE", effective_from=effective_from,
             effective_until=_optional_date(row.get("effective_until")), known_from=_optional_date(row["known_from"]),
             known_at=datetime.fromisoformat(str(row["known_at"])), inclusion_reason=str(row.get("reason") or "CERTIFIED_PIT"),
             is_authoritative=True,

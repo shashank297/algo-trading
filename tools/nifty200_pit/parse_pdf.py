@@ -6,6 +6,7 @@ import hashlib
 import re
 from datetime import date
 from pathlib import Path
+from typing import cast
 from tools.nifty200_pit.causality import derive_known_at
 from tools.nifty200_pit.models import Action, Observation, ReviewStatus
 
@@ -119,8 +120,13 @@ def parse_nifty200_text(
 
 def parse_pdf(path: str | Path, **kwargs: object) -> list[Observation]:
     source = Path(path)
+    announcement_date = cast(date | None, kwargs.pop("announcement_date", None))
+    source_page = cast(int | None, kwargs.pop("source_page", None))
+    source_tier = str(kwargs.pop("source_tier", "A1"))
+    holidays = cast(set[date] | None, kwargs.pop("holidays", None))
     return parse_nifty200_text(extract_pdf_text(source), source_url=str(kwargs.pop("source_url", source)),
-                               source_sha256=sha256_file(source), **kwargs)
+                               source_sha256=sha256_file(source), announcement_date=announcement_date,
+                               source_page=source_page, source_tier=source_tier, holidays=holidays)
 
 
 parse_release_text = parse_nifty200_text
