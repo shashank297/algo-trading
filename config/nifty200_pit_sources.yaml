@@ -1,0 +1,34 @@
+schema_version: 1
+index:
+  canonical_id: NIFTY_200
+  historical_names: [CNX 200, NIFTY 200]
+coverage:
+  harvest_from: 2011-07-18
+  campaign_from: 2012-01-01
+  campaign_to: 2026-08-31
+sources:
+  nifty_press_releases:
+    priority: A1
+    url: https://www.niftyindices.com/press-release
+  nifty200_current:
+    priority: A1
+    url: https://www.niftyindices.com/indices/equity/broad-based-indices/nifty-200
+  wayback:
+    priority: A2
+    cdx_url: https://web.archive.org/cdx/search/cdx
+  deshpanda:
+    priority: B1
+    repo: https://github.com/deshpanda/nse-screener-data
+  niftyhistory:
+    priority: C2
+    url: https://niftyhistory.in/
+policies:
+  unknown_time:
+    mode: next_trading_session_open
+    timezone: Asia/Kolkata
+  fuzzy_identity:
+    auto_certify: false
+  synthetic_membership:
+    certification_allowed: false
+  unresolved_conflict:
+    fail_closed: true
