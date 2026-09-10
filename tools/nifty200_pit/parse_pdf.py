@@ -196,12 +196,23 @@ def parse_nifty200_text(
     return rows
 
 
-def parse_pdf(path: str | Path, **kwargs: object) -> list[Observation]:
+def parse_pdf(
+    path: str | Path,
+    *,
+    source_url: str | None = None,
+    announcement_date: date | None = None,
+    source_page: int | None = None,
+    source_tier: str = "A1",
+    extractor_version: str = "nifty200-pit-parser-v1",
+    holidays: set[date] | None = None,
+) -> list[Observation]:
     source = Path(path)
     text = extract_pdf_text(source)
-    kwargs.setdefault("announcement_date", find_document_date(source, text))
-    return parse_nifty200_text(text, source_url=str(kwargs.pop("source_url", source)),
-                               source_sha256=sha256_file(source), **kwargs)
+    return parse_nifty200_text(
+        text, source_url=source_url or str(source), source_sha256=sha256_file(source),
+        announcement_date=announcement_date or find_document_date(source, text), source_page=source_page,
+        source_tier=source_tier, extractor_version=extractor_version, holidays=holidays,
+    )
 
 
 parse_release_text = parse_nifty200_text

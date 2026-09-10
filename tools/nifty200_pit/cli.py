@@ -116,14 +116,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Canonical events: {len(result.events)}; conflicts: {len(result.conflicts)}")
     elif args.command == "build-intervals":
         events = [_event(row) for row in _load(derived / "events_canonical.json") if row.get("index_id", args.index) == args.index]
-        result = build_intervals(events)
-        _dump(derived / "constituent_intervals.json", result.intervals)
-        _dump(derived / "interval_conflicts.json", result.conflicts)
-        print(f"Built {len(result.intervals)} intervals; conflicts: {len(result.conflicts)}")
+        interval_result = build_intervals(events)
+        _dump(derived / "constituent_intervals.json", interval_result.intervals)
+        _dump(derived / "interval_conflicts.json", interval_result.conflicts)
+        print(f"Built {len(interval_result.intervals)} intervals; conflicts: {len(interval_result.conflicts)}")
     elif args.command == "validate":
         events = [_event(row) for row in _load(derived / "events_canonical.json")]
         intervals = [_interval(row) for row in _load(derived / "constituent_intervals.json")]
-        report = validate_campaign(intervals, events, campaign_from=date.fromisoformat(args.campaign_from), campaign_to=date.fromisoformat(args.campaign_to), required_member_count=args.require_member_count, conflicts=_load(derived / "conflicts.json"), source_hash_errors=verify_source_hashes([SourceRecord(**row) for row in _load(raw / "source_catalogue.json")]))
+        report = validate_campaign(intervals, events, campaign_from=date.fromisoformat(args.campaign_from), campaign_to=date.fromisoformat(args.campaign_to), required_member_count=args.require_member_count, conflicts=[_conflict(row) for row in _load(derived / "conflicts.json")], source_hash_errors=verify_source_hashes([SourceRecord(**row) for row in _load(raw / "source_catalogue.json")]))
         (derived / "validation_report.json").write_text(json.dumps(report.to_dict(), indent=2, default=str), encoding="utf-8")
         print(json.dumps(report.to_dict(), indent=2, default=str))
         return 0 if report.passed else 2
@@ -161,6 +161,13 @@ def _interval(row: dict[str, Any]):
     row["known_at"] = datetime.fromisoformat(str(row["known_at"]))
     row["confidence"] = Confidence(row["confidence"])
     return ConstituentInterval(**row)
+
+
+def _conflict(row: dict[str, Any]):
+    from tools.nifty200_pit.models import Conflict
+    if row.get("date"):
+        row["date"] = date.fromisoformat(str(row["date"])[:10])
+    return Conflict(**row)
 
 
 if __name__ == "__main__":
