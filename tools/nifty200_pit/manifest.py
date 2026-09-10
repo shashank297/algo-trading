@@ -14,7 +14,7 @@ from tools.nifty200_pit.source_catalogue import sha256_file
 
 
 def _row(value: Any) -> dict[str, Any]:
-    if is_dataclass(value):
+    if is_dataclass(value) and not isinstance(value, type):
         value = asdict(value)
     if hasattr(value, "to_dict"):
         value = value.to_dict()

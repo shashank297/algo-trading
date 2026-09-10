@@ -51,6 +51,13 @@ def _optional_date(value: object) -> date | None:
     return date.fromisoformat(str(value)[:10])
 
 
+def _required_date(value: object, field_name: str) -> date:
+    parsed = _optional_date(value)
+    if parsed is None:
+        raise ValueError(f"Canonical interval artifact is missing required {field_name}")
+    return parsed
+
+
 def load_constituents(input_path: str | Path) -> list[PointInTimeConstituent]:
     frame = read_table(input_path)
     required = {"index_id", "instrument_id", "symbol_at_entry", "effective_from", "effective_until", "known_from", "known_at"}
@@ -63,7 +70,7 @@ def load_constituents(input_path: str | Path) -> list[PointInTimeConstituent]:
             raise ValueError("Only certified, non-synthetic intervals may be imported")
         constituents.append(PointInTimeConstituent(
             universe_name=str(row["index_id"]), symbol=str(row["symbol_at_entry"]), instrument_id=str(row["instrument_id"]),
-            token=str(row.get("token") or ""), exchange="NSE", effective_from=_optional_date(row["effective_from"]),
+            token=str(row.get("token") or ""), exchange="NSE", effective_from=_required_date(row["effective_from"], "effective_from"),
             effective_until=_optional_date(row.get("effective_until")), known_from=_optional_date(row["known_from"]),
             known_at=datetime.fromisoformat(str(row["known_at"])), inclusion_reason=str(row.get("reason") or "CERTIFIED_PIT"),
             is_authoritative=True,
