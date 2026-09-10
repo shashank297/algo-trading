@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("harvest-nse", "harvest-wayback", "import-candidates", "parse", "resolve-instruments", "reconcile", "build-intervals", "validate", "manifest"):
+    for name in ("harvest-nse", "harvest-wayback", "import-candidates", "parse", "resolve-instruments", "reconcile", "build-intervals", "validate", "manifest", "build-public-dataset"):
         command = sub.add_parser(name)
         if name == "harvest-wayback":
             command.add_argument("--url", action="append", required=True)
@@ -134,6 +134,9 @@ def main(argv: list[str] | None = None) -> int:
         if args.output:
             Path(args.output).write_bytes(manifest_path.read_bytes())
         print(f"Wrote {manifest_path}")
+    elif args.command == "build-public-dataset":
+        from tools.nifty200_pit.build_public_dataset import build_dataset
+        print(json.dumps(build_dataset(root), indent=2))
     return 0
 
 
