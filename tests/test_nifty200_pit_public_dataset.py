@@ -5,6 +5,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _coverage,
     _csv_snapshot_rows,
     _snapshot_date,
+    parse_challenger_events,
 )
 from tools.nifty200_pit.models import SourceRecord
 
@@ -50,3 +51,28 @@ def test_annual_coverage_aggregates_monthly_status_without_certifying_gaps():
         "year": "2012", "months_expected": "2", "months_with_200_members": "1",
         "status": "BLOCKED", "qa_note": "year contains missing or non-200 checkpoints",
     }]
+
+
+def test_challenger_events_are_filtered_to_nifty_200_and_remain_unresolved(monkeypatch):
+    import pandas as pd
+
+    source = SourceRecord(
+        source_url="https://example.test/events.parquet",
+        archive_url="https://example.test/blob/events.parquet",
+        local_path="unused.parquet", source_sha256="b" * 64,
+        retrieved_at="2026-09-06T00:00:00+00:00", source_tier="B1",
+    )
+    frame = pd.DataFrame([
+        {"announce": "2012-04-20", "effective": "2012-04-27", "index": "nifty 200", "action": "add", "symbol": "ABC", "company": "ABC Ltd", "pdf": "x.pdf"},
+        {"announce": "2012-04-20", "effective": "2012-04-27", "index": "nifty 50", "action": "drop", "symbol": "NIFTY", "company": "Index", "pdf": "x.pdf"},
+        {"announce": "2012-04-20", "effective": "2012-04-27", "index": "nifty 200", "action": "add", "symbol": "ISIN", "company": "junk", "pdf": "x.pdf"},
+    ])
+    monkeypatch.setattr(pd, "read_parquet", lambda _path: frame)
+
+    rows = parse_challenger_events(source)
+
+    assert len(rows) == 1
+    assert rows[0].symbol == "ABC"
+    assert rows[0].source_tier == "B1"
+    assert rows[0].instrument_id is None
+    assert rows[0].review_status == "UNRESOLVED"
