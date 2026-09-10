@@ -8,6 +8,7 @@ from tools.nifty200_pit.build_public_dataset import (
     parse_challenger_events,
 )
 from tools.nifty200_pit.models import SourceRecord
+from tools.nifty200_pit.parse_pdf import parse_nifty200_text
 
 
 def _source() -> SourceRecord:
@@ -76,3 +77,37 @@ def test_challenger_events_are_filtered_to_nifty_200_and_remain_unresolved(monke
     assert rows[0].source_tier == "B1"
     assert rows[0].instrument_id is None
     assert rows[0].review_status == "UNRESOLVED"
+
+
+def test_pdf_parser_uses_document_effective_date_when_page_header_is_missing():
+    rows = parse_nifty200_text(
+        "12) Nifty 200\nThe following companies are being included:\n"
+        "Sr. No. Company Name Symbol\n1 Example Industries Ltd. EXAMPLE\n",
+        source_url="https://example.test/Press_Release/ind_prs01092022.pdf",
+        source_sha256="c" * 64,
+        announcement_date=date(2022, 9, 1),
+        effective_date=date(2022, 9, 30),
+    )
+    assert len(rows) == 1
+    assert rows[0].symbol == "EXAMPLE"
+    assert rows[0].effective_date == date(2022, 9, 30)
+
+
+def test_press_release_parser_propagates_document_effective_date(monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    source = SourceRecord(
+        source_url="https://www.niftyindices.com/Press_Release/ind_prs01092022.pdf",
+        local_path="release.pdf", source_sha256="d" * 64, retrieved_at="2026-09-06T00:00:00+00:00",
+    )
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _path: [
+        "The changes will be effective from 30/09/2022.",
+        "12) Nifty 200\nThe following companies are being included:\n"
+        "Sr. No. Company Name Symbol\n1 Example Industries Ltd. EXAMPLE\n",
+    ])
+
+    rows = build_public_dataset.parse_press_releases([source])
+
+    assert len(rows) == 1
+    assert rows[0].symbol == "EXAMPLE"
+    assert rows[0].effective_date == date(2022, 9, 30)

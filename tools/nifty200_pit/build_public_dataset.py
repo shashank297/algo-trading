@@ -24,6 +24,7 @@ from tools.nifty200_pit.models import Action, Conflict, Observation, SourceRecor
 from tools.nifty200_pit.parse_pdf import (
     extract_pdf_pages,
     find_document_date,
+    find_effective_date,
     parse_nifty200_text,
 )
 from tools.nifty200_pit.reconciliation import reconcile_observations
@@ -145,14 +146,16 @@ def parse_press_releases(records: list[SourceRecord]) -> list[Observation]:
         if not source.local_path.lower().endswith(".pdf") or "Press_Release" not in source.source_url:
             continue
         pages = extract_pdf_pages(source.local_path)
+        document_effective = find_effective_date("\n".join(pages))
         for page_number, page_text in enumerate(pages, start=1):
             if not re.search(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", page_text, re.I):
                 continue
             announcement = find_document_date(source.source_url, page_text)
+            effective = find_effective_date(page_text) or document_effective
             observations.extend(parse_nifty200_text(
                 page_text, source_url=source.source_url, source_sha256=source.source_sha256,
                 announcement_date=announcement, source_page=page_number, source_tier="A1",
-                extractor_version="nifty200-pit-parser-v2",
+                extractor_version="nifty200-pit-parser-v3", effective_date=effective,
             ))
     return observations
 
@@ -161,7 +164,14 @@ def parse_challenger_events(source: SourceRecord) -> list[Observation]:
     """Load traceable public reconstruction rows as unresolved B1 candidates."""
     import pandas as pd
 
-    frame = pd.read_parquet(source.local_path)
+    try:
+        frame = pd.read_parquet(source.local_path)
+    except ImportError:
+        import duckdb
+
+        frame = duckdb.connect().execute(
+            "SELECT * FROM read_parquet(?)", [source.local_path]
+        ).fetchdf()
     required = {"announce", "effective", "index", "action", "symbol", "company", "pdf"}
     if not required.issubset(frame.columns):
         return []
