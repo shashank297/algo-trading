@@ -814,7 +814,7 @@ def _anchor_replay_forensics(
     ordered_events = []
     for event in events:
         effective = getattr(event, "effective_date", None)
-        if effective is not None:
+        if effective is not None and CAMPAIGN_FROM <= effective <= CAMPAIGN_TO:
             events_by_date.setdefault(effective, []).append(event)
             ordered_events.append(event)
     ordered_events.sort(key=lambda event: event.effective_date)

@@ -14,7 +14,7 @@ Captured from the existing builder before adding the anchor replay diagnostic.
 - Constituent intervals: 316
 - NSE sessions: 3,609; replay range 0..87; sessions not equal to 200: 3,609
 - Known-at unresolved canonical events: 0
-- Conflicts: 914 total; HIGH 539; CRITICAL 373
+- Conflicts: 914 total; HIGH 540; CRITICAL 372
 - Blocker ledger: 4,639 rows
 - Validation: `BLOCKED`
 - Dry-run importer: exit 1, `REFUSED_AS_DESIGNED`, `database_touched=false`
