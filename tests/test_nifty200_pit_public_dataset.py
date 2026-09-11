@@ -2,12 +2,14 @@ from datetime import date
 
 from tools.nifty200_pit.build_public_dataset import (
     _annual_coverage,
+    _blocker_ledger,
     _coverage,
     _csv_snapshot_rows,
+    _monthly_gap_rows,
     _snapshot_date,
     parse_challenger_events,
 )
-from tools.nifty200_pit.models import SourceRecord
+from tools.nifty200_pit.models import Conflict, EvidenceStatus, SourceRecord, ValidationReport
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
 
 
@@ -33,6 +35,20 @@ def test_csv_snapshot_parser_retains_source_member_and_company_name():
     assert rows[0]["source_member"].endswith("cnx200_Apr2013.csv")
 
 
+def test_pdf_snapshot_parser_does_not_promote_sector_continuation_to_symbol(monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _data: [
+        "Constituents of NIFTY 200 March 31, 2021\n"
+        "SUNTV Sun TV Network Ltd. MEDIA, ENTERTAINMENT &\n"
+        "PUBLICATION 470.30 0.064633\n"
+        "SYNGENE Syngene International Ltd. HEALTHCARE SERVICES 543.45 0.076304"
+    ])
+    rows = build_public_dataset._pdf_snapshot_rows(b"pdf", _source(), "checkpoint.pdf")
+
+    assert [row["symbol"] for row in rows] == ["SUNTV", "SYNGENE"]
+
+
 def test_coverage_is_blocked_for_missing_or_non_200_months():
     rows = _coverage([
         {"snapshot_date": "2013-04-18", "symbol": f"S{i}"} for i in range(200)
@@ -52,6 +68,67 @@ def test_annual_coverage_aggregates_monthly_status_without_certifying_gaps():
         "year": "2012", "months_expected": "2", "months_with_200_members": "1",
         "status": "BLOCKED", "qa_note": "year contains missing or non-200 checkpoints",
     }]
+
+
+def test_monthly_gap_analysis_distinguishes_missing_and_non_200_sources():
+    source = SourceRecord(
+        source_url="https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2013.zip",
+        local_path="unused.zip", source_sha256="e" * 64,
+        retrieved_at="2026-09-06T00:00:00+00:00",
+    )
+    coverage = [
+        {"period": "2013-05", "snapshot_member_count": "0", "status": "BLOCKED"},
+        {"period": "2013-06", "snapshot_member_count": "201", "status": "BLOCKED"},
+    ]
+    snapshots = [{
+        "snapshot_date": "2013-06-28", "symbol": "ABC", "source_url": source.source_url,
+        "source_sha256": source.source_sha256,
+    }]
+
+    rows = _monthly_gap_rows(coverage, snapshots, [], [source])
+
+    assert rows[0]["status"] == "A_NO_SNAPSHOT_EVIDENCE"
+    assert rows[1]["status"] == "B_SNAPSHOT_NON_200"
+    assert rows[1]["official_snapshot_found"] == "TRUE"
+
+
+def test_blocker_ledger_keeps_validation_reasons_typed():
+    report = ValidationReport(
+        EvidenceStatus.BLOCKED,
+        ["member_count:2012-01-02:0", "2012-01:0"],
+        {},
+        "2026-09-11T00:00:00+00:00",
+    )
+    rows = _blocker_ledger(
+        report, conflicts=[], events=[], snapshots=[],
+        coverage=[{"period": "2012-01", "snapshot_member_count": "0", "status": "BLOCKED"}],
+        sources=[],
+    )
+
+    assert [row["blocker_type"] for row in rows] == ["COUNT_NOT_200", "MONTHLY_SNAPSHOT_MISSING"]
+    assert set(rows[0]) == {
+        "blocker_id", "blocker_type", "date", "year", "symbol", "company",
+        "instrument_id", "isin", "expected_value", "observed_value", "source_tier",
+        "source_url", "source_sha256", "severity", "root_cause", "resolution_status",
+        "resolution_source", "notes",
+    }
+
+
+def test_blocker_ledger_classifies_reconciliation_conflicts():
+    conflicts = [
+        Conflict("missing-anchor", date(2012, 1, 2), "CRITICAL", "REMOVAL_OF_ABSENT_MEMBER", "drop had no active predecessor"),
+        Conflict("duplicate", date(2015, 1, 2), "HIGH", "DUPLICATE_ADD", "duplicate add"),
+    ]
+    report = ValidationReport(
+        EvidenceStatus.BLOCKED,
+        ["unresolved_conflict:missing-anchor", "unresolved_conflict:duplicate"],
+        {},
+        "2026-09-11T00:00:00+00:00",
+    )
+
+    rows = _blocker_ledger(report, conflicts=conflicts, events=[], snapshots=[], coverage=[], sources=[])
+
+    assert [row["blocker_type"] for row in rows] == ["MISSING_INITIAL_ANCHOR", "DUPLICATE_EVENT"]
 
 
 def test_challenger_events_are_filtered_to_nifty_200_and_remain_unresolved(monkeypatch):
