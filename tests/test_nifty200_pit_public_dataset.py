@@ -8,6 +8,9 @@ from tools.nifty200_pit.build_public_dataset import (
     _monthly_gap_rows,
     _snapshot_date,
     parse_challenger_events,
+    _checkpoint_forensics,
+    _historical_master_rows,
+    _identity_aliases,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, SourceRecord, ValidationReport
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -188,3 +191,48 @@ def test_press_release_parser_propagates_document_effective_date(monkeypatch):
     assert len(rows) == 1
     assert rows[0].symbol == "EXAMPLE"
     assert rows[0].effective_date == date(2022, 9, 30)
+
+
+def test_identity_aliases_do_not_duplicate_exact_current_symbols():
+    master = [{
+        "instrument_id": "NSE-ISIN:INE1", "isin": "INE1", "symbol": "ABC",
+        "company_name": "ABC Ltd", "valid_from": "2010-01-01", "valid_until": None,
+        "source_url": "https://nse.example/master.csv", "source_sha256": "a" * 64,
+        "source_tier": "A1",
+    }]
+    snapshots = [{"snapshot_date": "2016-04-01", "symbol": "ABC", "company_name": None,
+                  "source_url": "https://nse.example/checkpoint.zip", "source_sha256": "b" * 64}]
+
+    aliases = _identity_aliases(snapshots, master)
+
+    assert len(aliases) == 1
+    assert aliases[0]["confidence"] == "CERTIFIED"
+
+
+def test_historical_master_keeps_unresolved_snapshot_aliases_manual_review():
+    aliases = _identity_aliases([
+        {"snapshot_date": "2016-04-01", "symbol": "OLD", "company_name": "Old Ltd",
+         "source_url": "https://nse.example/checkpoint.zip", "source_sha256": "b" * 64},
+    ], [])
+
+    rows = _historical_master_rows([], aliases)
+
+    assert rows[0]["symbol"] == "OLD"
+    assert rows[0]["confidence"] == "MANUAL_REVIEW"
+    assert rows[0]["review_status"] == "MANUAL_REVIEW"
+
+
+def test_checkpoint_forensics_retains_a_valid_201_row_source_count():
+    rows = [{
+        "snapshot_date": "2016-04-29", "symbol": f"S{i:03d}", "company_name": None,
+        "raw_text": f"S{i:03d} Company {i} 10.00 0.01", "source_member": "checkpoint.pdf",
+        "source_page": 1, "source_url": "https://nse.example/checkpoint.zip",
+        "source_sha256": "c" * 64, "source_tier": "A1",
+    } for i in range(201)]
+    summary, debug = _checkpoint_forensics(rows, [_source()], [])
+
+    assert summary[0]["raw_rows_extracted"] == 201
+    assert summary[0]["unique_symbols"] == 201
+    assert summary[0]["post_fix_count"] == 201
+    assert summary[0]["duplicate_symbols"] == ""
+    assert len(debug) == 201
