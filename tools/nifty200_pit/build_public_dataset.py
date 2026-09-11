@@ -45,6 +45,7 @@ CHALLENGER_EVENTS_PATH = Path(
     "deshpanda_nse_screener_reconstitution_events.parquet"
 )
 SECURITIES_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
 MONTH_NAME = {name.lower(): number for number, name in enumerate(
     ("", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
@@ -179,13 +180,31 @@ def parse_workbook_events(root: Path, source: SourceRecord) -> list[Observation]
     return rows
 
 
-def parse_press_releases(records: list[SourceRecord]) -> list[Observation]:
+_PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES = {
+    # The native PDF text for these A1 releases is column-interleaved and
+    # omits the day/month boundary. The dates are taken from the matching A1
+    # IndexInclExcl.xls event rows; the PDF supplies the named event members.
+    "https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf": date(2012, 4, 27),
+    "https://www.niftyindices.com/Press_Release/ind_prs16052012.pdf": date(2012, 5, 21),
+    "https://www.niftyindices.com/Press_Release/ind_prs16082012.pdf": date(2012, 9, 28),
+    "https://www.niftyindices.com/Press_Release/ind_prs15032013.pdf": date(2013, 3, 19),
+    "https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf": date(2013, 4, 1),
+    "https://www.niftyindices.com/Press_Release/ind_prs11042013.pdf": date(2013, 4, 17),
+}
+
+
+def parse_press_releases(
+    records: list[SourceRecord],
+    *,
+    effective_date_overrides: dict[str, date] | None = None,
+) -> list[Observation]:
     observations: list[Observation] = []
+    overrides = effective_date_overrides or _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES
     for source in records:
         if not source.local_path.lower().endswith(".pdf") or not re.search(r"press[_-]release", source.source_url, re.I):
             continue
         pages = extract_pdf_pages(source.local_path)
-        document_effective = find_effective_date("\n".join(pages))
+        document_effective = find_effective_date("\n".join(pages)) or overrides.get(source.source_url)
         for page_number, page_text in enumerate(pages, start=1):
             if not re.search(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", page_text, re.I):
                 continue
@@ -227,6 +246,29 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
                 "source_sha256": source.source_sha256, "source_tier": source.source_tier,
             })
         return rows
+
+
+def parse_symbol_changes(source: SourceRecord) -> list[dict[str, Any]]:
+    """Parse NSE's explicit previous-symbol to new-symbol mappings."""
+    rows: list[dict[str, Any]] = []
+    with Path(source.local_path).open(encoding="utf-8-sig", newline="") as handle:
+        for fields in csv.reader(handle):
+            if len(fields) < 4:
+                continue
+            company_name, previous_symbol, new_symbol = (str(value).strip() for value in fields[:3])
+            changed_on = _parse_day(fields[3])
+            if not previous_symbol or not new_symbol or not changed_on:
+                continue
+            rows.append({
+                "company_name": company_name or None,
+                "previous_symbol": previous_symbol,
+                "new_symbol": new_symbol,
+                "changed_on": changed_on,
+                "source_url": source.source_url,
+                "source_sha256": source.source_sha256,
+                "source_tier": source.source_tier,
+            })
+    return rows
 
 
 def parse_challenger_events(source: SourceRecord) -> list[Observation]:
@@ -390,7 +432,10 @@ def parse_monthly_snapshots(records: list[SourceRecord]) -> list[dict[str, Any]]
     return snapshots
 
 
-def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _identity_aliases(
+    snapshots: list[dict[str, Any]], master: list[dict[str, Any]],
+    symbol_changes: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Combine official identities with unresolved snapshot symbol candidates."""
     aliases: dict[tuple[str, str], dict[str, Any]] = {}
     master_symbols: set[str] = set()
@@ -401,6 +446,37 @@ def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, An
             **row, "alias_symbol": row["symbol"], "confidence": "CERTIFIED",
             "resolution_status": "ACCEPTED",
         }
+    master_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in master:
+        master_by_symbol.setdefault(str(row["symbol"]).casefold(), []).append(row)
+    historical_candidates: dict[str, list[dict[str, Any]]] = {}
+    for change in symbol_changes or []:
+        target_rows = master_by_symbol.get(str(change["new_symbol"]).casefold(), [])
+        if len(target_rows) != 1:
+            continue
+        target = target_rows[0]
+        alias_symbol = str(change["previous_symbol"]).strip()
+        historical_candidates.setdefault(alias_symbol.casefold(), []).append({
+            **target,
+            "alias_symbol": alias_symbol,
+            "valid_until": change["changed_on"].isoformat(),
+            "identity_event_type": "SYMBOL_CHANGE",
+            "source_url": change["source_url"],
+            "source_sha256": change["source_sha256"],
+            "source_tier": change["source_tier"],
+            "confidence": "CERTIFIED",
+            "resolution_status": "ACCEPTED",
+        })
+    for candidates_for_symbol in historical_candidates.values():
+        instrument_ids = {str(row["instrument_id"]) for row in candidates_for_symbol}
+        if len(instrument_ids) == 1:
+            for row in candidates_for_symbol:
+                aliases[(str(row["instrument_id"]), str(row["alias_symbol"]).casefold())] = row
+        else:
+            for row in candidates_for_symbol:
+                row["confidence"] = "MANUAL_REVIEW"
+                row["resolution_status"] = "MANUAL_REVIEW"
+                aliases[(str(row["instrument_id"]), str(row["alias_symbol"]).casefold())] = row
     candidates: dict[str, dict[str, Any]] = {}
     for row in snapshots:
         symbol = str(row.get("symbol") or "").strip()
@@ -1172,7 +1248,9 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     snapshots = parse_monthly_snapshots(sources)
     security_master = next((source for source in sources if source.source_url == SECURITIES_MASTER_URL), None)
     instrument_master = parse_security_master(security_master) if security_master else []
-    aliases = _identity_aliases(snapshots, instrument_master)
+    symbol_changes_source = next((source for source in sources if source.source_url == SYMBOL_CHANGES_URL), None)
+    symbol_changes = parse_symbol_changes(symbol_changes_source) if symbol_changes_source else []
+    aliases = _identity_aliases(snapshots, instrument_master, symbol_changes)
     observations = resolve_observations(observations, instrument_master, aliases=aliases)
 
     reconciliation = reconcile_observations(observations)

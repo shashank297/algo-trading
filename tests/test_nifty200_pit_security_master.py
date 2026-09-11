@@ -62,6 +62,33 @@ def test_harvester_stores_and_deduplicates_content_addressed_source(tmp_path, mo
     assert (tmp_path / "data/raw/nifty200_pit_public_sources/raw" / first.source_sha256[:2] / f"{first.source_sha256}.csv").is_file()
 
 
+def test_symbol_change_harvester_is_content_addressed(tmp_path, monkeypatch):
+    payload = (
+        b"Company Name,Previous Symbol,New Symbol,Date\n"
+        b"Future Enterprises Limited,PANTALOONR,FRL,11-APR-2013\n"
+    )
+
+    class Response:
+        status = 200
+        headers = {"Content-Type": "text/csv", "ETag": "etag-symbol-1"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return payload
+
+    monkeypatch.setattr(harvest_security_master, "urlopen", lambda *args, **kwargs: Response())
+    first = harvest_security_master.harvest_symbol_changes(tmp_path)
+    second = harvest_security_master.harvest_symbol_changes(tmp_path)
+
+    assert first.source_sha256 == second.source_sha256
+    assert first.source_url.endswith("symbolchange.csv")
+
+
 @pytest.mark.parametrize("payload", [b"<html>Access Denied</html>", b"SYMBOL,WRONG\nABC,x\n"])
 def test_security_master_rejects_non_evidence(payload):
     with pytest.raises(ValueError):

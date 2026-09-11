@@ -14,6 +14,7 @@ from tools.nifty200_pit.models import SourceRecord
 from tools.nifty200_pit.source_catalogue import SourceCatalogue
 
 SECURITIES_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
 REQUIRED_COLUMNS = {
     "SYMBOL", "NAME OF COMPANY", "DATE OF LISTING", "ISIN NUMBER",
 }
@@ -65,6 +66,41 @@ def harvest(root: str | Path = ".", *, timeout: int = 30) -> SourceRecord:
     record = catalogue.add_bytes(
         data,
         source_url=SECURITIES_MASTER_URL,
+        extension=".csv",
+        content_type=headers.get("Content-Type", "text/csv"),
+        http_status=status,
+        etag=headers.get("ETag"),
+        last_modified=headers.get("Last-Modified"),
+        retrieved_at=datetime.now(timezone.utc).isoformat(),
+        source_tier="A1",
+    )
+    _append_record(catalogue_root / "source_catalogue.json", record)
+    return record
+
+
+def harvest_symbol_changes(root: str | Path = ".", *, timeout: int = 30) -> SourceRecord:
+    """Harvest NSE's explicit historical symbol-change table."""
+    root = Path(root).resolve()
+    request = Request(
+        SYMBOL_CHANGES_URL,
+        headers={"User-Agent": "nifty200-pit-evidence-harvester/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            data = response.read()
+            status = getattr(response, "status", None)
+            headers = response.headers
+    except (HTTPError, URLError, TimeoutError) as exc:
+        raise RuntimeError(f"Unable to retrieve official NSE symbol changes: {exc}") from exc
+    if status is not None and not 200 <= status < 300:
+        raise RuntimeError(f"Official NSE symbol changes returned HTTP {status}")
+    if not data or data.lstrip().startswith((b"<html", b"<!doctype")):
+        raise ValueError("NSE symbol changes response is not valid CSV evidence")
+    catalogue_root = root / "data/raw/nifty200_pit_public_sources"
+    catalogue = SourceCatalogue(catalogue_root)
+    record = catalogue.add_bytes(
+        data,
+        source_url=SYMBOL_CHANGES_URL,
         extension=".csv",
         content_type=headers.get("Content-Type", "text/csv"),
         http_status=status,

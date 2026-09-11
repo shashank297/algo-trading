@@ -13,6 +13,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _historical_master_rows,
     _identity_aliases,
     _anchor_replay_forensics,
+    parse_symbol_changes,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, SourceRecord, ValidationReport
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -193,6 +194,49 @@ def test_press_release_parser_propagates_document_effective_date(monkeypatch):
     assert len(rows) == 1
     assert rows[0].symbol == "EXAMPLE"
     assert rows[0].effective_date == date(2022, 9, 30)
+
+
+def test_symbol_change_parser_keeps_official_provenance(tmp_path):
+    path = tmp_path / "symbolchange.csv"
+    path.write_text(
+        "Company Name,Previous Symbol,New Symbol,Date\n"
+        "Future Enterprises Limited,PANTALOONR,FRL,11-APR-2013\n",
+        encoding="utf-8",
+    )
+    source = SourceRecord(
+        source_url="https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+        local_path=str(path), source_sha256="e" * 64,
+        retrieved_at="2026-09-11T00:00:00+00:00", source_tier="A1",
+    )
+
+    rows = parse_symbol_changes(source)
+
+    assert rows[0]["previous_symbol"] == "PANTALOONR"
+    assert rows[0]["new_symbol"] == "FRL"
+    assert rows[0]["changed_on"] == date(2013, 4, 11)
+    assert rows[0]["source_url"] == source.source_url
+    assert rows[0]["source_sha256"] == source.source_sha256
+
+
+def test_press_release_parser_uses_explicit_a1_effective_date_override(monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    source = SourceRecord(
+        source_url="https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf",
+        local_path="release.pdf", source_sha256="f" * 64, retrieved_at="2026-09-06T00:00:00+00:00",
+    )
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _path: [
+        "(4) CNX 200 Index\nThe following companies are being included:\n"
+        "Sr. No. Company Name Symbol\n1 Example Industries Ltd. EXAMPLE\n",
+    ])
+
+    rows = build_public_dataset.parse_press_releases(
+        [source], effective_date_overrides={source.source_url: date(2012, 4, 27)},
+    )
+
+    assert len(rows) == 1
+    assert rows[0].symbol == "EXAMPLE"
+    assert rows[0].effective_date == date(2012, 4, 27)
 
 
 def test_identity_aliases_do_not_duplicate_exact_current_symbols():

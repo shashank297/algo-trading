@@ -16,8 +16,13 @@ DATE_PATTERNS = (
     re.compile(r"(?:effective\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})", re.I),
 )
 SYMBOL_RE = re.compile(r"\b[A-Z][A-Z0-9&.-]{1,19}\b")
-ROW_RE = re.compile(r"^\s*(\d{1,3})\s+(.+?)\s+([A-Z][A-Z0-9&.-]{1,19})\s*$")
+ROW_RE = re.compile(
+    r"^\s*(?:(\d{1,3})\s+)?(.+?)\s+([A-Z][A-Z0-9&.-]{1,19}(?:\s+[A-Z])?)\s*$"
+)
 PDF_DATE_RE = re.compile(r"ind_prs(\d{2})(\d{2})(\d{4})", re.I)
+INDEX_HEADING_RE = re.compile(
+    r"^\s*\(?\d{1,3}\)?[.)]\s+(?:NIFTY|CNX)\s*[- ]?200\b", re.I,
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -93,15 +98,15 @@ def extract_nifty200_section(text: str, *, window: int = 80) -> str:
 def extract_nifty200_sections(text: str) -> list[tuple[int, str]]:
     """Extract bounded numbered-index sections, avoiding neighboring indices."""
     lines = [" ".join(line.split()) for line in text.splitlines()]
-    starts = [index for index, line in enumerate(lines) if INDEX_RE.search(line)]
+    starts = [index for index, line in enumerate(lines) if INDEX_HEADING_RE.search(line)]
     sections: list[tuple[int, str]] = []
     for start in starts:
         end = len(lines)
         for index in range(start + 1, len(lines)):
-            if re.match(r"^\d{1,3}\)\s+", lines[index]) and not INDEX_RE.search(lines[index]):
+            if re.match(r"^\s*\(?\d{1,3}\)?[.)]\s+", lines[index]):
                 end = index
                 break
-        sections.append((start, "\n".join(lines[max(0, start - 4):end])))
+        sections.append((start, "\n".join(lines[start:end])))
     return sections
 
 
@@ -134,7 +139,7 @@ def parse_nifty200_text(
         return []
     effective = effective_date if effective_date is not None else find_effective_date(text)
     sections = extract_nifty200_sections(text)
-    section = "\n---SECTION---\n".join(value for _, value in sections)
+    section = "\n---SECTION---\n".join(value for _, value in sections) or extract_nifty200_section(text)
     if not section or effective is None:
         return [Observation(source_url=source_url, source_sha256=source_sha256, announcement_date=announcement_date,
                             effective_date=effective, extraction_method="PDF_TEXT", extractor_version=extractor_version,
@@ -157,6 +162,10 @@ def parse_nifty200_text(
             if current_action is None or row_match is None:
                 continue
             _, company_name, symbol = row_match.groups()
+            # Native PDF extraction occasionally inserts a space inside a
+            # one-character suffix (for example ``ORCHIDCHE M``).  This is a
+            # layout artefact, not a distinct exchange symbol.
+            symbol = re.sub(r"\s+", "", symbol)
             raw_text = line
             confidence = "PROVISIONAL" if announcement and known_at and effective else "MANUAL_REVIEW"
             review = ReviewStatus.UNRESOLVED if confidence == "PROVISIONAL" else ReviewStatus.MANUAL_REVIEW
