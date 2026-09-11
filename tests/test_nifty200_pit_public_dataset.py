@@ -1,4 +1,5 @@
 from datetime import date
+from types import SimpleNamespace
 
 from tools.nifty200_pit.build_public_dataset import (
     _annual_coverage,
@@ -11,6 +12,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _checkpoint_forensics,
     _historical_master_rows,
     _identity_aliases,
+    _anchor_replay_forensics,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, SourceRecord, ValidationReport
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -236,3 +238,23 @@ def test_checkpoint_forensics_retains_a_valid_201_row_source_count():
     assert summary[0]["post_fix_count"] == 201
     assert summary[0]["duplicate_symbols"] == ""
     assert len(debug) == 201
+
+
+def test_anchor_replay_reverses_canonical_events_without_certifying_anchor():
+    symbols = [f"S{i:03d}" for i in range(199)] + ["NEW"]
+    snapshots = [{
+        "snapshot_date": "2013-04-18", "symbol": symbol, "company_name": None,
+        "source_url": "https://example.test/checkpoint.zip", "source_sha256": "e" * 64,
+        "source_member": "checkpoint.csv", "source_tier": "A1",
+    } for symbol in symbols]
+    events = [
+        SimpleNamespace(effective_date=date(2012, 6, 1), symbol="NEW", action="ADD"),
+        SimpleNamespace(effective_date=date(2012, 6, 1), symbol="S199", action="DROP"),
+    ]
+
+    result = _anchor_replay_forensics(snapshots, events, [], [date(2012, 1, 2), date(2013, 4, 18)])
+
+    assert result["summary"]["candidate_member_count"] == 200
+    assert result["summary"]["status"] == "NOT_ESTABLISHED"
+    assert result["summary"]["checkpoint_set_matches"] == 1
+    assert all(row["eligible_for_replay"] is False for row in result["candidate_rows"])
