@@ -700,10 +700,11 @@ def _anchor_candidate_rows(
     seen: set[str] = set()
     result = []
     for row in available:
-        if str(row["snapshot_date"]) != earliest or row.get("symbol") in seen:
+        symbol = str(row.get("symbol") or "")
+        if str(row["snapshot_date"]) != earliest or symbol in seen:
             continue
-        seen.add(row.get("symbol"))
-        master = master_by_symbol.get(str(row.get("symbol", "")).casefold(), {})
+        seen.add(symbol)
+        master = master_by_symbol.get(symbol.casefold(), {})
         result.append({
             "target_date": CAMPAIGN_FROM.isoformat(), "symbol": row.get("symbol", ""),
             "company_name": row.get("company_name") or "", "instrument_id": master.get("instrument_id") or "",
@@ -726,6 +727,12 @@ def _conflict_forensics(
 
     by_id = {row.observation_id or observation_hash(row): row for row in observations}
     result = []
+
+    def action_value(observation: Observation | None) -> str:
+        if observation is None or observation.action is None:
+            return ""
+        return observation.action.value if isinstance(observation.action, Action) else str(observation.action)
+
     for conflict in conflicts:
         if conflict.conflict_type != conflict_type:
             continue
@@ -735,8 +742,8 @@ def _conflict_forensics(
         result.append({
             "conflict_id": conflict.conflict_id, "date": conflict.date.isoformat() if conflict.date else "",
             "symbol": (first.symbol if first else "") or (first.company_name if first else ""),
-            "company": first.company_name if first else "", "action_1": first.action.value if first and hasattr(first.action, "value") else (first.action if first else ""),
-            "action_2": second.action.value if second and hasattr(second.action, "value") else (second.action if second else ""),
+            "company": first.company_name if first else "", "action_1": action_value(first),
+            "action_2": action_value(second),
             "effective_date_1": first.effective_date.isoformat() if first and first.effective_date else "",
             "effective_date_2": second.effective_date.isoformat() if second and second.effective_date else "",
             "source_url_1": first.source_url if first else (conflict.source_urls[0] if conflict.source_urls else ""),
