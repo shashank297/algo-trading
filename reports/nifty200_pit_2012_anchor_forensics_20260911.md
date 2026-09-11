@@ -15,7 +15,8 @@ The 2012-01-02 anchor is not defensibly established. This diagnostic reverse rep
 
 - Forward checkpoint: 2013-04-18; rows: 200; source SHA-256: 4942c0f021abcd6ed9702c343c2696ec44cfa8022c7e37448f8a78c075c4a16d.
 - Reverse canonical events: 12; candidate initial rows: 205.
-- NSE sessions replayed: 3609; exact-200 sessions: 81; non-200 sessions: 3528.
+- Anchor rows: raw=200; unique members=200; unique durable IDs=146; unique ISINs=146; duplicate rows=0; unresolved identities=54.
+- NSE sessions replayed: 3609; exact-200 sessions: 81; non-200 sessions: 3528; below 200=1626; above 200=1902; last divergence=2026-08-20.
 - First count divergence: 2012-01-02 at 205 members; event rows applied that day: none; cause is the unproven initial set, not a fabricated event.
 - Valid official checkpoints compared: 58; set matches: 0; set mismatches: 58; first mismatch: 2013-04-18.
 

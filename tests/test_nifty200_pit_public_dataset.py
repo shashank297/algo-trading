@@ -257,4 +257,8 @@ def test_anchor_replay_reverses_canonical_events_without_certifying_anchor():
     assert result["summary"]["candidate_member_count"] == 200
     assert result["summary"]["status"] == "NOT_ESTABLISHED"
     assert result["summary"]["checkpoint_set_matches"] == 1
+    assert result["summary"]["anchor_raw_rows"] == 200
+    assert result["summary"]["anchor_unique_members"] == 200
+    assert result["first_divergence"]["date"] == ""
+    assert sum(row["sessions"] for row in result["distribution_rows"]) == 2
     assert all(row["eligible_for_replay"] is False for row in result["candidate_rows"])

@@ -750,10 +750,16 @@ def _anchor_replay_forensics(
     if not checkpoints:
         return {
             "anchor_evidence": [], "candidate_rows": [], "session_rows": [],
-            "checkpoint_rows": [], "details": [], "summary": {
+            "checkpoint_rows": [], "details": [], "distribution_rows": [],
+            "first_divergence": {}, "summary": {
                 "status": "NOT_ESTABLISHED", "source_checkpoint_date": "",
                 "source_checkpoint_count": 0, "candidate_member_count": 0,
                 "first_divergence_date": "", "first_divergence_count": "",
+                "last_divergence_date": "", "sessions_below_200": 0,
+                "sessions_above_200": 0, "anchor_raw_rows": 0,
+                "anchor_unique_members": 0, "anchor_unique_durable_ids": 0,
+                "anchor_unique_isins": 0, "anchor_duplicate_rows": 0,
+                "anchor_unresolved_identities": 0,
             },
         }
 
@@ -761,6 +767,7 @@ def _anchor_replay_forensics(
     source_by_symbol = {_symbol_key(row.get("symbol")): row for row in checkpoint_rows}
     master_by_symbol = {_symbol_key(row.get("symbol")): row for row in instrument_master}
     state = set(source_by_symbol) - {""}
+    reverse_lineage: dict[str, Any] = {}
     reverse_events = [
         (position, event) for position, event in enumerate(events)
         if getattr(event, "effective_date", None) is not None
@@ -776,6 +783,7 @@ def _anchor_replay_forensics(
             state.discard(symbol)
         elif action == Action.DROP.value:
             state.add(symbol)
+            reverse_lineage.setdefault(symbol, event)
 
     anchor_evidence = []
     for row in sorted(checkpoint_rows, key=lambda item: _symbol_key(item.get("symbol"))):
@@ -791,12 +799,24 @@ def _anchor_replay_forensics(
             "source_tier": row.get("source_tier", "A1"), "confidence": "MANUAL_REVIEW",
             "review_status": "MANUAL_REVIEW",
             "notes": "Official later checkpoint evidence; not proof of 2012-01-02 membership.",
+            "index_name": "NIFTY 200", "anchor_date": CAMPAIGN_FROM.isoformat(),
+            "member_status": "FORWARD_CHECKPOINT_MEMBER", "evidence_date": checkpoint_date.isoformat(),
+            "effective_date": "", "known_at": "", "resolution_method": "EXACT_CURRENT_SYMBOL" if master else "UNRESOLVED_HISTORICAL_IDENTITY",
         })
 
     candidate_rows = []
     for symbol in sorted(state):
         source = source_by_symbol.get(symbol, {})
         master = master_by_symbol.get(symbol, {})
+        lineage = reverse_lineage.get(symbol)
+        lineage_source_url = getattr(lineage, "source_url", "") if lineage else ""
+        lineage_source_sha = getattr(lineage, "source_sha256", "") if lineage else ""
+        lineage_effective = getattr(lineage, "effective_date", "") if lineage else ""
+        lineage_known_at = getattr(lineage, "known_at", "") if lineage else ""
+        if hasattr(lineage_effective, "isoformat"):
+            lineage_effective = lineage_effective.isoformat()
+        if hasattr(lineage_known_at, "isoformat"):
+            lineage_known_at = lineage_known_at.isoformat()
         candidate_rows.append({
             "target_date": CAMPAIGN_FROM.isoformat(), "symbol": source.get("symbol", symbol),
             "company_name": source.get("company_name") or master.get("company_name") or "",
@@ -804,10 +824,16 @@ def _anchor_replay_forensics(
             "anchor_status": "NOT_ASSERTED", "eligible_for_replay": False,
             "evidence_basis": "REVERSE_CANONICAL_EVENTS_FROM_LATER_CHECKPOINT",
             "forward_checkpoint_date": checkpoint_date.isoformat(),
-            "source_url": source.get("source_url", ""), "source_sha256": source.get("source_sha256", ""),
+            "source_url": source.get("source_url", "") or lineage_source_url,
+            "source_sha256": source.get("source_sha256", "") or lineage_source_sha,
             "source_member": source.get("source_member", ""), "source_tier": source.get("source_tier", "A1"),
             "confidence": "MANUAL_REVIEW", "review_status": "MANUAL_REVIEW",
             "notes": "Diagnostic candidate only; canonical chain is incomplete and this row is not eligible for authoritative replay.",
+            "index_name": "NIFTY 200", "anchor_date": CAMPAIGN_FROM.isoformat(),
+            "member_status": "REVERSED_CANONICAL_DROP" if lineage and not source else "FORWARD_CHECKPOINT_MEMBER",
+            "evidence_date": checkpoint_date.isoformat(), "effective_date": lineage_effective,
+            "known_at": lineage_known_at,
+            "resolution_method": "EXACT_CURRENT_SYMBOL" if master else "UNRESOLVED_HISTORICAL_IDENTITY",
         })
 
     events_by_date: dict[date, list[Any]] = {}
@@ -823,9 +849,12 @@ def _anchor_replay_forensics(
     state_by_session: dict[date, set[str]] = {}
     event_position = 0
     for session_date in sorted(trading_days):
+        count_before = len(active)
+        applied_events = []
         while event_position < len(ordered_events) and ordered_events[event_position].effective_date <= session_date:
             event = ordered_events[event_position]
             event_position += 1
+            applied_events.append(event)
             symbol = _symbol_key(getattr(event, "symbol", ""))
             action = event.action.value if hasattr(event.action, "value") else str(event.action)
             if not symbol:
@@ -841,6 +870,12 @@ def _anchor_replay_forensics(
             "candidate_method": "REVERSE_CANONICAL_EVENTS_FROM_LATER_CHECKPOINT",
             "source_checkpoint_date": checkpoint_date.isoformat(),
             "source_checkpoint_sha256": checkpoint_rows[0].get("source_sha256", ""),
+            "count_before": count_before, "count_after": len(active),
+            "event_count_on_session": len(applied_events),
+            "events_on_session": ";".join(
+                f"{event.action.value if hasattr(event.action, 'value') else event.action}:{event.symbol}"
+                for event in applied_events
+            ),
             "event_count_applied": sum(len(rows) for day, rows in events_by_date.items() if day <= session_date),
         })
 
@@ -878,20 +913,51 @@ def _anchor_replay_forensics(
             })
 
     divergence = next((row for row in session_rows if row["active_member_count"] != 200), None)
-    divergence_events = []
-    if divergence:
-        divergence_date = date.fromisoformat(str(divergence["session_date"]))
-        divergence_events = [
-            f"{event.action.value if hasattr(event.action, 'value') else event.action}:{event.symbol}"
-            for event in ordered_events if event.effective_date == divergence_date
-        ]
+    divergence_events = divergence.get("events_on_session", "") if divergence else ""
+    first_divergence = {
+        "date": divergence["session_date"] if divergence else "",
+        "count_before": divergence.get("count_before", "") if divergence else "",
+        "count_after": divergence.get("count_after", "") if divergence else "",
+        "expected_count": 200 if divergence else "",
+        "event_count_on_session": divergence.get("event_count_on_session", "") if divergence else "",
+        "events_on_session": divergence_events,
+        "missing_from_replay": "UNRESOLVED_INITIAL_ANCHOR" if divergence else "",
+        "unexpected_in_replay": "",
+        "source_url": "",
+        "source_sha256": "",
+        "identity_status": "NOT_ASSERTED",
+        "likely_root_cause": "NO_CERTIFIABLE_2012_01_02_ANCHOR" if divergence else "",
+    }
+    count_distribution = Counter(row["active_member_count"] for row in session_rows)
+    distribution_rows = [
+        {"active_member_count": count, "sessions": sessions}
+        for count, sessions in sorted(count_distribution.items())
+    ]
+    anchor_durable_ids = {
+        str(master_by_symbol[symbol].get("instrument_id") or "")
+        for symbol in source_by_symbol if master_by_symbol.get(symbol, {}).get("instrument_id")
+    }
+    anchor_isins = {
+        str(master_by_symbol[symbol].get("isin") or "")
+        for symbol in source_by_symbol if master_by_symbol.get(symbol, {}).get("isin")
+    }
+    divergent_dates = [row["session_date"] for row in session_rows if row["active_member_count"] != 200]
     summary = {
         "status": "NOT_ESTABLISHED", "source_checkpoint_date": checkpoint_date.isoformat(),
         "source_checkpoint_count": len(source_by_symbol), "candidate_member_count": len(candidate_rows),
         "reverse_event_count": len(reverse_events),
         "first_divergence_date": divergence["session_date"] if divergence else "",
         "first_divergence_count": divergence["active_member_count"] if divergence else "",
-        "first_divergence_events": ";".join(divergence_events),
+        "first_divergence_events": divergence_events,
+        "last_divergence_date": divergent_dates[-1] if divergent_dates else "",
+        "sessions_below_200": sum(row["active_member_count"] < 200 for row in session_rows),
+        "sessions_above_200": sum(row["active_member_count"] > 200 for row in session_rows),
+        "anchor_raw_rows": len(checkpoint_rows),
+        "anchor_unique_members": len(source_by_symbol),
+        "anchor_unique_durable_ids": len(anchor_durable_ids),
+        "anchor_unique_isins": len(anchor_isins),
+        "anchor_duplicate_rows": len(checkpoint_rows) - len(source_by_symbol),
+        "anchor_unresolved_identities": len(source_by_symbol) - len(anchor_durable_ids),
         "session_count": len(session_rows),
         "session_exact_200": sum(row["active_member_count"] == 200 for row in session_rows),
         "session_not_200": sum(row["active_member_count"] != 200 for row in session_rows),
@@ -903,7 +969,8 @@ def _anchor_replay_forensics(
     return {
         "anchor_evidence": anchor_evidence, "candidate_rows": candidate_rows,
         "session_rows": session_rows, "checkpoint_rows": checkpoint_rows_out,
-        "details": details, "summary": summary,
+        "details": details, "distribution_rows": distribution_rows,
+        "first_divergence": first_divergence, "summary": summary,
     }
 
 
@@ -1197,6 +1264,29 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     _write_csv(reports_dir / "nifty200_pit_official_event_conflicts.csv", official_conflict_forensics)
     _write_csv(reports_dir / "nifty200_pit_anchor_replay_checkpoint_comparison.csv", anchor_forensics["checkpoint_rows"])
     _write_csv(reports_dir / "nifty200_pit_anchor_replay_checkpoint_differences.csv", anchor_forensics["details"])
+    _write_csv(reports_dir / "nifty200_pit_anchor_replay_first_divergence.csv", [anchor_forensics["first_divergence"]])
+    _write_csv(reports_dir / "nifty200_pit_anchor_replay_active_count_distribution.csv", anchor_forensics["distribution_rows"])
+    blocker_counts = Counter(row["blocker_type"] for row in blocker_rows)
+    conflict_severity_counts = Counter(conflict.severity for conflict in conflicts)
+    blocker_delta_rows = [
+        {
+            "blocker_type": blocker_type, "before_count": count, "after_count": count,
+            "resolution_status": "UNRESOLVED",
+            "resolution_source": "anchor_replay_candidate.parquet",
+            "notes": "Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.",
+        }
+        for blocker_type, count in sorted(blocker_counts.items())
+    ]
+    blocker_delta_rows.extend(
+        {
+            "blocker_type": f"CONFLICT_{severity}", "before_count": count, "after_count": count,
+            "resolution_status": "UNRESOLVED",
+            "resolution_source": "conflict_report.parquet",
+            "notes": "No conflict was auto-resolved by the anchor diagnostic.",
+        }
+        for severity, count in sorted(conflict_severity_counts.items())
+    )
+    _write_csv(reports_dir / "nifty200_pit_anchor_blocker_delta_20260911.csv", blocker_delta_rows)
     (reports_dir / "nifty200_pit_checkpoint_requirement_audit.md").write_text(
         _checkpoint_requirement_audit(), encoding="utf-8",
     )
@@ -1232,8 +1322,12 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         f"- Forward checkpoint: {anchor_summary.get('source_checkpoint_date', '')}; rows: {anchor_summary.get('source_checkpoint_count', 0)}; "
         f"source SHA-256: {anchor_forensics['anchor_evidence'][0].get('source_sha256', '') if anchor_forensics['anchor_evidence'] else ''}.\n"
         f"- Reverse canonical events: {anchor_summary.get('reverse_event_count', 0)}; candidate initial rows: {anchor_summary.get('candidate_member_count', 0)}.\n"
+        f"- Anchor rows: raw={anchor_summary.get('anchor_raw_rows', 0)}; unique members={anchor_summary.get('anchor_unique_members', 0)}; "
+        f"unique durable IDs={anchor_summary.get('anchor_unique_durable_ids', 0)}; unique ISINs={anchor_summary.get('anchor_unique_isins', 0)}; "
+        f"duplicate rows={anchor_summary.get('anchor_duplicate_rows', 0)}; unresolved identities={anchor_summary.get('anchor_unresolved_identities', 0)}.\n"
         f"- NSE sessions replayed: {anchor_summary.get('session_count', 0)}; exact-200 sessions: {anchor_summary.get('session_exact_200', 0)}; "
-        f"non-200 sessions: {anchor_summary.get('session_not_200', 0)}.\n"
+        f"non-200 sessions: {anchor_summary.get('session_not_200', 0)}; below 200={anchor_summary.get('sessions_below_200', 0)}; "
+        f"above 200={anchor_summary.get('sessions_above_200', 0)}; last divergence={anchor_summary.get('last_divergence_date', '')}.\n"
         f"- First count divergence: {anchor_summary.get('first_divergence_date', '')} at "
         f"{anchor_summary.get('first_divergence_count', '')} members; event rows applied that day: "
         f"{anchor_summary.get('first_divergence_events', '') or 'none'}; cause is the unproven initial set, not a fabricated event.\n"
@@ -1260,6 +1354,9 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     write_table(artifact_dir / "anchor_replay_sessions.parquet", anchor_forensics["session_rows"])
     _write_csv(artifact_dir / "anchor_replay_checkpoint_comparison.csv", anchor_forensics["checkpoint_rows"])
     _write_csv(artifact_dir / "anchor_replay_checkpoint_differences.csv", anchor_forensics["details"])
+    _write_csv(artifact_dir / "anchor_replay_first_divergence.csv", [anchor_forensics["first_divergence"]])
+    _write_csv(artifact_dir / "anchor_replay_active_count_distribution.csv", anchor_forensics["distribution_rows"])
+    _write_csv(artifact_dir / "anchor_blocker_delta_20260911.csv", blocker_delta_rows)
     (artifact_dir / "2012_anchor_forensics.md").write_text(
         (reports_dir / "nifty200_pit_2012_anchor_forensics_20260911.md").read_text(encoding="utf-8"),
         encoding="utf-8",
