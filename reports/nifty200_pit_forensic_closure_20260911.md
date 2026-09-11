@@ -23,7 +23,7 @@ text. These remain source-semantics/manual-review blockers.
 ## Measured final result
 
 - Branch: `codex/nifty200-pit-final-main`
-- HEAD at committed code: `dc0a79e09da092ed75f0c7b5d66ade91c67b6ff0`
+- HEAD at the final rebuild is recorded authoritatively as `parser_git_sha` in `artifacts/nifty200_pit_v1/evidence_manifest.json`.
 - origin/main: `a358ed3c2139f9c364c2b53fc749babc9f136a26`
 - Sources: 359 total; A1 358; A2 0; B1 1; source hash failures 0.
 - Event observations: 1,866 (ADD 746, DROP 1,084, unclassified 36).
