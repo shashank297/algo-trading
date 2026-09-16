@@ -6,7 +6,7 @@ Campaign: `2012-01-02` through `2026-08-20`
 
 Branch: `codex/nifty200-pit-2012-anchor`
 
-Worktree HEAD: `ff475f67ffa98cb853d11012e905d549531c8a4a`
+Worktree HEAD at report refresh: `d41f907d151ab907c40b13f627fcd6e443faf89a`
 `origin/main`: `a8f383149187b8d0bbfb23253ba81c464ec8563f`
 
 ## Result
@@ -108,7 +108,7 @@ The following 123 symbol/date pairs are the current `MISSING_MEMBERSHIP_HISTORY`
 - Removed the reverse-replay candidate's synthetic initial-member events and marked the candidate manual-review/diagnostic only.
 - Added explicit initial-anchor and coverage conflicts.
 - Forced generated manifests to remain `independent_qa=NOT_ASSERTED`, `campaign_readiness=BLOCKED`, `approved_for_import=false`, and `stage_a_started=false`.
-- Narrowed the gitleaks allowlist so arbitrary artifact/report SHA-256 strings are not broadly exempted.
+- Narrowed the gitleaks allowlist so arbitrary artifact/report SHA-256 strings are not broadly exempted; explicitly scoped the exception to immutable `evidence_manifest.json` integrity metadata after CI identified historical manifest false positives.
 
 The post-PR25 baseline was also preserved before remediation under `artifacts/pre_repair_walkthrough_20260916/`; that directory must not be committed as a final artifact because it contains the pre-repair package.
 
