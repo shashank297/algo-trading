@@ -1,0 +1,614 @@
+[
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2022.zip",
+    "sha256": "f153df160f9fbae4cd1be5c15b3c0c7d2487fadd85bb75d99bde68fb67021bf0",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2023.zip",
+    "sha256": "07f8815188f8c5938e4a76abbb1e736ce6efc76de785ebba16a2eb82edcb650f",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2024.zip",
+    "sha256": "7ba79caa262e6f285f774c866e67d725f4265fb2a5cde114f8f2ba48a4f5c946",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2025.zip",
+    "sha256": "331fdd535f330d9f4add4a9e8f89b637ac958875510f778551cb8bad25b2ba61",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2026.zip",
+    "sha256": "5274563ff7ae37380b819661d3af6895f4b81a0ef08afde002010538fba3c82c",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2022.zip",
+    "sha256": "c532b04bc964b8a0ac58fe55c54c7a0d0411b3d8e5aff4020072e67f9fdad0e6",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2023.zip",
+    "sha256": "19232e6d3f35034bbdec6e8498a784e1b19719c85b5a4b152bbdc6fdbd4e6730",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2024.zip",
+    "sha256": "9a1b2a5c7f8db60246e7180251e523eeef0806ce8d235345b4b3d94840bb5264",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2025.zip",
+    "sha256": "3166a80173b90f9cab5705578df00dfab55cc0d2093c4d9b7b2c9e8c89f99fc2",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2026.zip",
+    "sha256": "3ba997d427b824f11df58db024a2c6d32c8cfbba862fff11e0896c0f8ad20413",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2022.zip",
+    "sha256": "caceb64f4cda5e4b8a7eed227112d1549e47ad3b51f60149fdd5219c82e7da29",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2023.zip",
+    "sha256": "12bb4a7bb1e1e52cbfa11c79e4819fe07edae3863bf8615c1a722fb6d18891fe",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2024.zip",
+    "sha256": "c25bd0e1dffa353e6ef06e303fb9bc70ca9deb37b00a1fb206620916f9a3a8db",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2025.zip",
+    "sha256": "5ba998fbbaca9348a83db8b30e69d0475dc38c966ba4108529b10823b4ba3517",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2013.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2023.zip",
+    "sha256": "0927000d5e3a41f8201e2aefb325841e7d86083af639668316c2bf7cd600a0a9",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2024.zip",
+    "sha256": "7ed356a0c08ba430be183c6adffc9bfb4c8ed737c70ac2edcfb2ebcb77cfb18f",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2025.zip",
+    "sha256": "9fd7e78567e2bf0bbe5e0e172c65c50af97694a0ef115960552d0106c0b7e827",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2026.zip",
+    "sha256": "d5d418e330e4e7f27f52d6ed450240ad330ffc25a512e1db0f144fd1b1433452",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2013.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2023.zip",
+    "sha256": "ff027e10f4257a999728b511b9db341d0c7880ebb13b49be1e5818cf387b6005",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2024.zip",
+    "sha256": "07f378cf0caf1ee342689795bc81126492be964d197db0ace374d48a33a44002",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2025.zip",
+    "sha256": "2209682560f48d1ee8dddd0ea5dad3c3ae8d3d7a9281c533270c298c7c8ddb59",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2026.zip",
+    "sha256": "aa6a9b9c7143df40e8bae983af78db6709fcadd0c7e7dad1bd76320d3ae0d843",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2022.zip",
+    "sha256": "7ef348d36fdda233546ac156eeae11aa25e4cf83795ae4396f9498e6f5916a95",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2023.zip",
+    "sha256": "c910fa1e2c03f68cc6dd2b9edc1d810cece9592c91f4b53e4427c02c5f879d84",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2024.zip",
+    "sha256": "4e35c6c7d655c4615c4ecd15285c857e5d591bf49149e98f9d83c644b6331652",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2025.zip",
+    "sha256": "4431bafaa39eb84ba0da4935ad131fbf42ede3c65cadd40cddc472230ff194b7",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2026.zip",
+    "sha256": "1184b58ea5e2b8a7b290ca44810836b07fd9ec024231a59ec2dd63e36deed7a4",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2022.zip",
+    "sha256": "bfe76223f0b4e63cb75419326909ff55802ef32d22f78106164be990cec18aa3",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2023.zip",
+    "sha256": "3d8c42783687a0588195ffd5babb3eeac4c36911e8417a04e5533bda22dc525f",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2024.zip",
+    "sha256": "5d5f6609cffcc780d21c264b79e2e8a700859b4fb23c39fc94643d6d757da7e0",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2025.zip",
+    "sha256": "d15a87268f223754924bbe52d1e06d281f7d9fbcab2bb6d6bdd3f4c284ac204a",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2026.zip",
+    "sha256": "c2f0aa29e9a10e5270b8245242000234afb20741d6da281f43c03a35bafca5b2",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2013.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2023.zip",
+    "sha256": "cbaa34dbb6401328663269d2fc4412ef947c0909acc47dbd3e242d9fc540d594",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2024.zip",
+    "sha256": "a5dc521e224c021d97e60a0c3b9d061ea6e6c49f0e793e9422a5bb2c995dd7cf",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2025.zip",
+    "sha256": "0b574467951ba383eb62f012c1c92871b3ae77c30688e2bc349194e239838929",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2026.zip",
+    "sha256": "fd650078e31b4315233ff08169625832ecbdf28ead8248e0c6df72dd28a3cd9a",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2022.zip",
+    "sha256": "10c5f7efa5940717e9785764f751d29aec0666e706030244768442c080baeee7",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2023.zip",
+    "sha256": "a303555139ecad3acf8b64f3f83438f21df00a55fb40b7ede4356ba2982827fc",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2024.zip",
+    "sha256": "f1bfb197336e19bcc258d85889c6a5f2ac1d01ab60a589097be5c910bc857530",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2025.zip",
+    "sha256": "e8d1a0cbf0390a518088c5f68a0d53f001fddf95db8305bdce34b6552084c8f8",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2026.zip",
+    "sha256": "2491659c8e4e584d673d95b1f096eb88cb2909dad26e2cf8c992a3ff2fab6913",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2022.zip",
+    "sha256": "fd72c84a32992483abf9cf8d1bfe5a0704a850348bd6847d2ebe331ffa62c35f",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2023.zip",
+    "sha256": "2c4244930209bb4540b488278fbd97d39bcf6c83ca71b2b3c9c1d70516a77988",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2024.zip",
+    "sha256": "dd81b3be2aa76205bd31a55f7d4303c8d14ceb88cfea78a2755289067e6fb3b8",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2025.zip",
+    "sha256": "31060ecce6119f2c9a25226cdec2d83ad3e74345dfc036bcd07ce433de2f5c7b",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2022.zip",
+    "sha256": "d7d6e17a01105cf20dd311f50e544dbcbc2979600b78cda9857583c72c66ce19",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2023.zip",
+    "sha256": "f854b625bfe34aaf997a3d9c2e36b3d961f67d4464542a7a0958aa4441a2940c",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2024.zip",
+    "sha256": "4cfe006e942f637cffd4a50550bb166bb770c98053e8e5c78fdd48cc82e7141d",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2025.zip",
+    "sha256": "bd3a938875d1b507ad6e8e809be1bb2d8c44001ea18c8618411e53de49f2f805",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2012.zip",
+    "sha256": "2e87473e6cabf210c1a9949f16dae74a8dddb2a90e3b1982f594fe31c778601d",
+    "status": "E_HTML_RESPONSE_NOT_ARCHIVE",
+    "blocker_type": "SOURCE_DOWNLOAD_FAILURE",
+    "finding": "The monthly ZIP URL returned HTML, not a constituent archive; inspect the response and retrieve an alternative source.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2022.zip",
+    "sha256": "ec9e8d8a37fd3cacfe1e231c5644c57bfae2aec1eccb41fd20b0e28e3c9ba711",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2023.zip",
+    "sha256": "fb4f0fb8c173c667aa01e8a42ff697b953e1ceedc6256ea418d9a62233131d40",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2024.zip",
+    "sha256": "5ad8a872d9d67519df0c4f320537d93b39c742e80c8f577964994157abf69649",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  },
+  {
+    "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2025.zip",
+    "sha256": "7d6e13b12fcd4902acc5431dfc7426965265d98fbe3299c18a44c8df5be37225",
+    "status": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER",
+    "blocker_type": "MONTHLY_SNAPSHOT_MISSING",
+    "finding": "The verified archive has no NIFTY-200 candidate member; other index tables are not a substitute. Search alternative official archives.",
+    "membership_rows_added": 0,
+    "independent_qa": "NOT_ASSERTED"
+  }
+]

@@ -1,0 +1,149 @@
+{
+  "observation_assertions_unchanged_except_durable_id_and_derived_observation_id": true,
+  "derived_observation_id_changes": [
+    {
+      "symbol": "NBCC",
+      "effective_date": "2020-03-27",
+      "source_sha256": "1943215214a0b967333ae4ec9c6aeaec9c5012fb03558c769ad895b7d1081f9e",
+      "old_observation_id": "58e16d0a747c706fb5889fdabb94361c85da2387f275cdfc3c8119367c67d172",
+      "new_observation_id": "6178c52fe0592deacd84136d47f624c84ce8ca106fe0c9ba0059ef41ceff0554"
+    }
+  ],
+  "canonical_assertions_unchanged_except_durable_id_and_derived_hashes": true,
+  "before_observations": 1580,
+  "after_observations": 1580,
+  "before_canonical": 725,
+  "after_canonical": 725,
+  "removed_conflicts": [
+    {
+      "conflict_id": "2ff2d4b8d9536267ecaf030acd9609f5a479546cd54b9c63b1f9e35ea95775c5",
+      "conflict_type": "REMOVAL_OF_ABSENT_MEMBER",
+      "symbol": "J&KBANK",
+      "effective_date": "2016-04-01",
+      "old_instrument_id": "NSE-ISIN:INE168A01041",
+      "isin": "INE168A01041",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf",
+      "source_sha256": "db2e4802e43b68fcbfbbf2cb03cb59c6d5f9ebf086ab6687d5a15daa45c2525f"
+    },
+    {
+      "conflict_id": "a06559b7124b822bda35ce9376bd16d78e9874da3fefeb53c17d734a378bda77",
+      "conflict_type": "REMOVAL_OF_ABSENT_MEMBER",
+      "symbol": "KARURVYSYA",
+      "effective_date": "2018-09-28",
+      "old_instrument_id": "NSE-ISIN:INE036D01028",
+      "isin": "INE036D01028",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs28082018.pdf",
+      "source_sha256": "5fadad6119356497ef78ce7d062e18e1104eebad707c5850fade491fe47398be"
+    },
+    {
+      "conflict_id": "ee7fd457e58ea14ea587c69b3e4c206bbb5b7d4343b4a9a5312c3ed37fbbcc19",
+      "conflict_type": "REMOVAL_OF_ABSENT_MEMBER",
+      "symbol": "NBCC",
+      "effective_date": "2020-06-26",
+      "old_instrument_id": "NSE-ISIN:INE095N01031",
+      "isin": "INE095N01031",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs10062020.pdf",
+      "source_sha256": "ea83ae30ff9e8d80892e143ebd8f16fedd04c974e77d673539bb663a9f9de49e"
+    },
+    {
+      "conflict_id": "7959cf3566fbb73f8fec9a12c52c402a35521568ed827a0ec754ec6637197c89",
+      "conflict_type": "REMOVAL_OF_ABSENT_MEMBER",
+      "symbol": "NATCOPHARM",
+      "effective_date": "2022-03-31",
+      "old_instrument_id": "NSE-ISIN:INE987B01026",
+      "isin": "INE987B01026",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs24022022_1.pdf",
+      "source_sha256": "3091cf1c10b57bbae3b81645f5d91916a1af2bb7284902060f4640f7fb9fcd56"
+    },
+    {
+      "conflict_id": "979853f2b8d40906d1e590cfb2018436327c84d2c33a0cbed2f6d77a5cde9e26",
+      "conflict_type": "REMOVAL_OF_ABSENT_MEMBER",
+      "symbol": "BATAINDIA",
+      "effective_date": "2024-03-28",
+      "old_instrument_id": "NSE-ISIN:INE176A01028",
+      "isin": "INE176A01028",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs28022024.pdf",
+      "source_sha256": "5c70d043edde682a31fc5fa043a3b829a380fc9896de904bcb76d64b8319f698"
+    }
+  ],
+  "closed_previously_orphaned_intervals": [
+    {
+      "interval_id": "0d0bf09df586723109b8ca84c8678c8f8617262cac1e1e252404f2232ffa0850",
+      "symbol": "KARURVYSYA",
+      "changes": {
+        "effective_until": {
+          "before": null,
+          "after": "2018-09-28"
+        },
+        "exit_event_hash": {
+          "before": null,
+          "after": "c0d378784d125a51b6d9f00b7d985d7756dab3449b3dc4d031259093edc676f8"
+        }
+      }
+    },
+    {
+      "interval_id": "7848c2ad657b52a656ed39f1938f8ff860ba298a2a3ced63b6ef5bac50e84d81",
+      "symbol": "BATAINDIA",
+      "changes": {
+        "effective_until": {
+          "before": null,
+          "after": "2024-03-28"
+        },
+        "exit_event_hash": {
+          "before": null,
+          "after": "0861bcb06d4a353455e62032831e361075576db6482e48a835b6e5185afb18af"
+        }
+      }
+    },
+    {
+      "interval_id": "873553175117001ad67008dce4cfbc955e6a6680dadffcb0ff9e9744ec85d9c3",
+      "symbol": "J&KBANK",
+      "changes": {
+        "effective_until": {
+          "before": null,
+          "after": "2016-04-01"
+        },
+        "exit_event_hash": {
+          "before": null,
+          "after": "6b07b7eddf5fc2fa5a6057c5089b44201d2746c217243cfdf993544479bb1b30"
+        }
+      }
+    },
+    {
+      "interval_id": "d96778c79e19f58eeddb1fa18e0e5c41a2dbf27c97768f8d3e40ac5e501fe868",
+      "symbol": "NATCOPHARM",
+      "changes": {
+        "effective_until": {
+          "before": null,
+          "after": "2022-03-31"
+        },
+        "exit_event_hash": {
+          "before": null,
+          "after": "febd10bb0a28e1dedbf3b1e0dcbd3c00f48a7ad837761faed20f0198f3b13531"
+        }
+      }
+    },
+    {
+      "interval_id": "67a1beaed42402b0e754ed2dd233490b7c1c1db50ff72c53a0306ab55ff3f1ac",
+      "symbol": "NBCC",
+      "changes": {
+        "effective_until": {
+          "before": null,
+          "after": "2020-06-26"
+        },
+        "exit_event_hash": {
+          "before": null,
+          "after": "7cdeccf22700cd480ab3b7e9b896d54488fceedcfe6fb3efeb7df7fe4e49c5af"
+        }
+      }
+    }
+  ],
+  "new_conflicts": [],
+  "remaining_blocker_types": {
+    "COUNT_NOT_200": 3613,
+    "SOURCE_DOWNLOAD_FAILURE": 15,
+    "MONTHLY_SNAPSHOT_MISSING": 54,
+    "MISSING_MEMBERSHIP_HISTORY": 123
+  },
+  "independent_qa": "NOT_ASSERTED"
+}

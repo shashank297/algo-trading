@@ -1,0 +1,8 @@
+{
+  "command": "tools/import_nifty200_pit.py --dry-run",
+  "exit_code": 0,
+  "stdout": "Validated 554 NIFTY-200 PIT intervals (dry-run; no database write)\n",
+  "stderr": "",
+  "database_touched": false,
+  "result": "PASSED"
+}

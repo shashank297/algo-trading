@@ -1,0 +1,42 @@
+[
+  {
+    "session": "2015-09-28",
+    "error": "<HTTPError 403: 'Forbidden'>"
+  },
+  {
+    "session": "2016-09-30",
+    "source": {
+      "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2016/SEP/cm30SEP2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\piind_identity_acquisition_20260915\\2016-09-30\\data\\raw\\nifty200_pit_public_sources\\raw\\85\\85d073115ed588f5a00e0e511f852c9259eef2d305cdc55196b566637fce6b57.zip",
+      "source_sha256": "85d073115ed588f5a00e0e511f852c9259eef2d305cdc55196b566637fce6b57",
+      "retrieved_at": "2026-09-15T10:22:52.951670+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://archives.nseindia.com/content/historical/EQUITIES/2016/SEP/cm30SEP2016bhav.csv.zip",
+      "document_date": "2016-09-30",
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": null,
+      "last_modified": null,
+      "file_size": 61896
+    },
+    "piind": [
+      {
+        "instrument_id": "NSE-ISIN:INE603J01030",
+        "isin": "INE603J01030",
+        "symbol": "PIIND",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-09-30",
+        "valid_until": "2016-10-01",
+        "snapshot_date": "2016-09-30",
+        "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2016/SEP/cm30SEP2016bhav.csv.zip",
+        "source_sha256": "85d073115ed588f5a00e0e511f852c9259eef2d305cdc55196b566637fce6b57",
+        "source_tier": "A1",
+        "source_member": "cm30SEP2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ]
+  }
+]

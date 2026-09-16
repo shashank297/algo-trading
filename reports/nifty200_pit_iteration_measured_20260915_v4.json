@@ -1,0 +1,256 @@
+{
+  "build_timestamp": "2026-09-15T02:12:30.825358+00:00",
+  "status": "BLOCKED",
+  "branch": "codex/nifty200-pit-2012-anchor",
+  "head_sha": "ea0f8bf9eb031abf3df9a7d46c568f72c0d5df31",
+  "origin_main_sha": "a8f383149187b8d0bbfb23253ba81c464ec8563f",
+  "source_count": 377,
+  "source_tiers": {
+    "A1": 373,
+    "B1": 1,
+    "A2": 3
+  },
+  "observations": 1484,
+  "canonical_events": 630,
+  "actions": {
+    "DROP": 316,
+    "ADD": 314
+  },
+  "snapshot_rows": 21650,
+  "snapshot_dates": 108,
+  "conflict_severities": {
+    "HIGH": 7,
+    "CRITICAL": 146
+  },
+  "blocker_types": {
+    "COUNT_NOT_200": 3611,
+    "MONTHLY_SNAPSHOT_MISSING": 69,
+    "MISSING_DURABLE_IDENTITY": 4,
+    "MISSING_OFFICIAL_EVENT": 2,
+    "MISSING_INITIAL_ANCHOR": 140,
+    "DUPLICATE_EVENT": 6
+  },
+  "blocker_ledger_rows": 3832,
+  "monthly_gap_rows": 68,
+  "artifact_hash_failures": {},
+  "constituent_intervals_sha256": "8ded38f936fc3f982d76f3a4029009b22d3b2f0bd736217d838c036251b3b63a",
+  "independent_qa": "NOT_ASSERTED",
+  "approved_for_import": false,
+  "metrics": {
+    "anchor_candidate_member_count": 200,
+    "anchor_difference_count": 68,
+    "anchor_forward_checkpoint_date": "2013-04-18",
+    "anchor_replay_checkpoint_set_matches": 5,
+    "anchor_replay_checkpoint_set_mismatches": 53,
+    "anchor_replay_session_not_200": 2939,
+    "anchor_reverse_event_count": 80,
+    "anchor_status": "NOT_ESTABLISHED",
+    "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
+    "calendar_verified_override_count": 6,
+    "calendar_version": "nse-pandas-market-calendars-with-evidenced-exceptions",
+    "campaign_from": "2012-01-02",
+    "campaign_to": "2026-08-20",
+    "conflict_count": 153,
+    "contradicted_challenger_count": 16,
+    "count_check_failures": 3611,
+    "current_security_master_rows": 2568,
+    "durable_id_resolution_percent": 97.0803,
+    "event_count": 630,
+    "high_critical_conflicts": 153,
+    "historical_identity_rows": 7588,
+    "identity_observation_count": 1096,
+    "identity_resolution_scope": "FIRST_PARTY_EVENT_OBSERVATIONS_EXCLUDING_SUPERSEDED",
+    "interval_count": 300,
+    "isin_resolution_percent": 97.0803,
+    "known_at_unresolved_count": 0,
+    "maximum_active_constituent_count": 133,
+    "minimum_active_constituent_count": 0,
+    "missing_or_non_200_checkpoints": 68,
+    "redundant_workbook_observation_count": 449,
+    "sessions_not_expected_count": 3611,
+    "source_hash_errors": 0,
+    "trading_days_checked": 3611,
+    "unique_historical_instruments": 3451,
+    "unresolved_identity_count": 32,
+    "valid_200_checkpoints": 58,
+    "valid_expected_count_checkpoints": 108
+  },
+  "dry_run": {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "tools/import_nifty200_pit.py",
+      "--input",
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\nifty200_pit_v1\\constituent_intervals.parquet",
+      "--manifest",
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\nifty200_pit_v1\\evidence_manifest.json",
+      "--dry-run"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "Traceback (most recent call last):\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 101, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 95, in main\n    count = import_intervals(args.input, args.manifest, database=args.database, dry_run=args.dry_run)\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 82, in import_intervals\n    verify_manifest(manifest_path, input_path)\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 35, in verify_manifest\n    raise ValueError(\"Manifest validation is not PASS; import refused\")\nValueError: Manifest validation is not PASS; import refused\n",
+    "database_touched": false,
+    "result": "REFUSED_AS_DESIGNED"
+  },
+  "known_at_changes": [
+    {
+      "symbol": "CRISIL",
+      "announcement_date": "2015-01-23",
+      "effective_date": "2015-02-02",
+      "known_at": "2015-01-27T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs23012015.pdf",
+      "previous_known_at": "2015-01-26T09:15:00+05:30"
+    },
+    {
+      "symbol": "ARVIND",
+      "announcement_date": "2015-01-23",
+      "effective_date": "2015-02-02",
+      "known_at": "2015-01-27T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs23012015.pdf",
+      "previous_known_at": "2015-01-26T09:15:00+05:30"
+    },
+    {
+      "symbol": "GESHIP",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "ABIRLANUVO",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "IDFCBANK",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "CHOLAFIN",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "MMTC",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "COROMANDEL",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "MFSL",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "BEML",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "ALBK",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "HINDCOPPER",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "ALKEM",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "PIIND",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "INDIGO",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "ABFRL",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "TTKPRESTIG",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "UCOBANK",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "VIDEOIND",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    },
+    {
+      "symbol": "REDINGTON",
+      "announcement_date": "2016-08-12",
+      "effective_date": "2016-09-30",
+      "known_at": "2016-08-16T09:15:00+05:30",
+      "source_url": "https://www.niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "previous_known_at": "2016-08-15T09:15:00+05:30"
+    }
+  ]
+}

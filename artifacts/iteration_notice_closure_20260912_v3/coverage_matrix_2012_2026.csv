@@ -1,0 +1,177 @@
+period,evidence_type,snapshot_member_count,expected_member_count,status,qa_note
+2012-01,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-02,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-03,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-04,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-05,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-06,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-07,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-08,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-09,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-10,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-11,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2012-12,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2013-01,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2013-02,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2013-03,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2013-04,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-05,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-06,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-07,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-08,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-09,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-10,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-11,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2013-12,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-01,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-02,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-03,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-04,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-05,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-06,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-07,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-08,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-09,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-10,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-11,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2014-12,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-01,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-02,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-03,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-04,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-05,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-06,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-07,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-08,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-09,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-10,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-11,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2015-12,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2016-01,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2016-02,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2016-03,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2016-04,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-05,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-06,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-07,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-08,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-09,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-10,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-11,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2016-12,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-01,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-02,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-03,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-04,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-05,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-06,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-07,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-08,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-09,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-10,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-11,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2017-12,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-01,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-02,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-03,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-04,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-05,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-06,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-07,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-08,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-09,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-10,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-11,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2018-12,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-01,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-02,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-03,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-04,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-05,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-06,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-07,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-08,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-09,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-10,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-11,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2019-12,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2020-01,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2020-02,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2020-03,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2020-04,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2020-05,OFFICIAL_MONTHLY_WEIGHTAGE,201,201,PASS,verified count under historical security-count methodology
+2020-06,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2020-07,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2020-08,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2020-09,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2020-10,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2020-11,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2020-12,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-01,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-02,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-03,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-04,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-05,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-06,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-07,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-08,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-09,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-10,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-11,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2021-12,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2022-01,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2022-02,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2022-03,OFFICIAL_MONTHLY_WEIGHTAGE,200,200,PASS,verified count under historical security-count methodology
+2022-04,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-05,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-06,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-07,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-08,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-09,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-10,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-11,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2022-12,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-01,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-02,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-03,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-04,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-05,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-06,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-07,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-08,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-09,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-10,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-11,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2023-12,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-01,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-02,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-03,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-04,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-05,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-06,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-07,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-08,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-09,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-10,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-11,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2024-12,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-01,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-02,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-03,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-04,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-05,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-06,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-07,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-08,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-09,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-10,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-11,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2025-12,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-01,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-02,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-03,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-04,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-05,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-06,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-07,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint
+2026-08,OFFICIAL_MONTHLY_WEIGHTAGE,0,200,BLOCKED,missing or unexpected-count official checkpoint

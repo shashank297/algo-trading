@@ -1,0 +1,115 @@
+{
+  "rows": 123,
+  "unique_symbols": 123,
+  "by_year": {
+    "2012": 25,
+    "2013": 20,
+    "2014": 18,
+    "2015": 12,
+    "2016": 14,
+    "2017": 2,
+    "2018": 8,
+    "2019": 4,
+    "2020": 4,
+    "2021": 3,
+    "2022": 4,
+    "2023": 2,
+    "2024": 4,
+    "2025": 1,
+    "2026": 2
+  },
+  "with_prior_checkpoint": 87,
+  "with_prior_add_observation": 0,
+  "latest_cases": [
+    {
+      "symbol": "MOTHERSUMI",
+      "date": "2021-06-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "GMRINFRA",
+      "date": "2021-10-29",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "PEL",
+      "date": "2022-08-08",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "APOLLOTYRE",
+      "date": "2022-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "GLENMARK",
+      "date": "2022-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "EXIDEIND",
+      "date": "2022-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "GSPL",
+      "date": "2023-03-31",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "HDFC",
+      "date": "2023-07-13",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "UBL",
+      "date": "2024-03-28",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "ZEEL",
+      "date": "2024-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "SUNTV",
+      "date": "2024-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "IDEA",
+      "date": "2024-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "PETRONET",
+      "date": "2025-09-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "IGL",
+      "date": "2026-03-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    },
+    {
+      "symbol": "ACC",
+      "date": "2026-03-30",
+      "first_prior_checkpoint": "2013-04-18",
+      "prior_observation_add_count": 0
+    }
+  ]
+}

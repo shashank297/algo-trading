@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 from zoneinfo import ZoneInfo
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from trading_stack.calendars import MarketCalendar
 
 MARKET_TZ = ZoneInfo("Asia/Kolkata")
 
@@ -13,8 +17,15 @@ def next_trading_session_open(
     *,
     holidays: set[date] | None = None,
     open_time: time = time(9, 15),
+    calendar: MarketCalendar | None = None,
 ) -> datetime:
     """Return the first weekday/holiday-free session open after publication date."""
+    if calendar is not None:
+        sessions = calendar.iter_trading_days(announcement_date + timedelta(days=1),
+                                             announcement_date + timedelta(days=31))
+        if not sessions:
+            raise ValueError("No evidenced next session within the calendar lookup window")
+        return calendar.session_bounds(sessions[0]).start
     excluded = holidays or set()
     candidate = announcement_date + timedelta(days=1)
     while candidate.weekday() >= 5 or candidate in excluded:

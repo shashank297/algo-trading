@@ -1,0 +1,838 @@
+[
+  {
+    "date": "2021-01-12",
+    "symbol": "ADANIGAS",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm12JAN2021bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2021-01-12\\data\\raw\\nifty200_pit_public_sources\\raw\\df\\df7f66f0ab35a6bd0022eca05ad750d472c85e065af008b7b42eceeb04da0784.zip",
+      "source_sha256": "df7f66f0ab35a6bd0022eca05ad750d472c85e065af008b7b42eceeb04da0784",
+      "retrieved_at": "2026-09-16T05:44:41.968865+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm12JAN2021bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"74885-1610452945000\"",
+      "last_modified": "Tue, 12 Jan 2021 12:02:25 GMT",
+      "file_size": 74885
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE399L01023",
+        "isin": "INE399L01023",
+        "symbol": "ADANIGAS",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2021-01-12",
+        "valid_until": "2021-01-13",
+        "snapshot_date": "2021-01-12",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm12JAN2021bhav.csv.zip",
+        "source_sha256": "df7f66f0ab35a6bd0022eca05ad750d472c85e065af008b7b42eceeb04da0784",
+        "source_tier": "A1",
+        "source_member": "cm12JAN2021bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2021-01-13",
+    "symbol": "ATGL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2021-01-13\\data\\raw\\nifty200_pit_public_sources\\raw\\9d\\9d678139e6ed2eb669c0a212dbcd2e12902906c66960544cd99eafeb9a3cfefa.zip",
+      "source_sha256": "9d678139e6ed2eb669c0a212dbcd2e12902906c66960544cd99eafeb9a3cfefa",
+      "retrieved_at": "2026-09-16T05:44:42.083445+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"75631-1610539321000\"",
+      "last_modified": "Wed, 13 Jan 2021 12:02:01 GMT",
+      "file_size": 75631
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE399L01023",
+        "isin": "INE399L01023",
+        "symbol": "ATGL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2021-01-13",
+        "valid_until": "2021-01-14",
+        "snapshot_date": "2021-01-13",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
+        "source_sha256": "9d678139e6ed2eb669c0a212dbcd2e12902906c66960544cd99eafeb9a3cfefa",
+        "source_tier": "A1",
+        "source_member": "cm13JAN2021bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-06-30",
+    "symbol": "SKSMICRO",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm30JUN2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2016-06-30\\data\\raw\\nifty200_pit_public_sources\\raw\\c1\\c19e7bb6b9e3cd17cfffb61071e695578f7ab685f4ab190420060fae334f59d7.zip",
+      "source_sha256": "c19e7bb6b9e3cd17cfffb61071e695578f7ab685f4ab190420060fae334f59d7",
+      "retrieved_at": "2026-09-16T05:44:41.954943+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm30JUN2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"60379-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 60379
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE180K01011",
+        "isin": "INE180K01011",
+        "symbol": "SKSMICRO",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-06-30",
+        "valid_until": "2016-07-01",
+        "snapshot_date": "2016-06-30",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm30JUN2016bhav.csv.zip",
+        "source_sha256": "c19e7bb6b9e3cd17cfffb61071e695578f7ab685f4ab190420060fae334f59d7",
+        "source_tier": "A1",
+        "source_member": "cm30JUN2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-07-01",
+    "symbol": "BHARATFIN",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUL/cm01JUL2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2016-07-01\\data\\raw\\nifty200_pit_public_sources\\raw\\e2\\e267d2a5ee937d25b2bd9d15b79c810af70480720dce407c465a86e85cfabc2e.zip",
+      "source_sha256": "e267d2a5ee937d25b2bd9d15b79c810af70480720dce407c465a86e85cfabc2e",
+      "retrieved_at": "2026-09-16T05:44:42.540343+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUL/cm01JUL2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"61013-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 61013
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE180K01011",
+        "isin": "INE180K01011",
+        "symbol": "BHARATFIN",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-07-01",
+        "valid_until": "2016-07-02",
+        "snapshot_date": "2016-07-01",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUL/cm01JUL2016bhav.csv.zip",
+        "source_sha256": "e267d2a5ee937d25b2bd9d15b79c810af70480720dce407c465a86e85cfabc2e",
+        "source_tier": "A1",
+        "source_member": "cm01JUL2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-08-19",
+    "symbol": "NIITTECH",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/AUG/cm19AUG2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-08-19\\data\\raw\\nifty200_pit_public_sources\\raw\\54\\5413b45b087acf74d536241f383a9eb1d8632cd79c285a59cf9ce53a3483589a.zip",
+      "source_sha256": "5413b45b087acf74d536241f383a9eb1d8632cd79c285a59cf9ce53a3483589a",
+      "retrieved_at": "2026-09-16T05:44:42.763581+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/AUG/cm19AUG2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"71803-1597838649000\"",
+      "last_modified": "Wed, 19 Aug 2020 12:04:09 GMT",
+      "file_size": 71803
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE591G01017",
+        "isin": "INE591G01017",
+        "symbol": "NIITTECH",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-08-19",
+        "valid_until": "2020-08-20",
+        "snapshot_date": "2020-08-19",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/AUG/cm19AUG2020bhav.csv.zip",
+        "source_sha256": "5413b45b087acf74d536241f383a9eb1d8632cd79c285a59cf9ce53a3483589a",
+        "source_tier": "A1",
+        "source_member": "cm19AUG2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-08-20",
+    "symbol": "COFORGE",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/AUG/cm20AUG2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-08-20\\data\\raw\\nifty200_pit_public_sources\\raw\\85\\85c7b8737da97719225bee8d8c9b0f48a834a657191b5c952d71300f27d150eb.zip",
+      "source_sha256": "85c7b8737da97719225bee8d8c9b0f48a834a657191b5c952d71300f27d150eb",
+      "retrieved_at": "2026-09-16T05:44:42.835224+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/AUG/cm20AUG2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"71852-1597924970000\"",
+      "last_modified": "Thu, 20 Aug 2020 12:02:50 GMT",
+      "file_size": 71852
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE591G01017",
+        "isin": "INE591G01017",
+        "symbol": "COFORGE",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-08-20",
+        "valid_until": "2020-08-21",
+        "snapshot_date": "2020-08-20",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/AUG/cm20AUG2020bhav.csv.zip",
+        "source_sha256": "85c7b8737da97719225bee8d8c9b0f48a834a657191b5c952d71300f27d150eb",
+        "source_tier": "A1",
+        "source_member": "cm20AUG2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-10-27",
+    "symbol": "IBVENTURES",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/OCT/cm27OCT2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-10-27\\data\\raw\\nifty200_pit_public_sources\\raw\\0f\\0f019d41f6417584eb4748cecaa2fd3797bbd9de9de1f02c11af9e1a71c76ce0.zip",
+      "source_sha256": "0f019d41f6417584eb4748cecaa2fd3797bbd9de9de1f02c11af9e1a71c76ce0",
+      "retrieved_at": "2026-09-16T05:44:43.171231+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/OCT/cm27OCT2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"70881-1603800140000\"",
+      "last_modified": "Tue, 27 Oct 2020 12:02:20 GMT",
+      "file_size": 70881
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE274G01010",
+        "isin": "INE274G01010",
+        "symbol": "IBVENTURES",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-10-27",
+        "valid_until": "2020-10-28",
+        "snapshot_date": "2020-10-27",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/OCT/cm27OCT2020bhav.csv.zip",
+        "source_sha256": "0f019d41f6417584eb4748cecaa2fd3797bbd9de9de1f02c11af9e1a71c76ce0",
+        "source_tier": "A1",
+        "source_member": "cm27OCT2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-10-28",
+    "symbol": "DHANI",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/OCT/cm28OCT2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-10-28\\data\\raw\\nifty200_pit_public_sources\\raw\\71\\71c7f9aba10aa02df27875d582e29604206f194ece351320f59700959f896fa7.zip",
+      "source_sha256": "71c7f9aba10aa02df27875d582e29604206f194ece351320f59700959f896fa7",
+      "retrieved_at": "2026-09-16T05:44:43.479218+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/OCT/cm28OCT2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"70795-1603886517000\"",
+      "last_modified": "Wed, 28 Oct 2020 12:01:57 GMT",
+      "file_size": 70795
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE274G01010",
+        "isin": "INE274G01010",
+        "symbol": "DHANI",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-10-28",
+        "valid_until": "2020-10-29",
+        "snapshot_date": "2020-10-28",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/OCT/cm28OCT2020bhav.csv.zip",
+        "source_sha256": "71c7f9aba10aa02df27875d582e29604206f194ece351320f59700959f896fa7",
+        "source_tier": "A1",
+        "source_member": "cm28OCT2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2019-01-15",
+    "symbol": "IDFCBANK",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2019/JAN/cm15JAN2019bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2019-01-15\\data\\raw\\nifty200_pit_public_sources\\raw\\f2\\f22ed3d622841c86df399c1d3bd3ff1990f4f8ece80e4cbfda3608269cba8add.zip",
+      "source_sha256": "f22ed3d622841c86df399c1d3bd3ff1990f4f8ece80e4cbfda3608269cba8add",
+      "retrieved_at": "2026-09-16T05:44:43.582874+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2019/JAN/cm15JAN2019bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"67437-1547726273000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:53 GMT",
+      "file_size": 67437
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE092T01019",
+        "isin": "INE092T01019",
+        "symbol": "IDFCBANK",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2019-01-15",
+        "valid_until": "2019-01-16",
+        "snapshot_date": "2019-01-15",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2019/JAN/cm15JAN2019bhav.csv.zip",
+        "source_sha256": "f22ed3d622841c86df399c1d3bd3ff1990f4f8ece80e4cbfda3608269cba8add",
+        "source_tier": "A1",
+        "source_member": "cm15JAN2019bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2019-01-16",
+    "symbol": "IDFCFIRSTB",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2019/JAN/cm16JAN2019bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2019-01-16\\data\\raw\\nifty200_pit_public_sources\\raw\\9b\\9bd27f5674cb0286003988a790e75cfa9756f0d3a4c5336fabef36ce7250bf07.zip",
+      "source_sha256": "9bd27f5674cb0286003988a790e75cfa9756f0d3a4c5336fabef36ce7250bf07",
+      "retrieved_at": "2026-09-16T05:44:43.761347+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2019/JAN/cm16JAN2019bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"67213-1547726273000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:53 GMT",
+      "file_size": 67213
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE092T01019",
+        "isin": "INE092T01019",
+        "symbol": "IDFCFIRSTB",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2019-01-16",
+        "valid_until": "2019-01-17",
+        "snapshot_date": "2019-01-16",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2019/JAN/cm16JAN2019bhav.csv.zip",
+        "source_sha256": "9bd27f5674cb0286003988a790e75cfa9756f0d3a4c5336fabef36ce7250bf07",
+        "source_tier": "A1",
+        "source_member": "cm16JAN2019bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-12-17",
+    "symbol": "INFRATEL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/DEC/cm17DEC2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-12-17\\data\\raw\\nifty200_pit_public_sources\\raw\\96\\96b6a2fffe492607dff2fbbd65bec0951e1559af8645973e830f4e7b07ee3be5.zip",
+      "source_sha256": "96b6a2fffe492607dff2fbbd65bec0951e1559af8645973e830f4e7b07ee3be5",
+      "retrieved_at": "2026-09-16T05:44:44.204576+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/DEC/cm17DEC2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"74593-1608206521000\"",
+      "last_modified": "Thu, 17 Dec 2020 12:02:01 GMT",
+      "file_size": 74593
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE121J01017",
+        "isin": "INE121J01017",
+        "symbol": "INFRATEL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-12-17",
+        "valid_until": "2020-12-18",
+        "snapshot_date": "2020-12-17",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/DEC/cm17DEC2020bhav.csv.zip",
+        "source_sha256": "96b6a2fffe492607dff2fbbd65bec0951e1559af8645973e830f4e7b07ee3be5",
+        "source_tier": "A1",
+        "source_member": "cm17DEC2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-12-18",
+    "symbol": "INDUSTOWER",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/DEC/cm18DEC2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-12-18\\data\\raw\\nifty200_pit_public_sources\\raw\\6d\\6d1cb8ae43c8e6812418a4153d05f47c4826f89ead95174a6f19320b79bd83bb.zip",
+      "source_sha256": "6d1cb8ae43c8e6812418a4153d05f47c4826f89ead95174a6f19320b79bd83bb",
+      "retrieved_at": "2026-09-16T05:44:44.151796+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/DEC/cm18DEC2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"74248-1608292943000\"",
+      "last_modified": "Fri, 18 Dec 2020 12:02:23 GMT",
+      "file_size": 74248
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE121J01017",
+        "isin": "INE121J01017",
+        "symbol": "INDUSTOWER",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-12-18",
+        "valid_until": "2020-12-19",
+        "snapshot_date": "2020-12-18",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/DEC/cm18DEC2020bhav.csv.zip",
+        "source_sha256": "6d1cb8ae43c8e6812418a4153d05f47c4826f89ead95174a6f19320b79bd83bb",
+        "source_tier": "A1",
+        "source_member": "cm18DEC2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-01-22",
+    "symbol": "RNAM",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/JAN/cm22JAN2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-01-22\\data\\raw\\nifty200_pit_public_sources\\raw\\36\\362dc20a888a86465a966098bf6ec8ad3112a380a9e78d08b6b9d5246794410a.zip",
+      "source_sha256": "362dc20a888a86465a966098bf6ec8ad3112a380a9e78d08b6b9d5246794410a",
+      "retrieved_at": "2026-09-16T05:44:44.319754+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/JAN/cm22JAN2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"70046-1579694548000\"",
+      "last_modified": "Wed, 22 Jan 2020 12:02:28 GMT",
+      "file_size": 70046
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE298J01013",
+        "isin": "INE298J01013",
+        "symbol": "RNAM",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-01-22",
+        "valid_until": "2020-01-23",
+        "snapshot_date": "2020-01-22",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/JAN/cm22JAN2020bhav.csv.zip",
+        "source_sha256": "362dc20a888a86465a966098bf6ec8ad3112a380a9e78d08b6b9d5246794410a",
+        "source_tier": "A1",
+        "source_member": "cm22JAN2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-01-23",
+    "symbol": "NAM-INDIA",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/JAN/cm23JAN2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-01-23\\data\\raw\\nifty200_pit_public_sources\\raw\\f5\\f5c093f32503e2538a368c36080d9c9f2090e59b13daf9b3447243005f17508b.zip",
+      "source_sha256": "f5c093f32503e2538a368c36080d9c9f2090e59b13daf9b3447243005f17508b",
+      "retrieved_at": "2026-09-16T05:44:44.824650+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/JAN/cm23JAN2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"69821-1579780954000\"",
+      "last_modified": "Thu, 23 Jan 2020 12:02:34 GMT",
+      "file_size": 69821
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE298J01013",
+        "isin": "INE298J01013",
+        "symbol": "NAM-INDIA",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-01-23",
+        "valid_until": "2020-01-24",
+        "snapshot_date": "2020-01-23",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/JAN/cm23JAN2020bhav.csv.zip",
+        "source_sha256": "f5c093f32503e2538a368c36080d9c9f2090e59b13daf9b3447243005f17508b",
+        "source_tier": "A1",
+        "source_member": "cm23JAN2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-03-17",
+    "symbol": "PIPAVAVDOC",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/MAR/cm17MAR2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2016-03-17\\data\\raw\\nifty200_pit_public_sources\\raw\\5d\\5dcc3b9693a0db7347d478a7c577cc877db5bc3c0b4672784beeaf6c852cc259.zip",
+      "source_sha256": "5dcc3b9693a0db7347d478a7c577cc877db5bc3c0b4672784beeaf6c852cc259",
+      "retrieved_at": "2026-09-16T05:44:44.907722+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/MAR/cm17MAR2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"58239-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 58239
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE542F01012",
+        "isin": "INE542F01012",
+        "symbol": "PIPAVAVDOC",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-03-17",
+        "valid_until": "2016-03-18",
+        "snapshot_date": "2016-03-17",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/MAR/cm17MAR2016bhav.csv.zip",
+        "source_sha256": "5dcc3b9693a0db7347d478a7c577cc877db5bc3c0b4672784beeaf6c852cc259",
+        "source_tier": "A1",
+        "source_member": "cm17MAR2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-03-18",
+    "symbol": "RDEL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/MAR/cm18MAR2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2016-03-18\\data\\raw\\nifty200_pit_public_sources\\raw\\72\\729f7954947ff84c3d12371aff2230b91399fac68b382efa310c07b676a44626.zip",
+      "source_sha256": "729f7954947ff84c3d12371aff2230b91399fac68b382efa310c07b676a44626",
+      "retrieved_at": "2026-09-16T05:44:44.914851+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/MAR/cm18MAR2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"58838-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 58838
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE542F01012",
+        "isin": "INE542F01012",
+        "symbol": "RDEL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-03-18",
+        "valid_until": "2016-03-19",
+        "snapshot_date": "2016-03-18",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/MAR/cm18MAR2016bhav.csv.zip",
+        "source_sha256": "729f7954947ff84c3d12371aff2230b91399fac68b382efa310c07b676a44626",
+        "source_tier": "A1",
+        "source_member": "cm18MAR2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-02-26",
+    "symbol": "TATAGLOBAL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/FEB/cm26FEB2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-02-26\\data\\raw\\nifty200_pit_public_sources\\raw\\f7\\f7a61068c896f15ebcd56eaa9f29f8551b2fa2ae960828c635fcfaa567f8487b.zip",
+      "source_sha256": "f7a61068c896f15ebcd56eaa9f29f8551b2fa2ae960828c635fcfaa567f8487b",
+      "retrieved_at": "2026-09-16T05:44:45.603470+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/FEB/cm26FEB2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"69371-1582718561000\"",
+      "last_modified": "Wed, 26 Feb 2020 12:02:41 GMT",
+      "file_size": 69371
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE192A01025",
+        "isin": "INE192A01025",
+        "symbol": "TATAGLOBAL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-02-26",
+        "valid_until": "2020-02-27",
+        "snapshot_date": "2020-02-26",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/FEB/cm26FEB2020bhav.csv.zip",
+        "source_sha256": "f7a61068c896f15ebcd56eaa9f29f8551b2fa2ae960828c635fcfaa567f8487b",
+        "source_tier": "A1",
+        "source_member": "cm26FEB2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2020-02-27",
+    "symbol": "TATACONSUM",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/FEB/cm27FEB2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2020-02-27\\data\\raw\\nifty200_pit_public_sources\\raw\\d3\\d38498ec2924be491b34297faf2475bb4f882aeef4a03760b67c3c5eada0b357.zip",
+      "source_sha256": "d38498ec2924be491b34297faf2475bb4f882aeef4a03760b67c3c5eada0b357",
+      "retrieved_at": "2026-09-16T05:44:45.699515+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/FEB/cm27FEB2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"69397-1582804976000\"",
+      "last_modified": "Thu, 27 Feb 2020 12:02:56 GMT",
+      "file_size": 69397
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE192A01025",
+        "isin": "INE192A01025",
+        "symbol": "TATACONSUM",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-02-27",
+        "valid_until": "2020-02-28",
+        "snapshot_date": "2020-02-27",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/FEB/cm27FEB2020bhav.csv.zip",
+        "source_sha256": "d38498ec2924be491b34297faf2475bb4f882aeef4a03760b67c3c5eada0b357",
+        "source_tier": "A1",
+        "source_member": "cm27FEB2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2015-05-06",
+    "symbol": "SSLT",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAY/cm06MAY2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2015-05-06\\data\\raw\\nifty200_pit_public_sources\\raw\\95\\952e635fc31e8ee9611ecdbb5dbc79371599e94839a3e0fd28a047cdb0e45c49.zip",
+      "source_sha256": "952e635fc31e8ee9611ecdbb5dbc79371599e94839a3e0fd28a047cdb0e45c49",
+      "retrieved_at": "2026-09-16T05:44:45.699339+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAY/cm06MAY2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"56741-1547726265000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:45 GMT",
+      "file_size": 56741
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE205A01025",
+        "isin": "INE205A01025",
+        "symbol": "SSLT",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-05-06",
+        "valid_until": "2015-05-07",
+        "snapshot_date": "2015-05-06",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAY/cm06MAY2015bhav.csv.zip",
+        "source_sha256": "952e635fc31e8ee9611ecdbb5dbc79371599e94839a3e0fd28a047cdb0e45c49",
+        "source_tier": "A1",
+        "source_member": "cm06MAY2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2015-05-07",
+    "symbol": "VEDL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAY/cm07MAY2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2015-05-07\\data\\raw\\nifty200_pit_public_sources\\raw\\ca\\caa0c176940f9a47b5671121af50af2bff1610df267aff0845f6506b09fee2ec.zip",
+      "source_sha256": "caa0c176940f9a47b5671121af50af2bff1610df267aff0845f6506b09fee2ec",
+      "retrieved_at": "2026-09-16T05:44:46.186747+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAY/cm07MAY2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"56500-1547726265000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:45 GMT",
+      "file_size": 56500
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE205A01025",
+        "isin": "INE205A01025",
+        "symbol": "VEDL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-05-07",
+        "valid_until": "2015-05-08",
+        "snapshot_date": "2015-05-07",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAY/cm07MAY2015bhav.csv.zip",
+        "source_sha256": "caa0c176940f9a47b5671121af50af2bff1610df267aff0845f6506b09fee2ec",
+        "source_tier": "A1",
+        "source_member": "cm07MAY2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2022-03-04",
+    "symbol": "CADILAHC",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2022/MAR/cm04MAR2022bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2022-03-04\\data\\raw\\nifty200_pit_public_sources\\raw\\2e\\2e538f442495bf1057f288922bb5466e2517cfc17421bdf0cd0332a98d177052.zip",
+      "source_sha256": "2e538f442495bf1057f288922bb5466e2517cfc17421bdf0cd0332a98d177052",
+      "retrieved_at": "2026-09-16T05:44:46.441355+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2022/MAR/cm04MAR2022bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"82417-1646395331000\"",
+      "last_modified": "Fri, 04 Mar 2022 12:02:11 GMT",
+      "file_size": 82417
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE010B01027",
+        "isin": "INE010B01027",
+        "symbol": "CADILAHC",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2022-03-04",
+        "valid_until": "2022-03-05",
+        "snapshot_date": "2022-03-04",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2022/MAR/cm04MAR2022bhav.csv.zip",
+        "source_sha256": "2e538f442495bf1057f288922bb5466e2517cfc17421bdf0cd0332a98d177052",
+        "source_tier": "A1",
+        "source_member": "cm04MAR2022bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2022-03-07",
+    "symbol": "ZYDUSLIFE",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2022/MAR/cm07MAR2022bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2022-03-07\\data\\raw\\nifty200_pit_public_sources\\raw\\bd\\bde0ff7cf136cb91492d2ab98f3134ba4836235e143b12a8540623064d897135.zip",
+      "source_sha256": "bde0ff7cf136cb91492d2ab98f3134ba4836235e143b12a8540623064d897135",
+      "retrieved_at": "2026-09-16T05:44:46.351120+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2022/MAR/cm07MAR2022bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"83945-1646670271000\"",
+      "last_modified": "Mon, 07 Mar 2022 16:24:31 GMT",
+      "file_size": 83945
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE010B01027",
+        "isin": "INE010B01027",
+        "symbol": "ZYDUSLIFE",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2022-03-07",
+        "valid_until": "2022-03-08",
+        "snapshot_date": "2022-03-07",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2022/MAR/cm07MAR2022bhav.csv.zip",
+        "source_sha256": "bde0ff7cf136cb91492d2ab98f3134ba4836235e143b12a8540623064d897135",
+        "source_tier": "A1",
+        "source_member": "cm07MAR2022bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  }
+]

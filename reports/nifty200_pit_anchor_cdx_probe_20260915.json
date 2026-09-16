@@ -1,0 +1,37 @@
+[
+  {
+    "original_url": "http://www.nseindia.com/content/indices/ind_cnx200list.csv",
+    "captures": [
+      {
+        "timestamp": "20140122091713",
+        "original": "http://nseindia.com/content/indices/ind_cnx200list.csv",
+        "mimetype": "application/csv",
+        "statuscode": "200",
+        "digest": "AURHH3JK4VZQ3EBU2NDRG5WJT7RR57DX",
+        "length": "4735"
+      },
+      {
+        "timestamp": "20140709091522",
+        "original": "http://nseindia.com/content/indices/ind_cnx200list.csv",
+        "mimetype": "application/csv",
+        "statuscode": "200",
+        "digest": "VR6UZP7DD27FU5ELMVWUDLJQXBYLMXU7",
+        "length": "4675"
+      },
+      {
+        "timestamp": "20150325063347",
+        "original": "http://nseindia.com/content/indices/ind_cnx200list.csv",
+        "mimetype": "application/csv",
+        "statuscode": "200",
+        "digest": "AHGIMTDBZSU5QAUTJ65MOJTEFT3IOXSF",
+        "length": "4663"
+      }
+    ],
+    "pre_anchor_captures": []
+  },
+  {
+    "original_url": "http://www.nseindia.com/content/indices/ind_nifty200list.csv",
+    "captures": [],
+    "pre_anchor_captures": []
+  }
+]

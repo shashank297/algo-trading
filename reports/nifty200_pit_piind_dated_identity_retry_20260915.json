@@ -1,0 +1,41 @@
+[
+  {
+    "url": "https://archives.nseindia.com/content/historical/EQUITIES/2015/SEP/cm28SEP2015bhav.csv.zip",
+    "error": "HTTPError('403 Client Error: Forbidden for url: https://archives.nseindia.com/content/historical/EQUITIES/2015/SEP/cm28SEP2015bhav.csv.zip')"
+  },
+  {
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/SEP/cm28SEP2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\piind_identity_acquisition_20260915\\retry\\data\\raw\\nifty200_pit_public_sources\\raw\\39\\3991b0c15f3d11e9eef4cad0dd70c906f9ccbda84cf8078270e40b9338862443.zip",
+      "source_sha256": "3991b0c15f3d11e9eef4cad0dd70c906f9ccbda84cf8078270e40b9338862443",
+      "retrieved_at": "2026-09-15T10:23:58.891242+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/SEP/cm28SEP2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"56547-1547726267000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:47 GMT",
+      "file_size": 56547
+    },
+    "piind": [
+      {
+        "instrument_id": "NSE-ISIN:INE603J01030",
+        "isin": "INE603J01030",
+        "symbol": "PIIND",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-09-28",
+        "valid_until": "2015-09-29",
+        "snapshot_date": "2015-09-28",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/SEP/cm28SEP2015bhav.csv.zip",
+        "source_sha256": "3991b0c15f3d11e9eef4cad0dd70c906f9ccbda84cf8078270e40b9338862443",
+        "source_tier": "A1",
+        "source_member": "cm28SEP2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ]
+  }
+]

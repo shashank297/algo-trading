@@ -1,0 +1,16 @@
+year,months_expected,months_with_200_members,months_with_expected_security_count,status,qa_note
+2012,12,0,0,BLOCKED,year contains missing or unexpected-count checkpoints
+2013,12,9,9,BLOCKED,year contains missing or unexpected-count checkpoints
+2014,12,12,12,PASS,year has complete expected-count monthly checkpoints
+2015,12,12,12,PASS,year has complete expected-count monthly checkpoints
+2016,12,3,12,PASS,year has complete expected-count monthly checkpoints
+2017,12,0,12,PASS,year has complete expected-count monthly checkpoints
+2018,12,0,12,PASS,year has complete expected-count monthly checkpoints
+2019,12,0,12,PASS,year has complete expected-count monthly checkpoints
+2020,12,7,12,PASS,year has complete expected-count monthly checkpoints
+2021,12,12,12,PASS,year has complete expected-count monthly checkpoints
+2022,12,3,3,BLOCKED,year contains missing or unexpected-count checkpoints
+2023,12,0,0,BLOCKED,year contains missing or unexpected-count checkpoints
+2024,12,0,0,BLOCKED,year contains missing or unexpected-count checkpoints
+2025,12,0,0,BLOCKED,year contains missing or unexpected-count checkpoints
+2026,8,0,0,BLOCKED,year contains missing or unexpected-count checkpoints

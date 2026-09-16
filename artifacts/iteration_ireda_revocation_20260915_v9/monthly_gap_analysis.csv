@@ -1,0 +1,177 @@
+month,official_snapshot_found,observed_count,expected_count,source_url,archive_url,source_sha,replay_member_count,snapshot_vs_replay_diff,status,action_needed
+2012-01,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-02,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-03,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-04,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-05,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-06,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-07,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-08,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-09,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-10,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-11,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2012-12,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2013-01,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2013-02,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2013-03,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2013-04,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2013.zip,,4942c0f021abcd6ed9702c343c2696ec44cfa8022c7e37448f8a78c075c4a16d,36,-164,PASS,none
+2013-05,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2013.zip,,9cf239c8c11a5682076c1808a2babc7a2b7310ebf38181750256e5c3317c5cfb,36,-164,PASS,none
+2013-06,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2013.zip,,102a895ee36349c392c84e840f556c4c9fbf1a5c845d787c30c9ea949e7eb8ea,36,-164,PASS,none
+2013-07,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2013.zip,,8a71ec4b22f398e81bf1ea12026594ad474e74dc7b077f2627b3c883cd3aff56,36,-164,PASS,none
+2013-08,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2013.zip,,5a7a866768f1001ed1948f5c6731ff83ccbc271a125865cd4c89d52ce04e8b7d,36,-164,PASS,none
+2013-09,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2013.zip,,9527c053b55c0947d5709f568ac0f12e5a3ebdd73fc0dad941f448ca5ea1abfb,43,-157,PASS,none
+2013-10,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2013.zip,,a6b5e1db29dd4d6dc215be54abcfcecc51b25b9993a0ac55cf24587fca191b9a,43,-157,PASS,none
+2013-11,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2013.zip,,f26e53d07a3197bab0b964de65ef1b559260841ea060c569cf8418765df74926,45,-155,PASS,none
+2013-12,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2013.zip,,2009a6339e017910705b8f6ecefd4ef5cd73b18e480c30dbed3bf1b6d408b949,45,-155,PASS,none
+2014-01,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2014.zip,,5f1e285f0fc9adbb1a5e476cbd0fb6f477ed0a4f98f3e9696bbd3d5e50eb8c89,45,-155,PASS,none
+2014-02,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2014.zip,,e96f7d514d0c3622c7cfa0d9aca8317424944aa95e675d074d5385953af0c61b,46,-154,PASS,none
+2014-03,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2014.zip,,7b0c97176339efced89177a8de1c0781e873c20e627e3c7328a78ccce631a646,54,-146,PASS,none
+2014-04,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2014.zip,,03e8cd5b92e0e89c342148f0a976343e2d13fb9a80dca802c72c14a381e3dd50,54,-146,PASS,none
+2014-05,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2014.zip,,3686404c96b45f0cb3a0c9eb80027142cba84f32e92f4985ce22e68c82c23908,54,-146,PASS,none
+2014-06,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2014.zip,,6bc8235964206040fdd5a1b30c4a9982ff43163898a745b75e0e14bdcb78f236,54,-146,PASS,none
+2014-07,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2014.zip,,6eb78ea8686d5b9e1bd79b674b85ec402b3a4ecd2275fca069fac02316ebd387,54,-146,PASS,none
+2014-08,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2014.zip,,6602912e34d6b6fc66f1cda520094669029c006ae89a2ac0e5aa0a3fe82af360,54,-146,PASS,none
+2014-09,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2014.zip,,e000af7962c2f9a92ab273e7dcda50fc31f975cd69774e8d9f7a6ad2fa8d7e98,62,-138,PASS,none
+2014-10,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2014.zip,,326818b807b2efe6d62169aa4a383cf149e21b3f31acf45654db442bf22a671e,62,-138,PASS,none
+2014-11,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2014.zip,,e343f7c3cadac3285a9efc47c612fe0e546449bbc56824979d203bd3dfb30244,63,-137,PASS,none
+2014-12,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2014.zip,,5424204047e97c6004fc5b64c21df95dea21cb48123fd1251bc2d820e3db94fb,63,-137,PASS,none
+2015-01,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2015.zip,,4b8230dfbd9a6cefe435506a87fe6f4bd1b86b02eeb4428b87b6996e39d975f8,63,-137,PASS,none
+2015-02,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2015.zip,,70bdbafdd986d21bee92c3920f9485b3a7c0e7d08aae8ef6d5420d874f6a8aac,63,-137,PASS,none
+2015-03,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2015.zip,,22ee982f384ae02216d9ac3e66e6fda2593597c07c2d0d269be1c757b9ddfc74,66,-134,PASS,none
+2015-04,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2015.zip,,80567e4f49b72c9149248e443c81c18566b23c2af0e87792d33f45748faa7b34,66,-134,PASS,none
+2015-05,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2015.zip,,094e9a7efb4e38d84b3c69e0abd029b6571af6814fe8826bef4187b375525f1f,68,-132,PASS,none
+2015-06,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2015.zip,,ddfacfa68a3690a47cfee6984db19e3b09e0fa5bae4e42f8947607cc0c2972bf,68,-132,PASS,none
+2015-07,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2015.zip,,4fed8b262a38e69d6ba9d9e3f67947e0d74f0da544ab958ecc6cb59731ec6954,68,-132,PASS,none
+2015-08,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2015.zip,,726ce81d4aea21d3d836940ab3f1fd242502f646d9935e3bfe7876548828eaba,68,-132,PASS,none
+2015-09,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2015.zip,,65ba286fad3ea0bc2616e599e438df4dc4156524ce81b4e270eeca4c66cc273f,74,-126,PASS,none
+2015-10,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2015.zip,,4516bcfc6aa1b90a669191f42a979d92004962ec123114075e6514768154e251,75,-125,PASS,none
+2015-11,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2015.zip,,92fb39a68dc0fd31fb16d7bf241c6d45311f8ff9766ad264387a64ebe0b7a760,75,-125,PASS,none
+2015-12,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2015.zip,,ee21d99b90cd5634725d95ebd84f2488db4fa6f4bd4f151e11cb0a60706308e9,75,-125,PASS,none
+2016-01,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2016.zip,,e433e6f2f94f9a94d150f2fbdc178d6a63ee3d3771d2d1c7e3794db9b6d00535,75,-125,PASS,none
+2016-02,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2016.zip,,eceed489ee1a258fec43972a6f5f6a3c3cfeb5f3357d3842a2542cdb67ec2046,75,-125,PASS,none
+2016-03,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2016.zip,,b0f6a0c799f058e23da93c0c7f26e47d45e25b29df814e19c3742a6421539c3e,75,-125,PASS,none
+2016-04,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2016.zip,,85ecfe81fd09d784f824484632c36a83ae91cc549f1fa32a51140a4b0032cbeb,90,-111,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-05,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2016.zip,,16620ce06f3c1a8626cdebd5132f47aee14a95a02e19a91f8af87396f937dd57,90,-111,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-06,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2016.zip,,b0f2dc3ba02242814dc89c218959c15b2cedbd8d6c71da1c58dc349bef2f081c,90,-111,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-07,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2016.zip,,cb0f3c78c9052e199c5733510e7028bb6f54ca2d006dcf6e4a4eefe1d4995043,90,-111,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-08,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2016.zip,,cb278d22b5cb92d6b6a40acf92d71a2bdd2a0e086bfa22ecd74c43e1e5d5334c,90,-111,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-09,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2016.zip,,bd879a4c90b5d90627166c3bb7d003a7820e4b9e6cc444695becb0886cfc0ea4,91,-110,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-10,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2016.zip,,0bc2d0625aae3b09298be89a950f4ff666a382ab4ee0adcbe2782e4ac32a3fc6,91,-110,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-11,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2016.zip,,7da21fa45e791684d560304b79a4c7c50b0569b21dc99df76b3f78e1fe6eebfe,92,-109,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2016-12,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2016.zip,,6ab11b44e137b11a1c8aaddc3e8145407bacb4f615a95ca37083d9559c572e37,92,-109,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-01,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2017.zip,,1c522f49e40ca08f134f206ad9b9b103e5c448839be17392950a78348b3fec5a,92,-109,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-02,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2017.zip,,6e957a8608770bf6612725a696664ea87a24584f15c336d0cec73f7e30a88305,92,-109,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-03,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2017.zip,,66bdfcfd18ca314ee8c6f83d5b7fe510dcee0187d6186e190959246517dd7eae,92,-109,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-04,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2017.zip,,8d0f098b666e0554677af2d944447d5222de90c45ec7dab61a1ab48bdb5c53ad,92,-109,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-05,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2017.zip,,0bc2df7470b2d2f94de9a91bed643b23ee1171451feab2179423f7192d2e826d,93,-108,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-06,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2017.zip,,907fca09784c59d663516fc4b36db89100744c9aab056d222d33adf8a2ef1d6b,93,-108,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-07,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2017.zip,,92e6642ce5d06d8125e3a5b63e75def5d033c5f748c1caa04e003ca6c6037df3,93,-108,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-08,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2017.zip,,8a87b8341569a4b8482fdce76169b5a14c1672b801347657adada8bff3e886f7,93,-108,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-09,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2017.zip,,230073c2272376dbba6f6a70ee44d4da3e40f78e0270da578b1fa53f0f271c5f,94,-107,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-10,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2017.zip,,aac9c50eeab36b3ecce5e5e198447467d2842bc2ba9ef80a641771462a21c506,94,-107,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-11,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2017.zip,,aeffd41c9563e188c885f15efa3d5bc38d08b4dd5e5dd1369fa8b1d894222ef2,94,-107,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2017-12,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2017.zip,,27a47b73a928143c9c0f247f50f07c1373316af6c00f55d75453051219d04db0,94,-107,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-01,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2018.zip,,1c1b11039bdf8da7e1125012e81f2be6332f7033de1a9daa6791d762b5e3e684,94,-107,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-02,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2018.zip,,05a681d96562d26d50eecf4b78b797f7cff1feba71693c9380aa28aff0f09cb3,96,-105,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-03,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2018.zip,,305403cfdf38817cf31dc8bf2b22bc69f6d579a11a80d588958b5cf20fd494c7,96,-105,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-04,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2018.zip,,93a2452b1f3edc991e9965cdf48b2e10c8ece23c5cb2ecc41fbcda98eb4ea0da,98,-103,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-05,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2018.zip,,38b09e4d781a102b521485bc0b704744962a0dbce18e92038ed997e2e7f39b2b,98,-103,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-06,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2018.zip,,35c518e9b77deae7f61f28d4c6f0f312d46d10a7d4e1f41a82f7ce20c9aee01f,99,-102,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-07,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2018.zip,,9fd4ace46b6c1e809f22060576fe7e3e62f1ad746818593c933b2573435e9440,99,-102,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-08,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2018.zip,,88edd69c7399a2075e6c36b11bf1a6b6d19f915a9011f71549a861f96acd7c62,99,-102,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-09,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2018.zip,,be9625d29f2c02efe216f538975ad1df950037a29862152fb50db675f785a023,102,-99,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-10,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2018.zip,,124f94b04e047ffe18fe80b17b5fea5d8cf92593d3d75b71d0e90cbaae98c195,102,-99,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-11,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2018.zip,,262c0645ba9a6e1070c0e45b87c675bbea8b1cf5e5da94c6efb8fb0622b62122,102,-99,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2018-12,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2018.zip,,b7b2084dd3349be9405e54117362e85c5118d6bbccd5edd2f1e6304a0d7a8d44,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-01,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2019.zip,,bf5e8acd6dcba671013874e21058cba19379fb83b221931628ef90d111d81f3d,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-02,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2019.zip,,2a4c4743e8b20d2b5f2f11265f631b493b0a9f3250233f22bf5a7a383b4e57ec,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-03,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2019.zip,,56dc9429612f7a1f5fc4b671343785ff950d465d7e1e8fcef56be9d8fd385a5e,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-04,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2019.zip,,3c6d0ce5aef58047c2f81ae83690aa9601373a4af9fec14e2c83d474e59ee0bd,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-05,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2019.zip,,87c41b86bcbc38e7a7891817c53f2dd86e789487e991c792fad6907879cadc29,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-06,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2019.zip,,637818665439d6b836f4f128db18b3df7a89410ec24e5385ea4c37c7cce398e3,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-07,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2019.zip,,2541d6174a3fc92dd6175eacb946acd5260d4cde8f872edc941389fcae4396c7,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-08,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2019.zip,,aeeca6ea45457b007b6857bc2b26f304a479bb4239cf7e5c3f420b00843b2120,103,-98,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-09,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2019.zip,,c723c9640bca6c287498568b02b671c07ca589781e07e8f501a113cb6feaa0e2,107,-94,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-10,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2019.zip,,efb12285610fb3c0cc07699ad727ab78d5b3d821c68caa9f33dca6e30dc251c2,107,-94,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-11,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2019.zip,,3933aafbffda34e4f1767a4df0f7db6464dede5daecf4e8944387dc680e1464e,107,-94,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2019-12,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2019.zip,,5f0f848bd0b5a13bd6a31cb73ceb55f6a99ac16030c9f578fb240acbfd9e7bd3,108,-93,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2020-01,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2020.zip,,3392685a8c0a3e06ef313354efe174e60c3d4dd62683f7e05cee3c436b62b721,108,-93,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2020-02,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2020.zip,,f79792707dbacba304fa94b0006eee80644b4314c4279cebbf2aa2db4f6c12eb,108,-93,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2020-03,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2020.zip,,00efbdb09265de37ecfc19e85d89e7f78ad3ffb4d003c8694d7a4c9b940d0e6c,109,-92,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2020-04,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2020.zip,,568cfe3a12c8345657534f58154fdde34504f68120f1b2a332dba4aaa0952911,109,-92,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2020-05,TRUE,201,201,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2020.zip,,e7d2700db2d0fd6502e393ab98641d41f1526753f4458a055acf99153b754a2e,109,-92,PASS,official additional-DVR methodology verified; preserve all 201 securities
+2020-06,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2020.zip,,970aa5d345c214482aac2c9fa7bfb6afe572396a404c64c5af1558f309bd3d94,109,-91,PASS,none
+2020-07,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2020.zip,,d2e69912c30325ef1d15ab51122cbd0d70b8469199051f23ed465b492f4c05a1,110,-90,PASS,none
+2020-08,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2020.zip,,bbc2408d0c3eaae9a2c2421eda33cb383945cd7b7cab7e8d173365c44de88d4f,110,-90,PASS,none
+2020-09,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2020.zip,,effeedd14ea6b036af96dbcba8587ed5d508042dc0f1ac2e20848bc4667e6ca3,112,-88,PASS,none
+2020-10,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2020.zip,,62079b5a9c43c475f7f558453a4e27461cdf0ef06c056a521f852a4d85bde0c4,112,-88,PASS,none
+2020-11,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2020.zip,,825559b4d535b42321a26b6e9a4d3ed7c5830804fd0805057d83c76496f0b969,112,-88,PASS,none
+2020-12,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2020.zip,,61922f25601735aeb00d534f04de99924607cc4f51ad1cc8777f61720af3ba0c,112,-88,PASS,none
+2021-01,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2021.zip,,c078a1b9f76004b113af682d30fe1107e30795860d9ad3eab3ad0e3638a58a06,112,-88,PASS,none
+2021-02,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2021.zip,,779259df116672c7a1830033941bea42e5649b14098a65371d5cdfc8f926a7e2,112,-88,PASS,none
+2021-03,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2021.zip,,c5678dfaf5e0b0a79b329509854404f18f164da83513e2a38a69c496e90b4155,113,-87,PASS,none
+2021-04,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2021.zip,,d4fdf9f7b2853638793bb244813e2e04465176d0da4fbe12718bbe03990a4e3b,113,-87,PASS,none
+2021-05,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2021.zip,,eacc46b36e5c82d30d187d378d3080bfe3d6b75292ed580b4e805d6098b2de9d,113,-87,PASS,none
+2021-06,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2021.zip,,97db188b5f25d3a63fb30045dee4e70cb9239135310e72b04c3dc5b89c8e3e04,114,-86,PASS,none
+2021-07,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2021.zip,,4ae6f6a45b37f6a9cbb603d5ad040a71bb6314b6a1d6b3580a93f77281df57c7,114,-86,PASS,none
+2021-08,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2021.zip,,da623588b08cdf90cfd7bd7e66d083b88a34d767cf0ebdd10b599d65ef8f7796,114,-86,PASS,none
+2021-09,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2021.zip,,2ef5cba4356a50caefc3dfc1a04e38d3c753390bbb82ae1e29fb4055ddbbb8ee,114,-86,PASS,none
+2021-10,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2021.zip,,b89d9206bfeadc3d613cba7bf4406607ed47a7e66a22702a1587a5a21749948b,115,-85,PASS,none
+2021-11,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2021.zip,,adcfea2dc8e754f1cfb3ea4c75e89f6c762083d816bdf0409860cd054a7e9420,115,-85,PASS,none
+2021-12,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2021.zip,,cec041b4d5d97a871c341cba260301b639b561f55056e4f2691b49bb4b43532e,115,-85,PASS,none
+2022-01,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2022.zip,,ee81d74e2590f23ecd1dbc4bbdfdb26eee43a4a28d9ca69d23b77bd8c06c6561,115,-85,PASS,none
+2022-02,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2022.zip,,34098fcb9a791546a4981ad3bd02563e5fd4f53278f71dc1f54619f73d5df774,115,-85,PASS,none
+2022-03,TRUE,200,200,https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2022.zip,,44a182c845eac8ddd6864abe535d02c6ce9bdecc0adbf11a16e25133cc44b969,117,-83,PASS,none
+2022-04,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-05,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-06,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-07,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-08,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-09,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-10,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-11,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2022-12,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-01,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-02,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-03,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-04,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-05,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-06,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-07,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-08,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-09,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-10,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-11,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2023-12,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-01,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-02,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-03,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-04,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-05,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-06,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-07,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-08,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-09,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-10,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-11,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2024-12,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-01,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-02,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-03,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-04,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-05,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-06,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-07,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-08,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-09,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-10,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-11,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2025-12,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-01,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-02,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-03,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-04,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-05,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-06,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-07,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap
+2026-08,FALSE,0,200,,,,,,A_NO_SNAPSHOT_EVIDENCE,retrieve an official historical checkpoint or record an external evidence gap

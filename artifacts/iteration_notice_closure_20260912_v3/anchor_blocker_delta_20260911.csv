@@ -1,0 +1,9 @@
+blocker_type,before_count,after_count,resolution_status,resolution_source,notes
+COUNT_NOT_200,3609,3609,UNRESOLVED,anchor_replay_candidate.parquet,Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.
+DUPLICATE_EVENT,6,6,UNRESOLVED,anchor_replay_candidate.parquet,Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.
+MISSING_DURABLE_IDENTITY,4,4,UNRESOLVED,anchor_replay_candidate.parquet,Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.
+MISSING_INITIAL_ANCHOR,140,140,UNRESOLVED,anchor_replay_candidate.parquet,Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.
+MISSING_OFFICIAL_EVENT,16,16,UNRESOLVED,anchor_replay_candidate.parquet,Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.
+MONTHLY_SNAPSHOT_MISSING,69,69,UNRESOLVED,anchor_replay_candidate.parquet,Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.
+CONFLICT_CRITICAL,146,146,UNRESOLVED,conflict_report.parquet,No conflict was auto-resolved by the anchor diagnostic.
+CONFLICT_HIGH,21,21,UNRESOLVED,conflict_report.parquet,No conflict was auto-resolved by the anchor diagnostic.

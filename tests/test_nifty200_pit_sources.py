@@ -1,4 +1,5 @@
 from datetime import date
+import json
 
 from tools.nifty200_pit.causality import derive_known_at
 from tools.nifty200_pit.parse_html import extract_links, is_index_change_candidate
@@ -25,3 +26,31 @@ def test_date_only_knowledge_time_is_conservative():
     assert known_at.isoformat().startswith("2024-08-16T09:15:00")
     assert basis == "DATE_ONLY_CONSERVATIVE_NEXT_SESSION"
     assert review is None
+
+
+def test_harvest_preserves_existing_catalogue_and_deduplicates(tmp_path):
+    from tools.nifty200_pit.harvest_nse import harvest_urls
+
+    catalogue = SourceCatalogue(tmp_path / "data/raw/nifty200_pit_public_sources")
+    old = catalogue.add_bytes(b"old", source_url="https://nse.example/old.pdf")
+    catalogue.save()
+
+    class Response:
+        content = b"new"
+        status_code = 200
+        headers = {"content-type": "application/pdf"}
+
+        def raise_for_status(self):
+            pass
+
+    class Session:
+        headers = {}
+
+        def get(self, *args, **kwargs):
+            return Response()
+
+    for _ in range(2):
+        harvest_urls(tmp_path, ["https://nse.example/new.pdf"], session=Session())
+    rows = json.loads((catalogue.root / "source_catalogue.json").read_text())
+    assert len(rows) == 2
+    assert rows[0]["source_sha256"] == old.source_sha256

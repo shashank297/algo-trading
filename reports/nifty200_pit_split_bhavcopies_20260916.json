@@ -1,0 +1,458 @@
+[
+  {
+    "date": "2014-09-03",
+    "symbol": "J&KBANK",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm03SEP2014bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2014-09-03\\data\\raw\\nifty200_pit_public_sources\\raw\\b6\\b639c44a62ac9d000c59dbad40a1eac0b9770f8249a2e783d3a6088cabeda6ec.zip",
+      "source_sha256": "b639c44a62ac9d000c59dbad40a1eac0b9770f8249a2e783d3a6088cabeda6ec",
+      "retrieved_at": "2026-09-16T01:58:46.647367+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm03SEP2014bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"58433-1547726262000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:42 GMT",
+      "file_size": 58433
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE168A01017",
+        "isin": "INE168A01017",
+        "symbol": "J&KBANK",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2014-09-03",
+        "valid_until": "2014-09-04",
+        "snapshot_date": "2014-09-03",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm03SEP2014bhav.csv.zip",
+        "source_sha256": "b639c44a62ac9d000c59dbad40a1eac0b9770f8249a2e783d3a6088cabeda6ec",
+        "source_tier": "A1",
+        "source_member": "cm03SEP2014bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2014-09-04",
+    "symbol": "J&KBANK",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm04SEP2014bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2014-09-04\\data\\raw\\nifty200_pit_public_sources\\raw\\98\\98a1dfce5d59f653a2af0243f1ab75c9a48f924bd8a5542478f0d7712cb31879.zip",
+      "source_sha256": "98a1dfce5d59f653a2af0243f1ab75c9a48f924bd8a5542478f0d7712cb31879",
+      "retrieved_at": "2026-09-16T01:58:46.582346+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm04SEP2014bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"57834-1547726262000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:42 GMT",
+      "file_size": 57834
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE168A01017",
+        "isin": "INE168A01017",
+        "symbol": "J&KBANK",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2014-09-04",
+        "valid_until": "2014-09-05",
+        "snapshot_date": "2014-09-04",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm04SEP2014bhav.csv.zip",
+        "source_sha256": "98a1dfce5d59f653a2af0243f1ab75c9a48f924bd8a5542478f0d7712cb31879",
+        "source_tier": "A1",
+        "source_member": "cm04SEP2014bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2015-10-06",
+    "symbol": "BATAINDIA",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/OCT/cm06OCT2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2015-10-06\\data\\raw\\nifty200_pit_public_sources\\raw\\51\\512f9fbfd32940595102a536f2d555b66b0695081656ef5d8010c58c9dd935e9.zip",
+      "source_sha256": "512f9fbfd32940595102a536f2d555b66b0695081656ef5d8010c58c9dd935e9",
+      "retrieved_at": "2026-09-16T01:58:46.370328+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/OCT/cm06OCT2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"57492-1547726266000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:46 GMT",
+      "file_size": 57492
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE176A01010",
+        "isin": "INE176A01010",
+        "symbol": "BATAINDIA",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-10-06",
+        "valid_until": "2015-10-07",
+        "snapshot_date": "2015-10-06",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/OCT/cm06OCT2015bhav.csv.zip",
+        "source_sha256": "512f9fbfd32940595102a536f2d555b66b0695081656ef5d8010c58c9dd935e9",
+        "source_tier": "A1",
+        "source_member": "cm06OCT2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2015-10-07",
+    "symbol": "BATAINDIA",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/OCT/cm07OCT2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2015-10-07\\data\\raw\\nifty200_pit_public_sources\\raw\\5b\\5bf12c923a4fdae35c64b42db565f61869e6ab9b76cfe6b78a47a7d6fba5b275.zip",
+      "source_sha256": "5bf12c923a4fdae35c64b42db565f61869e6ab9b76cfe6b78a47a7d6fba5b275",
+      "retrieved_at": "2026-09-16T01:58:47.062103+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/OCT/cm07OCT2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"57825-1547726266000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:46 GMT",
+      "file_size": 57825
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE176A01010",
+        "isin": "INE176A01010",
+        "symbol": "BATAINDIA",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-10-07",
+        "valid_until": "2015-10-08",
+        "snapshot_date": "2015-10-07",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/OCT/cm07OCT2015bhav.csv.zip",
+        "source_sha256": "5bf12c923a4fdae35c64b42db565f61869e6ab9b76cfe6b78a47a7d6fba5b275",
+        "source_tier": "A1",
+        "source_member": "cm07OCT2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2015-11-24",
+    "symbol": "NATCOPHARM",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/NOV/cm24NOV2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2015-11-24\\data\\raw\\nifty200_pit_public_sources\\raw\\c3\\c39f16e6667f6530ad89a7eeecf1ad259eb0c66413fca8b7a92811f9c98abbac.zip",
+      "source_sha256": "c39f16e6667f6530ad89a7eeecf1ad259eb0c66413fca8b7a92811f9c98abbac",
+      "retrieved_at": "2026-09-16T01:58:47.204166+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/NOV/cm24NOV2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"57998-1547726266000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:46 GMT",
+      "file_size": 57998
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE987B01018",
+        "isin": "INE987B01018",
+        "symbol": "NATCOPHARM",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-11-24",
+        "valid_until": "2015-11-25",
+        "snapshot_date": "2015-11-24",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/NOV/cm24NOV2015bhav.csv.zip",
+        "source_sha256": "c39f16e6667f6530ad89a7eeecf1ad259eb0c66413fca8b7a92811f9c98abbac",
+        "source_tier": "A1",
+        "source_member": "cm24NOV2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2015-11-26",
+    "symbol": "NATCOPHARM",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/NOV/cm26NOV2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2015-11-26\\data\\raw\\nifty200_pit_public_sources\\raw\\91\\9107181b9fad0d1155000e5e8af1350fdaaa2468182413c9dd962d89bef157aa.zip",
+      "source_sha256": "9107181b9fad0d1155000e5e8af1350fdaaa2468182413c9dd962d89bef157aa",
+      "retrieved_at": "2026-09-16T01:58:47.277121+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/NOV/cm26NOV2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"58387-1547726266000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:46 GMT",
+      "file_size": 58387
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE987B01018",
+        "isin": "INE987B01018",
+        "symbol": "NATCOPHARM",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-11-26",
+        "valid_until": "2015-11-27",
+        "snapshot_date": "2015-11-26",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/NOV/cm26NOV2015bhav.csv.zip",
+        "source_sha256": "9107181b9fad0d1155000e5e8af1350fdaaa2468182413c9dd962d89bef157aa",
+        "source_tier": "A1",
+        "source_member": "cm26NOV2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-06-01",
+    "symbol": "NBCC",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm01JUN2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2016-06-01\\data\\raw\\nifty200_pit_public_sources\\raw\\30\\3038d4912650e732b32ffaed939e1f74a16e082110eb6c6391887b3e0b5bfebd.zip",
+      "source_sha256": "3038d4912650e732b32ffaed939e1f74a16e082110eb6c6391887b3e0b5bfebd",
+      "retrieved_at": "2026-09-16T01:58:47.685122+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm01JUN2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"59136-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 59136
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE095N01015",
+        "isin": "INE095N01015",
+        "symbol": "NBCC",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-06-01",
+        "valid_until": "2016-06-02",
+        "snapshot_date": "2016-06-01",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm01JUN2016bhav.csv.zip",
+        "source_sha256": "3038d4912650e732b32ffaed939e1f74a16e082110eb6c6391887b3e0b5bfebd",
+        "source_tier": "A1",
+        "source_member": "cm01JUN2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-06-02",
+    "symbol": "NBCC",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm02JUN2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2016-06-02\\data\\raw\\nifty200_pit_public_sources\\raw\\87\\87df9d926becfd62eae15fb55bfdd5dc2d2d017d00eaacaa8e403078395f5415.zip",
+      "source_sha256": "87df9d926becfd62eae15fb55bfdd5dc2d2d017d00eaacaa8e403078395f5415",
+      "retrieved_at": "2026-09-16T01:58:47.886144+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm02JUN2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"58963-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 58963
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE095N01015",
+        "isin": "INE095N01015",
+        "symbol": "NBCC",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-06-02",
+        "valid_until": "2016-06-03",
+        "snapshot_date": "2016-06-02",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/JUN/cm02JUN2016bhav.csv.zip",
+        "source_sha256": "87df9d926becfd62eae15fb55bfdd5dc2d2d017d00eaacaa8e403078395f5415",
+        "source_tier": "A1",
+        "source_member": "cm02JUN2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-11-16",
+    "symbol": "KARURVYSYA",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/NOV/cm16NOV2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2016-11-16\\data\\raw\\nifty200_pit_public_sources\\raw\\11\\1138666faf54a526a0065b302da85441f8d3ddc2a03cc89e2f75f294f1786968.zip",
+      "source_sha256": "1138666faf54a526a0065b302da85441f8d3ddc2a03cc89e2f75f294f1786968",
+      "retrieved_at": "2026-09-16T01:58:47.954801+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/NOV/cm16NOV2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"61737-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 61737
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE036D01010",
+        "isin": "INE036D01010",
+        "symbol": "KARURVYSYA",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-11-16",
+        "valid_until": "2016-11-17",
+        "snapshot_date": "2016-11-16",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/NOV/cm16NOV2016bhav.csv.zip",
+        "source_sha256": "1138666faf54a526a0065b302da85441f8d3ddc2a03cc89e2f75f294f1786968",
+        "source_tier": "A1",
+        "source_member": "cm16NOV2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2016-11-17",
+    "symbol": "KARURVYSYA",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/NOV/cm17NOV2016bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2016-11-17\\data\\raw\\nifty200_pit_public_sources\\raw\\08\\088c51d7decb7f8acab04d6f95d8d0d8ac1589fba73aee8a6414a78c60535c7e.zip",
+      "source_sha256": "088c51d7decb7f8acab04d6f95d8d0d8ac1589fba73aee8a6414a78c60535c7e",
+      "retrieved_at": "2026-09-16T01:58:48.225315+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/NOV/cm17NOV2016bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"61251-1547726268000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:48 GMT",
+      "file_size": 61251
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE036D01010",
+        "isin": "INE036D01010",
+        "symbol": "KARURVYSYA",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2016-11-17",
+        "valid_until": "2016-11-18",
+        "snapshot_date": "2016-11-17",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2016/NOV/cm17NOV2016bhav.csv.zip",
+        "source_sha256": "088c51d7decb7f8acab04d6f95d8d0d8ac1589fba73aee8a6414a78c60535c7e",
+        "source_tier": "A1",
+        "source_member": "cm17NOV2016bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2018-04-24",
+    "symbol": "NBCC",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2018/APR/cm24APR2018bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2018-04-24\\data\\raw\\nifty200_pit_public_sources\\raw\\91\\91f5c4f1e2852d5aebcc1d2972a28eb31628058c2b3b0d2b957874d6b0b096a9.zip",
+      "source_sha256": "91f5c4f1e2852d5aebcc1d2972a28eb31628058c2b3b0d2b957874d6b0b096a9",
+      "retrieved_at": "2026-09-16T01:58:48.448460+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2018/APR/cm24APR2018bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"68794-1547726271000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:51 GMT",
+      "file_size": 68794
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE095N01023",
+        "isin": "INE095N01023",
+        "symbol": "NBCC",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2018-04-24",
+        "valid_until": "2018-04-25",
+        "snapshot_date": "2018-04-24",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2018/APR/cm24APR2018bhav.csv.zip",
+        "source_sha256": "91f5c4f1e2852d5aebcc1d2972a28eb31628058c2b3b0d2b957874d6b0b096a9",
+        "source_tier": "A1",
+        "source_member": "cm24APR2018bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2018-04-25",
+    "symbol": "NBCC",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2018/APR/cm25APR2018bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\split_bhavcopies_20260916\\2018-04-25\\data\\raw\\nifty200_pit_public_sources\\raw\\2c\\2c1bba907be7866dfccaa6e6380b60341d18547ff389f4100526043d0b541dc1.zip",
+      "source_sha256": "2c1bba907be7866dfccaa6e6380b60341d18547ff389f4100526043d0b541dc1",
+      "retrieved_at": "2026-09-16T01:58:48.531696+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2018/APR/cm25APR2018bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"68981-1547726271000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:51 GMT",
+      "file_size": 68981
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE095N01023",
+        "isin": "INE095N01023",
+        "symbol": "NBCC",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2018-04-25",
+        "valid_until": "2018-04-26",
+        "snapshot_date": "2018-04-25",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2018/APR/cm25APR2018bhav.csv.zip",
+        "source_sha256": "2c1bba907be7866dfccaa6e6380b60341d18547ff389f4100526043d0b541dc1",
+        "source_tier": "A1",
+        "source_member": "cm25APR2018bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  }
+]

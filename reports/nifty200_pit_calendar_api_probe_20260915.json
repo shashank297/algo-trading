@@ -1,0 +1,8 @@
+{
+  "closed_date": "2024-01-22",
+  "is_trading_day": false,
+  "expected_minutes_on_closed_date": 375,
+  "interruption_timestamp": "2024-03-02T10:30:00+05:30",
+  "is_open_during_interruption": true,
+  "status": "UNRESOLVED_CALENDAR_API_INCONSISTENCY"
+}

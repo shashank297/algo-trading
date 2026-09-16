@@ -1,0 +1,1868 @@
+{
+  "status": "DIAGNOSTIC_ONLY_INITIAL_ANCHOR_NOT_ASSERTED",
+  "authoritative_membership_modified": false,
+  "verified_rename_links": [
+    {
+      "company_name": "Cyient Limited",
+      "previous_symbol": "INFOTECENT",
+      "new_symbol": "CYIENT",
+      "changed_on": "2014-05-22",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE136B01020",
+      "before_sha256": "4ff7fcee61a8b091d77694f8fe6c327f740aba0cc4f13ef724e298a9e29b74fc",
+      "after_sha256": "77438e263b31c6e5f521986973eae46460a34df83db6aef11156909c5c183d0f"
+    },
+    {
+      "company_name": "The Ramco Cements Limited",
+      "previous_symbol": "MADRASCEM",
+      "new_symbol": "RAMCOCEM",
+      "changed_on": "2013-09-30",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE331A01037",
+      "before_sha256": "33470fd6ca590bccc258452014e55dc7ca014922f17d6b86ea2ff2ac14b93d74",
+      "after_sha256": "acfd69a9fe6a9c304135c7fabe8a104044b1f769e6730d6f87dfe1b26c6b7455"
+    },
+    {
+      "company_name": "UPL Limited",
+      "previous_symbol": "UNIPHOS",
+      "new_symbol": "UPL",
+      "changed_on": "2013-10-23",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE628A01036",
+      "before_sha256": "0d206c84f17c8e54be8d2dfbf562c647e064726cdfff1f708d3a993f92160c4b",
+      "after_sha256": "99c39829b1c6042b314e7224bf4dcdc3dc8fe4c16e164c7b7de601b6942cb64d"
+    },
+    {
+      "company_name": "Vedanta Limited",
+      "previous_symbol": "SESAGOA",
+      "new_symbol": "SSLT",
+      "changed_on": "2013-10-04",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE205A01025",
+      "before_sha256": "b37f19ec2cc8b7fd8d2854218653be6c8659da0235500278d3fc1ad3ef3b8f9e",
+      "after_sha256": "04875a55de103a81c925a8ad368b6dbb019b515f825451966aa2e5d8ad60e7cb"
+    }
+  ],
+  "applied_links": [
+    {
+      "company_name": "The Ramco Cements Limited",
+      "previous_symbol": "MADRASCEM",
+      "new_symbol": "RAMCOCEM",
+      "changed_on": "2013-09-30",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE331A01037",
+      "before_sha256": "33470fd6ca590bccc258452014e55dc7ca014922f17d6b86ea2ff2ac14b93d74",
+      "after_sha256": "acfd69a9fe6a9c304135c7fabe8a104044b1f769e6730d6f87dfe1b26c6b7455"
+    },
+    {
+      "company_name": "Vedanta Limited",
+      "previous_symbol": "SESAGOA",
+      "new_symbol": "SSLT",
+      "changed_on": "2013-10-04",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE205A01025",
+      "before_sha256": "b37f19ec2cc8b7fd8d2854218653be6c8659da0235500278d3fc1ad3ef3b8f9e",
+      "after_sha256": "04875a55de103a81c925a8ad368b6dbb019b515f825451966aa2e5d8ad60e7cb"
+    },
+    {
+      "company_name": "UPL Limited",
+      "previous_symbol": "UNIPHOS",
+      "new_symbol": "UPL",
+      "changed_on": "2013-10-23",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE628A01036",
+      "before_sha256": "0d206c84f17c8e54be8d2dfbf562c647e064726cdfff1f708d3a993f92160c4b",
+      "after_sha256": "99c39829b1c6042b314e7224bf4dcdc3dc8fe4c16e164c7b7de601b6942cb64d"
+    },
+    {
+      "company_name": "Cyient Limited",
+      "previous_symbol": "INFOTECENT",
+      "new_symbol": "CYIENT",
+      "changed_on": "2014-05-22",
+      "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+      "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+      "source_tier": "A1",
+      "isin": "INE136B01020",
+      "before_sha256": "4ff7fcee61a8b091d77694f8fe6c327f740aba0cc4f13ef724e298a9e29b74fc",
+      "after_sha256": "77438e263b31c6e5f521986973eae46460a34df83db6aef11156909c5c183d0f"
+    }
+  ],
+  "baseline_matches": 5,
+  "with_four_verified_renames_matches": 25,
+  "newly_matching_checkpoints": [
+    {
+      "checkpoint_date": "2013-09-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-10-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-11-29",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-12-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-01-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-02-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-03-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-04-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-05-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-06-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-07-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-08-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-09-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-10-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-11-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-12-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-01-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-02-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-03-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-04-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    }
+  ],
+  "checkpoint_comparison": [
+    {
+      "checkpoint_date": "2013-04-18",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-05-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-06-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-07-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-08-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-09-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-10-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-11-29",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2013-12-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-01-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-02-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-03-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-04-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-05-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-06-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-07-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-08-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-09-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-10-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-11-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2014-12-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-01-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-02-28",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-03-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-04-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [],
+      "unexpected": [],
+      "set_match": true
+    },
+    {
+      "checkpoint_date": "2015-05-29",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-06-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-07-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-08-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-09-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-10-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-11-30",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2015-12-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-01-29",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-02-29",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-03-31",
+      "official_count": 200,
+      "replay_count": 200,
+      "missing": [
+        "rdel",
+        "vedl"
+      ],
+      "unexpected": [
+        "pipavavdoc",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-04-29",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-05-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-06-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-07-29",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-08-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-09-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-10-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-11-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2016-12-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-01-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-02-28",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-03-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-04-28",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-05-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-06-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-07-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-08-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-09-29",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-10-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-11-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2017-12-29",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-01-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-02-28",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-03-28",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-04-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-05-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-06-29",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-07-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-08-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-09-28",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-10-31",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-11-30",
+      "official_count": 201,
+      "replay_count": 201,
+      "missing": [
+        "bharatfin",
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2018-12-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "vedl"
+      ],
+      "unexpected": [
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-01-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-02-28",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-03-29",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-04-30",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-05-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-06-28",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-07-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-08-30",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-09-30",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-10-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-11-29",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2019-12-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-01-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-02-28",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-03-31",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-04-30",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-05-29",
+      "official_count": 201,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-06-30",
+      "official_count": 200,
+      "replay_count": 201,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum",
+        "vedl"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-07-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-08-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "coforge",
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-09-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "coforge",
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "idfcbank",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-10-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "ibventures",
+        "idfcbank",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-11-27",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "ibventures",
+        "idfcbank",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2020-12-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-01-29",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-02-26",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-03-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-04-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-05-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-06-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-07-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-08-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-09-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-10-29",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-11-30",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2021-12-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2022-01-31",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2022-02-28",
+      "official_count": 200,
+      "replay_count": 202,
+      "missing": [
+        "atgl",
+        "coforge",
+        "dhani",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum"
+      ],
+      "unexpected": [
+        "adanigas",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    },
+    {
+      "checkpoint_date": "2022-03-31",
+      "official_count": 200,
+      "replay_count": 203,
+      "missing": [
+        "atgl",
+        "coforge",
+        "idfcfirstb",
+        "industower",
+        "nam-india",
+        "tataconsum",
+        "zyduslife"
+      ],
+      "unexpected": [
+        "adanigas",
+        "cadilahc",
+        "ibventures",
+        "idfcbank",
+        "infratel",
+        "niittech",
+        "rnam",
+        "sksmicro",
+        "sslt",
+        "tataglobal"
+      ],
+      "set_match": false
+    }
+  ]
+}

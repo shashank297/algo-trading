@@ -1,0 +1,137 @@
+[
+  {
+    "company_name": "Adani Total Gas Limited",
+    "previous_symbol": "ADANIGAS",
+    "new_symbol": "ATGL",
+    "changed_on": "2021-01-13",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Bharat Financial Inclusion Limited",
+    "previous_symbol": "SKSMICRO",
+    "new_symbol": "BHARATFIN",
+    "changed_on": "2016-07-01",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Coforge Limited",
+    "previous_symbol": "NIITTECH",
+    "new_symbol": "COFORGE",
+    "changed_on": "2020-08-20",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Cyient Limited",
+    "previous_symbol": "INFOTECENT",
+    "new_symbol": "CYIENT",
+    "changed_on": "2014-05-22",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Dhani Services Limited",
+    "previous_symbol": "IBVENTURES",
+    "new_symbol": "DHANI",
+    "changed_on": "2020-10-28",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "IDFC First Bank Limited",
+    "previous_symbol": "IDFCBANK",
+    "new_symbol": "IDFCFIRSTB",
+    "changed_on": "2019-01-16",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Indus Towers Limited",
+    "previous_symbol": "INFRATEL",
+    "new_symbol": "INDUSTOWER",
+    "changed_on": "2020-12-18",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Nippon Life India Asset Management Limited",
+    "previous_symbol": "RNAM",
+    "new_symbol": "NAM-INDIA",
+    "changed_on": "2020-01-23",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Reliance Naval and Engineering Limited",
+    "previous_symbol": "PIPAVAVDOC",
+    "new_symbol": "RDEL",
+    "changed_on": "2016-03-18",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "TATA CONSUMER PRODUCTS LIMITED",
+    "previous_symbol": "TATAGLOBAL",
+    "new_symbol": "TATACONSUM",
+    "changed_on": "2020-02-27",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "The Ramco Cements Limited",
+    "previous_symbol": "MADRASCEM",
+    "new_symbol": "RAMCOCEM",
+    "changed_on": "2013-09-30",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "UPL Limited",
+    "previous_symbol": "UNIPHOS",
+    "new_symbol": "UPL",
+    "changed_on": "2013-10-23",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Vedanta Limited",
+    "previous_symbol": "SSLT",
+    "new_symbol": "VEDL",
+    "changed_on": "2015-05-07",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Vedanta Limited",
+    "previous_symbol": "SESAGOA",
+    "new_symbol": "SSLT",
+    "changed_on": "2013-10-04",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  },
+  {
+    "company_name": "Zydus Lifesciences Limited",
+    "previous_symbol": "CADILAHC",
+    "new_symbol": "ZYDUSLIFE",
+    "changed_on": "2022-03-07",
+    "source_url": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "source_sha256": "647cb988b3957e948b2847d740490ab340db5ecbc4b6195d0ed6ffe8180f0280",
+    "source_tier": "A1"
+  }
+]
