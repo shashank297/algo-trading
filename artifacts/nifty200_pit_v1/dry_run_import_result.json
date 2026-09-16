@@ -1,8 +1,8 @@
 {
   "command": "tools/import_nifty200_pit.py --dry-run",
-  "exit_code": 0,
-  "stdout": "Validated 554 NIFTY-200 PIT intervals (dry-run; no database write)\n",
-  "stderr": "",
+  "exit_code": 1,
+  "stdout": "",
+  "stderr": "Traceback (most recent call last):\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 101, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 95, in main\n    count = import_intervals(args.input, args.manifest, database=args.database, dry_run=args.dry_run)\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 82, in import_intervals\n    verify_manifest(manifest_path, input_path)\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 35, in verify_manifest\n    raise ValueError(\"Manifest validation is not PASS; import refused\")\nValueError: Manifest validation is not PASS; import refused\n",
   "database_touched": false,
-  "result": "PASSED"
+  "result": "REFUSED_AS_DESIGNED"
 }
