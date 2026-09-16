@@ -25,7 +25,7 @@ from typing import Any
 from tools.nifty200_pit.intervals import build_intervals, active_intervals
 from tools.nifty200_pit.manifest import write_artifacts, write_table
 from tools.nifty200_pit.ocr import load_pdf_transcription
-from tools.nifty200_pit.models import Action, CanonicalEvent, Confidence, Conflict, Observation, ReviewStatus, SourceRecord
+from tools.nifty200_pit.models import Action, Conflict, Observation, SourceRecord
 from tools.nifty200_pit.parse_pdf import (
     extract_pdf_pages,
     find_document_date,
@@ -800,31 +800,6 @@ def _apply_documented_isin_continuity(
             "independent_qa": "NOT_ASSERTED",
         })
 
-    symbol_change_sources = [
-        s for s in sources if s.source_url == SYMBOL_CHANGES_URL
-        and s.source_tier in {"A1", "A2"} and Path(s.local_path).is_file()
-    ]
-    if symbol_change_sources:
-        for sym, old_isin, new_isin in [
-            ("IGL", "INE203G01019", "INE203G01027"),
-            ("ORISSAMINE", "INE725E01016", "INE725E01024"),
-            ("CORPBANK", "INE112A01015", "INE112A01023"),
-        ]:
-            parents[(sym, new_isin)] = old_isin
-            links.append({
-                "symbol": sym, "old_isin": old_isin, "new_isin": new_isin,
-                "identity_event_type": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
-                "source_url": symbol_change_sources[0].source_url,
-                "source_sha256": symbol_change_sources[0].source_sha256,
-                "source_page": 1,
-                "before_reference_date": "2017-11-09",
-                "before_source_url": "", "before_source_sha256": "",
-                "after_reference_date": "2017-11-10",
-                "after_source_url": "", "after_source_sha256": "",
-                "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
-                "independent_qa": "VERIFIED_BY_OFFICIAL_STOCK_SPLIT_RECORD",
-            })
-
     def durable_id(symbol: object, isin: object, original: Any) -> Any:
         if not original or original != f"NSE-ISIN:{isin}":
             return original
@@ -1418,22 +1393,6 @@ def _anchor_replay_forensics(
         inst_id = (getattr(lineage, "instrument_id", None) if lineage else None) or master.get("instrument_id") or f"NSE-SYMBOL:{symbol_name}"
         isin_val = (getattr(lineage, "isin", None) if lineage else None) or master.get("isin") or ""
 
-        if symbol_name == "YESBANK":
-            isin_val = "INE528G01019"
-            inst_id = "NSE-ISIN:INE528G01019"
-        elif symbol_name == "ORISSAMINE":
-            isin_val = "INE725E01016"
-            inst_id = "NSE-ISIN:INE725E01016"
-        elif symbol_name == "CORPBANK":
-            isin_val = "INE112A01015"
-            inst_id = "NSE-ISIN:INE112A01015"
-        elif symbol_name == "FRL":
-            isin_val = "INE623B01027"
-            inst_id = "NSE-ISIN:INE623B01027"
-        elif symbol_name == "IGL":
-            isin_val = "INE203G01019"
-            inst_id = "NSE-ISIN:INE203G01019"
-
         lineage_source_url = getattr(lineage, "source_url", "") if lineage else ""
         lineage_source_sha = getattr(lineage, "source_sha256", "") if lineage else ""
         lineage_effective = getattr(lineage, "effective_date", "") if lineage else ""
@@ -1452,8 +1411,8 @@ def _anchor_replay_forensics(
             "source_url": source.get("source_url", "") or lineage_source_url or "https://www.niftyindices.com",
             "source_sha256": source.get("source_sha256", "") or lineage_source_sha or hashlib.sha256(b"INITIAL_ANCHOR").hexdigest(),
             "source_member": source.get("source_member", ""), "source_tier": source.get("source_tier", "A1"),
-            "confidence": "CERTIFIED", "review_status": "ACCEPTED",
-            "notes": "Verified initial constituent membership as of 2012-01-02 via exact empirical back-casting from official checkpoint.",
+            "confidence": "MANUAL_REVIEW", "review_status": "MANUAL_REVIEW",
+            "notes": "Diagnostic reverse-replay candidate only; later checkpoint evidence does not prove 2012-01-02 membership.",
             "index_name": "NIFTY 200", "anchor_date": CAMPAIGN_FROM.isoformat(),
             "member_status": "REVERSED_CANONICAL_DROP" if lineage and not source else "FORWARD_CHECKPOINT_MEMBER",
             "evidence_date": checkpoint_date.isoformat(), "effective_date": lineage_effective or CAMPAIGN_FROM.isoformat(),
@@ -1784,6 +1743,8 @@ def _blocker_ledger(
                 extra_notes = "; prior_entry_event_hashes=" + ";".join(event.event_hash for event in prior_adds)
             elif conflict_type == "DUPLICATE_ADD":
                 kind = "DUPLICATE_EVENT"
+            elif conflict_type == "MISSING_INITIAL_ANCHOR":
+                kind = "MISSING_INITIAL_ANCHOR"
             elif "IDENTITY" in conflict_type:
                 kind = "HISTORICAL_SYMBOL_CHANGE"
             elif "COVERAGE" in conflict_type:
@@ -1952,39 +1913,9 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     anchor_forensics = _anchor_replay_forensics(snapshots, reconciliation.events, instrument_master, trading_days)
     anchor_summary = anchor_forensics["summary"]
     candidate_rows = anchor_forensics["candidate_rows"]
-    anchor_events = []
-    for row in candidate_rows:
-        sym = row["symbol"]
-        inst_id = row["instrument_id"]
-        isin_str = row["isin"]
-        event_hash = hashlib.sha256(f"ANCHOR:{CAMPAIGN_FROM}:{sym}:{inst_id}".encode()).hexdigest()
-        anchor_events.append(CanonicalEvent(
-            index_id="NIFTY_200",
-            instrument_id=inst_id,
-            isin=isin_str,
-            symbol=sym,
-            company_name=row["company_name"],
-            announcement_date=CAMPAIGN_FROM,
-            known_at=datetime.combine(CAMPAIGN_FROM, time(0, 0), tzinfo=timezone.utc),
-            known_at_basis="INITIAL_ANCHOR_AUTHORITATIVE_START",
-            effective_date=CAMPAIGN_FROM,
-            action=Action.INITIAL_MEMBER,
-            reason="INITIAL_ANCHOR_20120102",
-            source_url=row["source_url"] or "https://www.niftyindices.com",
-            archive_url=None,
-            source_sha256=row["source_sha256"] or hashlib.sha256(b"INITIAL_ANCHOR").hexdigest(),
-            source_page=None,
-            source_tier="A1",
-            extraction_method="OFFICIAL_CHECKPOINT_REPLAY_ANCHOR",
-            extractor_version="nifty200-pit-v1",
-            confidence=Confidence.CERTIFIED,
-            review_status=ReviewStatus.ACCEPTED,
-            event_hash=event_hash,
-            observation_id=f"OBS-ANCHOR-{sym}",
-            synthetic=False,
-        ))
-
-    all_events = anchor_events + reconciliation.events
+    # The reverse replay is a diagnostic candidate.  It is not an authoritative
+    # 2012-01-02 membership source and must not seed INITIAL_MEMBER events.
+    all_events = reconciliation.events
     interval_result = build_intervals(all_events, horizon_start=CAMPAIGN_FROM, horizon_end=CAMPAIGN_TO)
     conflicts = reconciliation.conflicts + interval_result.conflicts
     coverage = _coverage(snapshots)
@@ -2002,12 +1933,19 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
             message="All parsed event assertions lack durable instrument identity and/or publication causality.",
             required_action="MANUAL_REVIEW",
         ))
-    if anchor_differences and coverage_gaps:
+    if coverage_gaps:
         conflicts.append(Conflict(
             conflict_id="monthly_coverage_gaps", date=None, severity="HIGH",
             conflict_type="COVERAGE_GAP",
             message=f"{len(coverage_gaps)} campaign months lack an official checkpoint matching the historical security-count rule.",
             required_action="SOURCE_RETRIEVAL_OR_MANUAL_REVIEW",
+        ))
+    if anchor_summary.get("status") != "ESTABLISHED":
+        conflicts.append(Conflict(
+            conflict_id="missing_initial_anchor", date=CAMPAIGN_FROM,
+            severity="CRITICAL", conflict_type="MISSING_INITIAL_ANCHOR",
+            message="No authoritative first-party NIFTY/CNX-200 membership list or complete event chain establishes the 2012-01-02 starting set.",
+            required_action="ACQUIRE_FIRST_PARTY_HISTORICAL_ANCHOR",
         ))
     historical_master = _historical_master_rows(instrument_master, aliases)
     report = validate_campaign(
@@ -2239,17 +2177,16 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         json.dumps(transcription_audit, indent=2, sort_keys=True), encoding="utf-8",
     )
     write_table(artifact_dir / "initial_anchor_20120102.parquet", candidate_rows)
-    is_pass = (report.status.value == "PASS" and int(report.metrics.get("high_critical_conflicts", 0)) == 0)
     write_artifacts(
         artifact_dir, source_records=sources, observations=observations, events=all_events,
         aliases=aliases, intervals=interval_result.intervals, monthly_snapshots=snapshots,
         conflicts=conflicts, validation_report=report,
         identity_map_hash=sha256_file(artifact_dir / "identity_continuity_evidence.json"),
         campaign_from=CAMPAIGN_FROM.isoformat(), campaign_to=CAMPAIGN_TO.isoformat(),
-        independent_qa="VERIFIED_BY_COMPREHENSIVE_CHECKPOINT_AND_SESSION_AUDIT" if is_pass else "NOT_ASSERTED",
-        campaign_readiness="PASS" if is_pass else "BLOCKED",
-        approved_for_import=is_pass,
-        stage_a_started=is_pass,
+        independent_qa="NOT_ASSERTED",
+        campaign_readiness="BLOCKED",
+        approved_for_import=False,
+        stage_a_started=False,
     )
     dry_run = subprocess.run(
         [sys.executable, str(root / "tools/import_nifty200_pit.py"),
@@ -2268,10 +2205,10 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         conflicts=conflicts, validation_report=report,
         identity_map_hash=sha256_file(artifact_dir / "identity_continuity_evidence.json"),
         campaign_from=CAMPAIGN_FROM.isoformat(), campaign_to=CAMPAIGN_TO.isoformat(),
-        independent_qa="VERIFIED_BY_COMPREHENSIVE_CHECKPOINT_AND_SESSION_AUDIT" if is_pass else "NOT_ASSERTED",
-        campaign_readiness="PASS" if is_pass else "BLOCKED",
-        approved_for_import=is_pass,
-        stage_a_started=is_pass,
+        independent_qa="NOT_ASSERTED",
+        campaign_readiness="BLOCKED",
+        approved_for_import=False,
+        stage_a_started=False,
     )
     return {
         "source_count": len(sources), "source_hash_errors": len(source_errors),

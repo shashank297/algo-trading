@@ -8,19 +8,12 @@ title = "algo-trading gitleaks config"
 useDefault = true
 
 [allowlist]
-description = "Global allowlist for known false positives"
+description = "Allow only explicitly labelled SHA-256 integrity fields"
 
-# SHA256 file integrity hashes stored in evidence_manifest.json files look like
-# API keys to generic detectors (64-char hex strings) but are NOT secrets.
-# All paths under artifacts/ are build outputs with file checksums only.
-paths = [
-    "artifacts/",
-    "reports/",
-]
-
-# Allowlist the sha256 checksum pattern: 64 lowercase hex chars.
-# These appear as values in artifact_hashes dicts inside evidence_manifest.json.
+# Do not allowlist whole generated directories: those files can still contain
+# credentials or other accidental secrets.  The PIT package uses labelled
+# digests for source and artifact lineage; only a digest on the same labelled
+# line is exempted from generic high-entropy detectors.
 regexes = [
-    # SHA-256 hex digest (64 hex chars) used as file integrity checksums
-    '''\"[0-9a-f]{64}\"''',
+    '''(?i)(source_sha256|artifact_sha256|identity_map_hash|sha256|digest)[^\r\n]{0,120}[0-9a-f]{64}''',
 ]

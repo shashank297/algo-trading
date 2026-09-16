@@ -21,12 +21,14 @@ def nifty200_expected_security_count(as_of: date) -> int:
 
     ind_prs22022016_2.pdf (2016-02-22), section 16, explicitly establishes
     201 securities from 2016-04-01. ind_prs10062020.pdf, section 12, removes
-    TATAMTRDVR with ten exclusions and nine inclusions from 2020-06-26.
-    Both first-party documents are retained in the public source catalogue.
+    TATAMTRDVR with ten exclusions and nine inclusions from 2020-06-26. The
+    first-party August 23, 2024 release excludes TATAMTRDVR from Nifty 200
+    effective August 30, 2024. All three documents are retained in the public
+    source catalogue.
     """
     if date(2016, 4, 1) <= as_of < date(2020, 6, 26):
         return 201
-    if date(2023, 9, 29) <= as_of < date(2025, 9, 30):
+    if date(2023, 9, 29) <= as_of < date(2024, 8, 30):
         return 201
     return 200
 

@@ -67,6 +67,23 @@ def test_parser_maps_explicit_tata_motors_dvr_label_to_exchange_symbol():
     assert [(row.symbol, row.company_name) for row in rows] == [("TATAMTRDVR", "Tata Motors Limited")]
 
 
+def test_parser_extracts_narrative_nifty200_exclusion_with_explicit_symbol():
+    rows = parse_nifty200_text(
+        "PRESS RELEASE\nMumbai, August 23, 2024\n"
+        "A. Exclusion of Tata Motors Ltd. A Ordinary Shares - DVR:\n"
+        "Tata Motors Ltd. (Symbol: TATAMTRDVR) shall be excluded from the following indices:\n"
+        "1 Nifty 200\n",
+        source_url="https://www.niftyindices.com/Press_Release/ind_prs23082024_1.pdf",
+        source_sha256="f" * 64, announcement_date=date(2024, 8, 23),
+        effective_date=date(2024, 8, 30),
+    )
+    assert len(rows) == 1
+    assert rows[0].action == Action.DROP
+    assert rows[0].symbol == "TATAMTRDVR"
+    assert rows[0].effective_date == date(2024, 8, 30)
+    assert rows[0].extraction_method == "PDF_TEXT_NARRATIVE"
+
+
 def test_nifty200_derivative_index_tables_are_not_historical_nifty200_events():
 
     text = (

@@ -47,8 +47,9 @@ def test_documented_dvr_security_count_is_effective_on_exact_boundaries():
     assert nifty200_expected_security_count(date(2020, 6, 26)) == 200
     assert nifty200_expected_security_count(date(2023, 9, 28)) == 200
     assert nifty200_expected_security_count(date(2023, 9, 29)) == 201
-    assert nifty200_expected_security_count(date(2025, 9, 29)) == 201
-    assert nifty200_expected_security_count(date(2025, 9, 30)) == 200
+    assert nifty200_expected_security_count(date(2024, 8, 29)) == 201
+    assert nifty200_expected_security_count(date(2024, 8, 30)) == 200
+    assert nifty200_expected_security_count(date(2025, 9, 29)) == 200
 
 
 def test_validator_compares_against_period_specific_security_count():

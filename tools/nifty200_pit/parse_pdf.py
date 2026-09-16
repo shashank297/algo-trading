@@ -133,6 +133,50 @@ def _action_for_line(line: str) -> Action | None:
     return None
 
 
+def _parse_narrative_nifty200_change(
+    text: str,
+    *,
+    source_url: str,
+    source_sha256: str,
+    announcement_date: date | None,
+    effective_date: date | None,
+    source_page: int | None,
+    source_tier: str,
+    extractor_version: str,
+    holidays: set[date] | None,
+) -> list[Observation]:
+    """Parse a first-party single-security change described outside a table."""
+    if not re.search(r"Nifty\s*[- ]?200", text, re.I):
+        return []
+    match = re.search(
+        r"\b(Exclusion|Inclusion)\s+of\s+(.+?)\s*\(Symbol:\s*"
+        r"([A-Z][A-Z0-9&.-]{1,19})\)",
+        text,
+        re.I | re.S,
+    )
+    if not match:
+        return []
+    action_name, company_name, symbol = match.groups()
+    action = Action.DROP if action_name.casefold() == "exclusion" else Action.ADD
+    known_at = basis = review_reason = None
+    if announcement_date is not None:
+        known_at, basis, review_reason = derive_known_at(
+            announcement_date, effective_date=effective_date, holidays=holidays,
+        )
+    confidence = "PROVISIONAL" if announcement_date and known_at and effective_date else "MANUAL_REVIEW"
+    review_status = ReviewStatus.UNRESOLVED if confidence == "PROVISIONAL" else ReviewStatus.MANUAL_REVIEW
+    return [Observation(
+        source_index_name="NIFTY 200", symbol=symbol,
+        company_name=" ".join(company_name.split()).strip(" :-"),
+        announcement_date=announcement_date, known_at=known_at, known_at_basis=basis,
+        effective_date=effective_date, action=action, reason=review_reason or "INDEX_CHANGE",
+        source_url=source_url, source_sha256=source_sha256, source_page=source_page,
+        source_tier=source_tier, extraction_method="PDF_TEXT_NARRATIVE",
+        extractor_version=extractor_version, confidence=confidence,
+        review_status=review_status, raw_text=match.group(0),
+    )]
+
+
 def parse_nifty200_text(
     text: str,
     *,
@@ -214,6 +258,14 @@ def parse_nifty200_text(
                 grid_rows.extend(replace(row, extraction_method="PDF_TEXT_INDEX_GRID", raw_text=block) for row in parsed)
         if starts:
             return grid_rows
+    narrative_rows = _parse_narrative_nifty200_change(
+        text, source_url=source_url, source_sha256=source_sha256,
+        announcement_date=announcement_date, effective_date=effective,
+        source_page=source_page, source_tier=source_tier,
+        extractor_version=extractor_version, holidays=holidays,
+    )
+    if narrative_rows:
+        return narrative_rows
     sections = extract_nifty200_sections(text)
     section = "\n---SECTION---\n".join(value for _, value in sections) or extract_nifty200_section(text)
     if not section or effective is None:
