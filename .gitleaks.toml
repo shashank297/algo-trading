@@ -1,0 +1,26 @@
+# Gitleaks configuration for algo-trading repository
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "algo-trading gitleaks config"
+
+[extend]
+# Extend the default gitleaks ruleset
+useDefault = true
+
+[allowlist]
+description = "Global allowlist for known false positives"
+
+# SHA256 file integrity hashes stored in evidence_manifest.json files look like
+# API keys to generic detectors (64-char hex strings) but are NOT secrets.
+# All paths under artifacts/ are build outputs with file checksums only.
+paths = [
+    "artifacts/",
+    "reports/",
+]
+
+# Allowlist the sha256 checksum pattern: 64 lowercase hex chars.
+# These appear as values in artifact_hashes dicts inside evidence_manifest.json.
+regexes = [
+    # SHA-256 hex digest (64 hex chars) used as file integrity checksums
+    '''\"[0-9a-f]{64}\"''',
+]
