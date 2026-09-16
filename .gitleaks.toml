@@ -17,3 +17,10 @@ description = "Allow only explicitly labelled SHA-256 integrity fields"
 regexes = [
     '''(?i)(source_sha256|artifact_sha256|identity_map_hash|sha256|digest)[^\r\n]{0,120}[0-9a-f]{64}''',
 ]
+
+# Evidence manifests are immutable integrity metadata: their source_hashes
+# values are SHA-256 digests, not credentials.  Scope this exception to the
+# manifest filename only; other artifact files remain scanned normally.
+paths = [
+    '''^artifacts/[^/]+/evidence_manifest\.json$''',
+]
