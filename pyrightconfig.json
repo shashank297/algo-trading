@@ -9,7 +9,13 @@
     "experiments",
     "operations",
     "utils",
-    "validators"
+    "validators",
+    "ai_research",
+    "tools",
+    "main.py",
+    "research.py",
+    "run_pipeline.py",
+    "scheduler.py"
   ],
   "exclude": [
     "**/node_modules",
