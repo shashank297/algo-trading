@@ -235,7 +235,12 @@ def harvest_official_document(
         raise RuntimeError(f"Official document returned HTTP {status}")
     if not data or data.lstrip().startswith((b"<html", b"<!doctype")):
         raise ValueError("Official document response is HTML, not evidence")
-    extension = ".pdf" if source_url.casefold().endswith(".pdf") else ".bin"
+    if source_url.casefold().endswith(".pdf"):
+        extension = ".pdf"
+    elif source_url.casefold().endswith(".csv"):
+        extension = ".csv"
+    else:
+        extension = ".bin"
     catalogue_root = root / "data/raw/nifty200_pit_public_sources"
     record = SourceCatalogue(catalogue_root).add_bytes(
         data, source_url=source_url, extension=extension, source_tier=source_tier,

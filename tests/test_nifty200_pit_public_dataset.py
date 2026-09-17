@@ -17,6 +17,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _identity_aliases,
     _anchor_replay_forensics,
     _valid_checkpoint_groups,
+    parse_archived_index_constituent_snapshot,
     parse_symbol_changes,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, SourceRecord, ValidationReport
@@ -43,6 +44,51 @@ def test_csv_snapshot_parser_retains_source_member_and_company_name():
     assert rows[0]["symbol"] == "MCDOWELL-N"
     assert rows[0]["company_name"] == "United Spirits Ltd."
     assert rows[0]["source_member"].endswith("cnx200_Apr2013.csv")
+
+
+def test_archived_index_constituent_parser_preserves_dated_a2_identity_evidence(tmp_path):
+    path = tmp_path / "cnx200list.csv"
+    path.write_text(
+        "COMPANY NAME,SYMBOL,SERIES,ISIN CODE\n"
+        "Example Industries Ltd.,EXAMPLE,EQ,INE123456789\n"
+        "Other Industries Ltd.,OTHER,EQ,INE987654321\n",
+        encoding="utf-8",
+    )
+    source = SourceRecord(
+        source_url="https://web.archive.org/web/20140122091713id_/http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv",
+        local_path=str(path), source_sha256="a" * 64,
+        retrieved_at="2026-09-17T00:00:00+00:00", source_tier="A2",
+        document_date="2014-01-13",
+    )
+
+    rows = parse_archived_index_constituent_snapshot(source)
+
+    assert [(row["symbol"], row["isin"]) for row in rows] == [
+        ("EXAMPLE", "INE123456789"), ("OTHER", "INE987654321"),
+    ]
+    assert all(row["snapshot_date"] == "2014-01-13" for row in rows)
+    assert all(row["source_tier"] == "A2" for row in rows)
+    assert all(row["validity_basis"] == "ARCHIVED_INDEX_SNAPSHOT_DATE_ONLY" for row in rows)
+
+
+def test_archived_index_constituent_parser_rejects_non_equity_and_invalid_isin_rows(tmp_path):
+    path = tmp_path / "cnx200list.csv"
+    path.write_text(
+        "COMPANY NAME,SYMBOL,SERIES,ISIN CODE\n"
+        "Keep Ltd.,KEEP,EQ,INE123456789\n"
+        "Skip Debt Ltd.,SKIP,BE,INE123456789\n"
+        "Skip Invalid Ltd.,BAD,EQ,NOT_AN_ISIN\n",
+        encoding="utf-8",
+    )
+    source = SourceRecord(
+        source_url="https://example.test/cnx200list.csv", local_path=str(path),
+        source_sha256="b" * 64, retrieved_at="2026-09-17T00:00:00+00:00",
+        source_tier="A2", document_date="2014-01-13",
+    )
+
+    rows = parse_archived_index_constituent_snapshot(source)
+
+    assert [row["symbol"] for row in rows] == ["KEEP"]
 
 
 def test_pdf_snapshot_parser_does_not_promote_sector_continuation_to_symbol(monkeypatch):

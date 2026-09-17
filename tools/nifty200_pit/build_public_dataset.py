@@ -56,6 +56,11 @@ HISTORICAL_SECURITY_MASTER_2021_ARCHIVE_URL = (
     "https://web.archive.org/web/20210516062344id_/"
     "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
 )
+HISTORICAL_INDEX_CONSTITUENT_2014_URL = (
+    "https://web.archive.org/web/20140122091713id_/"
+    "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_2014_DATE = "2014-01-13"
 SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
 MONTH_NAME = {name.lower(): number for number, name in enumerate(
@@ -1145,6 +1150,45 @@ def _monthly_gap_rows(
     return rows
 
 
+def parse_archived_index_constituent_snapshot(source: SourceRecord) -> list[dict[str, Any]]:
+    """Parse an archived official index constituent CSV as dated identity evidence."""
+    data = Path(source.local_path).read_bytes()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252")
+    reader = csv.DictReader(io.StringIO(text))
+    required = {"COMPANY NAME", "SYMBOL", "SERIES", "ISIN CODE"}
+    if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
+        return []
+    snapshot_date = _parse_day(source.document_date)
+    if snapshot_date is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for original in reader:
+        raw = {str(key).strip().upper(): value for key, value in original.items() if key is not None}
+        symbol = str(raw.get("SYMBOL") or "").strip()
+        isin = str(raw.get("ISIN CODE") or "").strip()
+        series = str(raw.get("SERIES") or "").strip().upper()
+        if not symbol or not isin or series != "EQ" or not re.fullmatch(r"IN[A-Z0-9]{10}", isin):
+            continue
+        key = (symbol.casefold(), isin.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
+            "series": series, "company_name": str(raw.get("COMPANY NAME") or "").strip() or None,
+            "listing_date": None, "valid_from": snapshot_date.isoformat(), "valid_until": None,
+            "validity_basis": "ARCHIVED_INDEX_SNAPSHOT_DATE_ONLY",
+            "source_url": source.source_url, "source_sha256": source.source_sha256,
+            "source_tier": source.source_tier, "snapshot_date": snapshot_date.isoformat(),
+            "identity_event_type": "ARCHIVED_OFFICIAL_INDEX_CONSTITUENT_SNAPSHOT",
+        })
+    return rows
+
+
 def _replay_checkpoint_comparison(
     snapshots: list[dict[str, Any]], intervals: list[Any],
     instrument_master: list[dict[str, Any]], aliases: list[dict[str, Any]],
@@ -1975,6 +2019,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         SECURITIES_MASTER_URL, HISTORICAL_SECURITY_MASTER_URL,
         HISTORICAL_SECURITY_MASTER_2017_ARCHIVE_URL,
         HISTORICAL_SECURITY_MASTER_2021_ARCHIVE_URL,
+        HISTORICAL_INDEX_CONSTITUENT_2014_URL,
     }
     security_sources = [source for source in sources if source.source_url in security_source_urls]
     current_security_source = next(
@@ -1983,12 +2028,14 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     current_instrument_master = parse_security_master(current_security_source) if current_security_source else []
     for row in current_instrument_master:
         row["validity_basis"] = "CURRENT_SNAPSHOT_ONLY"
-    historical_instrument_master = [
-        row
-        for security_source in security_sources
-        if security_source.source_url != SECURITIES_MASTER_URL
-        for row in parse_security_master(security_source)
-    ]
+    historical_instrument_master = []
+    for security_source in security_sources:
+        if security_source.source_url == SECURITIES_MASTER_URL:
+            continue
+        if security_source.source_url == HISTORICAL_INDEX_CONSTITUENT_2014_URL:
+            historical_instrument_master.extend(parse_archived_index_constituent_snapshot(security_source))
+        else:
+            historical_instrument_master.extend(parse_security_master(security_source))
     instrument_rows = current_instrument_master + historical_instrument_master
     # Retain daily evidence only for symbols/dates actually under investigation.
     # OHLC values are neither imported nor used to infer constituent membership.
