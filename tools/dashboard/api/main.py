@@ -112,7 +112,7 @@ class TradeStats(BaseModel):
     base_investment_profit: float
     avg_profit_per_win: float
     avg_loss_per_loss: float
-    profit_factor: float
+    profit_factor: Optional[float] = None
     max_drawdown: float
 
 
@@ -323,12 +323,27 @@ def get_analytics_stats(
         avg_loss     = _safe_float(row["avg_loss_per_loss"])
         total_wins   = _safe_float(row["total_win_pnl"])
         total_losses = _safe_float(row["total_loss_pnl"])
-        profit_factor = total_wins / total_losses if total_losses > 0 else 0.0
+        profit_factor = _safe_float(total_wins / total_losses) if total_losses > 0 else None
 
         # Base investment profit
         if symbol or year:
             # Scope: absolute ₹ profit from matching trades
             base_investment_profit = _safe_float(row["total_pnl"])
+            # Scoped max drawdown for filtered trade subset
+            try:
+                df_dd_trades = conn.execute(
+                    f"SELECT net_pnl FROM trade_round_trips WHERE {where} ORDER BY exit_timestamp ASC",
+                    params,
+                ).df()
+                if not df_dd_trades.empty:
+                    cum_pnl = df_dd_trades["net_pnl"].cumsum()
+                    peak = cum_pnl.cummax()
+                    dd = peak - cum_pnl
+                    max_drawdown = _safe_float(dd.max())
+                else:
+                    max_drawdown = 0.0
+            except duckdb.CatalogException:
+                max_drawdown = 0.0
         else:
             # Full-run: resolve starting_capital from strategy_runs or default to 100k
             df_cap = conn.execute(
@@ -348,12 +363,12 @@ def get_analytics_stats(
             net_return = _safe_float(df_ret["metric_value"].iloc[0]) if not df_ret.empty else 0.0
             base_investment_profit = net_return * start_cap
 
-        # Max drawdown from stored metrics
-        df_dd = conn.execute(
-            "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'max_drawdown'",
-            [run_id],
-        ).df()
-        max_drawdown = _safe_float(df_dd["metric_value"].iloc[0]) if not df_dd.empty else 0.0
+            # Max drawdown from stored metrics for full run
+            df_dd = conn.execute(
+                "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'max_drawdown'",
+                [run_id],
+            ).df()
+            max_drawdown = _safe_float(df_dd["metric_value"].iloc[0]) if not df_dd.empty else 0.0
 
         return TradeStats(
             total_trades=total,
@@ -404,7 +419,7 @@ def get_analytics_monthly(run_id: str, symbol: Optional[str] = Query(None)):
                 for _, row in df.iterrows()
             ]
         else:
-            # Portfolio-level: equity-curve based monthly returns (clean, no fractional bugs)
+            # Portfolio-level: equity-curve based monthly returns with proper month-boundary compounding
             query = """
                 SELECT timestamp, equity
                 FROM strategy_equity_curve
@@ -415,18 +430,28 @@ def get_analytics_monthly(run_id: str, symbol: Optional[str] = Query(None)):
             if df.empty:
                 return []
 
+            run_cap_row = conn.execute(
+                "SELECT starting_capital FROM strategy_runs WHERE run_id = ?", [run_id]
+            ).fetchone()
+            initial_cap = (
+                float(run_cap_row[0])
+                if (run_cap_row and run_cap_row[0] and float(run_cap_row[0]) > 0)
+                else _safe_float(df.iloc[0]["equity"], default=100_000.0)
+            )
+
             df["timestamp"] = pd.to_datetime(df["timestamp"])
             df["year"]  = df["timestamp"].dt.year
             df["month"] = df["timestamp"].dt.month
 
             monthly_returns = []
-            for (year, month), group in df.groupby(["year", "month"]):
-                first_equity = _safe_float(group.iloc[0]["equity"], default=1.0)
-                last_equity  = _safe_float(group.iloc[-1]["equity"], default=first_equity)
-                ret = (last_equity / first_equity - 1.0) if first_equity > 0 else 0.0
+            prev_equity = initial_cap
+            for (year, month), group in df.groupby(["year", "month"], sort=False):
+                last_equity = _safe_float(group.iloc[-1]["equity"], default=prev_equity)
+                ret = (last_equity / prev_equity - 1.0) if prev_equity > 0 else 0.0
                 monthly_returns.append(MonthlyReturn(
                     year=int(year), month=int(month), return_pct=_safe_float(ret)
                 ))
+                prev_equity = last_equity
             return monthly_returns
     finally:
         conn.close()

@@ -18,7 +18,7 @@ interface TradeStats {
   base_investment_profit: number;
   avg_profit_per_win: number;
   avg_loss_per_loss: number;
-  profit_factor: number;
+  profit_factor: number | null;
   max_drawdown: number;
 }
 
@@ -138,6 +138,7 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
   const [monthly, setMonthly] = useState<MonthlyReturn[]>([]);
   const [ledger,  setLedger]  = useState<TradeLedgerEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error,   setError]   = useState<string | null>(null);
 
   // year filter
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
@@ -152,33 +153,68 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
   // Fetch base data whenever run or symbol changes
   useEffect(() => {
     if (!selectedRunId) return;
+    const controller = new AbortController();
+    const { signal } = controller;
+
     setLoading(true);
+    setError(null);
     setSelectedYear(null);
     setYearStats(null);
     setPage(1);
 
     const sym = selectedSymbol ? `?symbol=${encodeURIComponent(selectedSymbol)}` : '';
+    const fetchJson = async (url: string) => {
+      const res = await fetch(url, { signal });
+      if (!res.ok) {
+        throw new Error(`Failed to load data: ${res.status} ${res.statusText}`);
+      }
+      return res.json();
+    };
+
     Promise.all([
-      fetch(`${API_BASE}/runs/${selectedRunId}/analytics/stats${sym}`).then(r => r.json()),
-      fetch(`${API_BASE}/runs/${selectedRunId}/analytics/monthly${sym}`).then(r => r.json()),
-      fetch(`${API_BASE}/runs/${selectedRunId}/analytics/ledger${sym}`).then(r => r.json()),
+      fetchJson(`${API_BASE}/runs/${selectedRunId}/analytics/stats${sym}`),
+      fetchJson(`${API_BASE}/runs/${selectedRunId}/analytics/monthly${sym}`),
+      fetchJson(`${API_BASE}/runs/${selectedRunId}/analytics/ledger${sym}`),
     ]).then(([s, m, l]) => {
       setStats(s);
       setMonthly(m);
       setLedger(l);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch(err => {
+      if (err.name !== 'AbortError') {
+        setError(err.message || 'Failed to load analytics data');
+        setLoading(false);
+      }
+    });
+
+    return () => {
+      controller.abort();
+    };
   }, [selectedRunId, selectedSymbol]);
 
   // Fetch year-specific stats
   useEffect(() => {
     if (!selectedRunId || !selectedYear) { setYearStats(null); return; }
+    const controller = new AbortController();
+    const { signal } = controller;
+
     setYearLoading(true);
     const sym  = selectedSymbol ? `&symbol=${encodeURIComponent(selectedSymbol)}` : '';
-    fetch(`${API_BASE}/runs/${selectedRunId}/analytics/stats?year=${selectedYear}${sym}`)
-      .then(r => r.json())
+    fetch(`${API_BASE}/runs/${selectedRunId}/analytics/stats?year=${selectedYear}${sym}`, { signal })
+      .then(r => {
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        return r.json();
+      })
       .then(s => { setYearStats(s); setYearLoading(false); })
-      .catch(() => setYearLoading(false));
+      .catch(err => {
+        if (err.name !== 'AbortError') {
+          setYearLoading(false);
+        }
+      });
+
+    return () => {
+      controller.abort();
+    };
   }, [selectedRunId, selectedYear, selectedSymbol]);
 
   // Derived display stats
@@ -265,6 +301,25 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
 
   return (
     <div className="space-y-6">
+
+      {/* ── Error Banner ── */}
+      {error && (
+        <div className="bg-rose-500/10 border border-rose-500/20 rounded-xl p-4 flex items-center justify-between">
+          <div className="flex items-center gap-3 text-rose-400">
+            <AlertTriangle className="w-5 h-5 flex-shrink-0" />
+            <div>
+              <div className="font-semibold text-sm text-white">Error Loading Analytics</div>
+              <div className="text-xs text-rose-300">{error}</div>
+            </div>
+          </div>
+          <button
+            onClick={() => setError(null)}
+            className="text-xs text-rose-300 hover:text-white bg-rose-500/20 hover:bg-rose-500/30 px-3 py-1.5 rounded-lg transition-colors"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* ── Symbol Filter Banner ── */}
       {selectedSymbol && (
@@ -410,12 +465,16 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
         <KpiCard
           label="Profit Factor"
           value={
-            <span className={(displayStats?.profit_factor ?? 0) >= 1 ? 'text-emerald-400' : 'text-rose-400'}>
-              {(displayStats?.profit_factor ?? 0).toFixed(2)}×
-            </span>
+            displayStats?.profit_factor !== null && displayStats?.profit_factor !== undefined ? (
+              <span className={displayStats.profit_factor >= 1 ? 'text-emerald-400' : 'text-rose-400'}>
+                {displayStats.profit_factor.toFixed(2)}×
+              </span>
+            ) : (
+              <span className="text-emerald-400 text-lg">∞ (No losses)</span>
+            )
           }
           sub="Win PnL ÷ Loss PnL"
-          accent={(displayStats?.profit_factor ?? 0) >= 1 ? 'emerald' : 'rose'}
+          accent={(displayStats?.profit_factor ?? 1) >= 1 ? 'emerald' : 'rose'}
         />
       </div>
 
