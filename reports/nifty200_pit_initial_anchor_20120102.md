@@ -2,7 +2,7 @@
 
 Status: `BLOCKED_NO_CERTIFIABLE_2012_01_02_ANCHOR`
 
-The nearest valid acquired official checkpoint is 2013-04-18 with 200 unique rows. The backward diagnostic candidate contains 199 members after reversing 79 canonical events. It remains `NOT_ASSERTED`, `MANUAL_REVIEW`, and ineligible for authoritative replay.
+The nearest valid acquired official checkpoint is 2013-04-18 with 200 unique rows. The backward diagnostic candidate contains 200 members after reversing 80 canonical events. It remains `NOT_ASSERTED`, `MANUAL_REVIEW`, and ineligible for authoritative replay.
 
 The candidate is a measurement tool only: it does not establish membership on 2012-01-02, and no synthetic membership, predecessor, successor, ISIN, or announcement date was created.
 

@@ -14,10 +14,10 @@ The 2012-01-02 anchor is not defensibly established. This diagnostic reverse rep
 ## Measured result
 
 - Forward checkpoint: 2013-04-18; rows: 200; source SHA-256: 4942c0f021abcd6ed9702c343c2696ec44cfa8022c7e37448f8a78c075c4a16d.
-- Reverse canonical events: 79; candidate initial rows: 199.
+- Reverse canonical events: 80; candidate initial rows: 200.
 - Anchor rows: raw=200; unique members=200; unique durable IDs=200; unique ISINs=200; duplicate rows=0; unresolved identities=0.
-- NSE sessions replayed: 3613; exact-200 sessions: 2030; non-200 sessions: 1583; below 200=313; above 200=1270; last divergence=2026-08-20.
-- First count divergence: 2012-01-02 at 199 members; event rows applied that day: none; cause is the unproven initial set, not a fabricated event.
+- NSE sessions replayed: 3613; exact-200 sessions: 2124; non-200 sessions: 1489; below 200=219; above 200=1270; last divergence=2026-08-20.
+- First count divergence: 2025-09-30 at 199 members; event rows applied that day: DROP:SJVN;DROP:ESCORTS;ADD:FORTIS;ADD:POWERINDIA;DROP:OLAELEC;ADD:COROMANDEL;ADD:ENRIN;ADD:GODFRYPHLP;DROP:PETRONET;ADD:ITCHOTELS;DROP:APOLLOTYRE;DROP:MAHABANK;ADD:BLUESTARCO;DROP:BANDHANBNK;DROP:ABFRL;DROP:ICICIPRULI;ADD:KEI; cause is the unproven initial set, not a fabricated event.
 - Valid official checkpoints compared: 108; set matches: 108; set mismatches: 0; first mismatch: none.
 
 ## Interpretation

@@ -162,13 +162,17 @@ def _duplicate_table_rows(text: str, sections: list[tuple[int, str]]) -> list[tu
             normalized_name = [token.casefold() for token in name_tokens]
             for candidate_index, candidate in enumerate(lines):
                 tokens = re.findall(r"[A-Za-z0-9&.-]+", candidate)
-                if len(tokens) != len(normalized_name) + 1:
+                if len(tokens) < len(normalized_name) + 1:
                     continue
-                if [token.casefold() for token in tokens[:-1]] != normalized_name:
+                if [token.casefold() for token in tokens[:len(normalized_name)]] != normalized_name:
                     continue
                 symbol = tokens[-1]
                 if not re.fullmatch(r"[A-Z][A-Z0-9&.-]{1,19}", symbol):
                     continue
+                company_match = re.search(r"\s+[A-Z][A-Z0-9&.-]{1,19}\s*$", candidate)
+                if company_match is None:
+                    continue
+                recovered_company_name = candidate[:company_match.start()].strip()
                 symbol_action = current_action
                 for index in range(candidate_index - 1, -1, -1):
                     preceding_action = _action_for_line(lines[index])
@@ -177,7 +181,7 @@ def _duplicate_table_rows(text: str, sections: list[tuple[int, str]]) -> list[tu
                         break
                 if symbol_action is None:
                     continue
-                recovered.append((symbol_action, company_name, symbol))
+                recovered.append((symbol_action, recovered_company_name, symbol))
                 break
     return recovered
 
