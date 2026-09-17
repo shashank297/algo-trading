@@ -56,14 +56,14 @@ def pit_evidence_hash(db: DuckDBManager, universe_name: str) -> str:
 def _pit_rows(db: DuckDBManager, universe_name: str) -> list[tuple[Any, ...]]:
     return db.conn.execute(
         """
-        SELECT pit.symbol, pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at
+        SELECT pit.symbol, pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at, pit.instrument_id
         FROM index_constituents_pit pit
         LEFT JOIN index_constituent_knowledge knowledge
           ON REPLACE(UPPER(knowledge.universe_name), ' ', '') = REPLACE(UPPER(pit.universe_name), ' ', '')
          AND knowledge.instrument_id = pit.instrument_id
          AND knowledge.effective_from = pit.effective_from
         WHERE REPLACE(UPPER(pit.universe_name), ' ', '') = REPLACE(UPPER(?), ' ', '')
-        ORDER BY pit.symbol, pit.effective_from
+        ORDER BY pit.instrument_id, pit.effective_from
         """,
         [universe_name.upper()],
     ).fetchall()
@@ -86,7 +86,10 @@ def _pit_eligibility_mask(
             raise RuntimeError(f"Missing point-in-time constituent history for universe '{universe_name}'.")
         return pd.Series(True, index=frame.index), None
 
-    pit_df = pd.DataFrame(rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
+    pit_df = pd.DataFrame(
+        rows,
+        columns=["symbol", "effective_from", "effective_until", "known_from", "known_at", "instrument_id"]
+    )
     pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).map(
         lambda value: value.date() if pd.notna(value) else None
     )
@@ -106,7 +109,9 @@ def _pit_eligibility_mask(
     ]
     if not invalid.empty:
         raise RuntimeError(f"Corrupt point-in-time intervals for '{universe_name}': effective_from >= effective_until.")
-    for _, group in pit_df.groupby("symbol", sort=False):
+
+    group_col = "instrument_id" if "instrument_id" in pit_df.columns and pit_df["instrument_id"].notna().any() else "symbol"
+    for _, group in pit_df.groupby(group_col, sort=False):
         previous_end = None
         for index, (effective_from, effective_until) in enumerate(
             group[["effective_from", "effective_until"]].itertuples(index=False)
@@ -117,12 +122,44 @@ def _pit_eligibility_mask(
                 raise RuntimeError(f"Overlapping point-in-time intervals for '{universe_name}'.")
             previous_end = effective_until
 
+    # Build durable instrument alias map from database
+    alias_dict: dict[str, set[str]] = {}
+    alias_records = db.conn.execute(
+        "SELECT canonical_symbol, provider_symbol FROM instrument_aliases"
+    ).fetchall()
+    for can, prov in alias_records:
+        if can and prov:
+            alias_dict.setdefault(str(can).upper(), set()).add(str(prov).upper())
+            alias_dict.setdefault(str(prov).upper(), set()).add(str(can).upper())
+
+    pit_symbols = db.conn.execute(
+        """SELECT DISTINCT instrument_id, symbol FROM index_constituents_pit
+           WHERE instrument_id IS NOT NULL AND instrument_id != ''"""
+    ).fetchall()
+    for inst, sym in pit_symbols:
+        inst_u, sym_u = str(inst).upper(), str(sym).upper()
+        alias_dict.setdefault(inst_u, set()).add(sym_u)
+        alias_dict.setdefault(sym_u, set()).add(sym_u)
+
     timestamps = pd.to_datetime(frame["timestamp"], utc=True)
     local_dates = timestamps.dt.tz_convert(timezone_name).dt.date
     symbols = frame["symbol"].astype(str).str.upper() if "symbol" in frame else pd.Series("", index=frame.index)
+    frame_instruments = frame["instrument_id"].astype(str).str.upper() if "instrument_id" in frame else None
     eligible = pd.Series(False, index=frame.index)
+
     for _, row in pit_df.iterrows():
-        mask = symbols == str(row["symbol"]).upper()
+        row_sym = str(row["symbol"]).upper()
+        inst_id = str(row.get("instrument_id") or "").upper()
+        valid_symbols = {row_sym}
+        if inst_id and inst_id in alias_dict:
+            valid_symbols.update(alias_dict[inst_id])
+        if row_sym in alias_dict:
+            valid_symbols.update(alias_dict[row_sym])
+
+        mask = symbols.isin(valid_symbols)
+        if frame_instruments is not None and inst_id:
+            mask |= (frame_instruments == inst_id)
+
         mask &= local_dates >= row["effective_from"]
         if pd.notna(row["effective_until"]):
             mask &= local_dates < row["effective_until"]
@@ -131,6 +168,7 @@ def _pit_eligibility_mask(
         if pd.notna(row["known_at"]):
             mask &= timestamps >= row["known_at"]
         eligible |= mask
+
 
     if required and not frame.empty:
         min_frame_date = local_dates.min()

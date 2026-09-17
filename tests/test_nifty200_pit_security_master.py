@@ -25,7 +25,7 @@ def test_security_master_identity_is_period_valid(tmp_path):
     assert rows[0]["instrument_id"] == "NSE-ISIN:INE123"
     assert rows[0]["listing_date"] == "2015-01-01"
     assert rows[0]["valid_from"] == "2015-01-01"
-    rows[0]["validity_basis"] = "CURRENT_SNAPSHOT_ONLY"
+    rows[0]["has_explicit_historical_interval"] = True
     assert resolve_observation(Observation(symbol="ABC", effective_date=date(2015, 1, 2)), rows).confidence == "CERTIFIED"
 
 

@@ -432,8 +432,8 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
             "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
             "series": str(raw.get("SERIES") or "").strip().upper(),
             "company_name": str(raw.get("NAME OF COMPANY") or "").strip() or None,
-            # Preserve the exchange's listing date for the existing resolver
-            # contract; the dated snapshot remains the evidence boundary.
+            # Preserve the exchange's listing date for provenance/metadata;
+            # the dated snapshot remains the evidence boundary for valid_from.
             "listing_date": listing_date.isoformat() if listing_date else None,
             "valid_from": listing_date.isoformat() if listing_date else snapshot_date.isoformat(),
             "valid_until": None, "source_url": source.source_url,
@@ -672,12 +672,18 @@ def _identity_aliases(
     symbol_changes: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Combine official identities with unresolved snapshot symbol candidates."""
-    aliases: dict[tuple[str, str], dict[str, Any]] = {}
+    aliases: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     master_symbols: set[str] = set()
     for row in master:
         symbol = str(row["symbol"]).strip()
         master_symbols.add(symbol.casefold())
-        aliases[(str(row["instrument_id"]), symbol.casefold())] = {
+        key = (
+            str(row.get("instrument_id")),
+            symbol.casefold(),
+            str(row.get("valid_from")),
+            str(row.get("valid_until")),
+        )
+        aliases[key] = {
             **row, "alias_symbol": row["symbol"], "confidence": "CERTIFIED",
             "resolution_status": "ACCEPTED",
         }
@@ -715,10 +721,15 @@ def _identity_aliases(
         if target is None:
             continue
         alias_symbol = str(change["previous_symbol"]).strip()
+        changed_on = change["changed_on"]
+        listing_date = _parse_day(target.get("listing_date"))
+        valid_from = listing_date.isoformat() if (listing_date and listing_date < changed_on) else None
+        valid_until = changed_on.isoformat()
         historical_candidates.setdefault(alias_symbol.casefold(), []).append({
             **target,
             "alias_symbol": alias_symbol,
-            "valid_until": change["changed_on"].isoformat(),
+            "valid_from": valid_from,
+            "valid_until": valid_until,
             "identity_event_type": "SYMBOL_CHANGE",
             "source_url": change["source_url"],
             "source_sha256": change["source_sha256"],
@@ -730,12 +741,24 @@ def _identity_aliases(
         instrument_ids = {str(row["instrument_id"]) for row in candidates_for_symbol}
         if len(instrument_ids) == 1:
             for row in candidates_for_symbol:
-                aliases[(str(row["instrument_id"]), str(row["alias_symbol"]).casefold())] = row
+                key = (
+                    str(row.get("instrument_id")),
+                    str(row.get("alias_symbol")).casefold(),
+                    str(row.get("valid_from")),
+                    str(row.get("valid_until")),
+                )
+                aliases[key] = row
         else:
             for row in candidates_for_symbol:
                 row["confidence"] = "MANUAL_REVIEW"
                 row["resolution_status"] = "MANUAL_REVIEW"
-                aliases[(str(row["instrument_id"]), str(row["alias_symbol"]).casefold())] = row
+                key = (
+                    str(row.get("instrument_id")),
+                    str(row.get("alias_symbol")).casefold(),
+                    str(row.get("valid_from")),
+                    str(row.get("valid_until")),
+                )
+                aliases[key] = row
     certified_alias_symbols = {
         str(row.get("alias_symbol") or row.get("symbol") or "").casefold()
         for row in aliases.values()
@@ -746,9 +769,6 @@ def _identity_aliases(
         symbol = str(row.get("symbol") or "").strip()
         if not symbol:
             continue
-        # An exact current-security-master symbol is already represented by the
-        # certified row above.  Do not create a second (None, symbol) alias that
-        # falsely reports the same current listing as unresolved historical data.
         if symbol.casefold() in master_symbols or symbol.casefold() in certified_alias_symbols:
             continue
         item = candidates.setdefault(symbol, {
@@ -760,9 +780,24 @@ def _identity_aliases(
         if not item.get("company_name") and row.get("company_name"):
             item["company_name"] = row["company_name"]
     for row in candidates.values():
-        key = (str(row["instrument_id"]), str(row["alias_symbol"]).casefold())
+        key = (
+            str(row.get("instrument_id")),
+            str(row.get("alias_symbol")).casefold(),
+            str(row.get("valid_from")),
+            str(row.get("valid_until")),
+        )
         aliases.setdefault(key, row)
-    return sorted(aliases.values(), key=lambda row: (str(row.get("alias_symbol", "")), str(row.get("instrument_id", ""))))
+
+    validated_aliases: list[dict[str, Any]] = []
+    for row in aliases.values():
+        start = _parse_day(row.get("valid_from"))
+        end = _parse_day(row.get("valid_until"))
+        if start is not None and end is not None and start >= end:
+            row["confidence"] = "MANUAL_REVIEW"
+            row["resolution_status"] = "REJECTED_INVALID_INTERVAL"
+        validated_aliases.append(row)
+
+    return sorted(validated_aliases, key=lambda row: (str(row.get("alias_symbol", "")), str(row.get("instrument_id", ""))))
 
 
 def _apply_documented_isin_continuity(

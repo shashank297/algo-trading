@@ -98,7 +98,12 @@ def _valid_on(row: dict[str, Any], when: date | None) -> bool:
     if when is None:
         return True
     start, end = _date(row.get("valid_from")), _date(row.get("valid_until"))
-    return (start is None or when >= start) and (end is None or when < end)
+    snapshot = _date(row.get("snapshot_date"))
+    if snapshot is not None and not row.get("has_explicit_historical_interval"):
+        effective_start = snapshot if (start is None or start < snapshot) else start
+    else:
+        effective_start = start
+    return (effective_start is None or when >= effective_start) and (end is None or when < end)
 
 
 def resolve_observation(
@@ -189,6 +194,13 @@ def resolve_observation(
     # compare the company name against every historical security. Fuzzy output
     # is manual-review only and is not needed to certify a durable identity.
     if symbol:
+        symbol_candidates = [row for row in rows if _norm(row.get("symbol")) == symbol]
+        if symbol_candidates:
+            candidates = tuple(dict.fromkeys(str(r.get("instrument_id")) for r in symbol_candidates if r.get("instrument_id")))
+            has_snapshot = any(r.get("snapshot_date") for r in symbol_candidates)
+            confidence = "MANUAL_REVIEW" if has_snapshot else "UNRESOLVED"
+            reason = "historical symbol observed outside period validity" if has_snapshot else "no period-valid identity evidence"
+            return Resolution(None, None, "UNRESOLVED", confidence, candidates, reason)
         return Resolution(None, None, "UNRESOLVED", "UNRESOLVED", (), "no period-valid identity evidence")
 
     target = _norm(obs.get("company_name"))
