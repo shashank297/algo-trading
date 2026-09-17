@@ -10,6 +10,7 @@ Probe date: `2026-09-17`
 - The official monthly-reports page exposes the current market-capitalisation/weightage archive, but the verified 2022-04 through 2026-08 ZIPs acquired through that route contain no NIFTY-200 member table; the other index tables are not a substitute.
 - The official EOD Index File link routes to `https://www.connect2nse.com/iislNet/`, which requires an authenticated username, password, and captcha. It is not a free unauthenticated source for the missing historical constituent files.
 - Wayback CDX search for that official constituent URL returned captures on 2017-11-13, 2018-03-15, 2019-02-02, and 2023-08-11; no capture predates the 2012-01-02 campaign anchor.
+- Common Crawl exact-URL searches returned no captures for the official January 2012 monthly archive or the historical NIFTY-200 constituent CSV URL. No additional archived bytes were available to add to the corpus.
 - The official CNX-200 launch notice confirms methodology and the 2011-07-19 launch, but contains no complete 200-member list.
 
 ## Closure impact
