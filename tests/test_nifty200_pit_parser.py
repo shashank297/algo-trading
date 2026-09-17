@@ -207,10 +207,14 @@ def test_multi_index_correction_grid_does_not_turn_revocation_into_membership():
     ) == []
 
 
-def test_parser_extracts_duplicate_native_table_fragment_from_legacy_notices():
+def test_parser_extracts_duplicate_native_table_fragment_from_legacy_notices(tmp_path, monkeypatch):
     from pathlib import Path
 
-    source_2011 = Path("data/raw/nifty200_pit_public_sources/press_releases/candidates/ind_prs01122011.pdf")
+    fixtures = Path(__file__).resolve().parent / "fixtures" / "nifty200_pit"
+    # The regression must work in a clean checkout, without the acquired corpus
+    # or the repository root as the process working directory.
+    monkeypatch.chdir(tmp_path)
+    source_2011 = fixtures / "ind_prs01122011.pdf"
     rows_2011 = parse_pdf(source_2011)
 
     assert [(row.symbol, row.action, row.effective_date) for row in rows_2011] == [
@@ -218,7 +222,7 @@ def test_parser_extracts_duplicate_native_table_fragment_from_legacy_notices():
         ("REDINGTON", Action.ADD, date(2011, 12, 7)),
     ]
 
-    source_2012 = Path("data/raw/nifty200_pit_public_sources/press_releases/candidates/ind_prs16052012.pdf")
+    source_2012 = fixtures / "ind_prs16052012.pdf"
     rows_2012 = parse_pdf(source_2012)
     assert [(row.symbol, row.action, row.effective_date) for row in rows_2012] == [
         ("PATNI", Action.DROP, date(2012, 5, 21)),
