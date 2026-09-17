@@ -48,6 +48,35 @@ class DatabaseRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "hash"):
                 service.restore(backup, root / "restored.duckdb")
 
+    def test_restore_cleans_orphaned_wal_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "source.duckdb"
+            backup = root / "source.backup.duckdb"
+            restored = root / "restored.duckdb"
+            orphaned_wal = root / "restored.duckdb.wal"
+            orphaned_wal.write_text("corrupt-wal-data")
+
+            db = DuckDBManager(str(database))
+            db.close()
+            service = DatabaseBackupService()
+            service.backup(database, backup)
+
+            result = service.restore(backup, restored)
+            self.assertFalse(orphaned_wal.exists())
+            self.assertTrue(restored.exists())
+            self.assertGreater(result["table_count"], 0)
+
+    def test_destination_writability_check(self) -> None:
+        service = DatabaseBackupService()
+        import unittest.mock as mock
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            with mock.patch.object(Path, "touch", side_effect=PermissionError("Permission denied")):
+                with self.assertRaises(PermissionError):
+                    service._check_writable_dir(root / "unwritable")
+
 
 if __name__ == "__main__":
     unittest.main()

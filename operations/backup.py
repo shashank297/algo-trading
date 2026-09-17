@@ -23,7 +23,7 @@ class DatabaseBackupService:
             raise FileNotFoundError(f"Database not found: {source}")
         if source == target:
             raise ValueError("Backup destination must differ from the source database.")
-        target.parent.mkdir(parents=True, exist_ok=True)
+        self._check_writable_dir(target.parent)
         temporary = target.with_suffix(target.suffix + ".partial")
         if temporary.exists():
             temporary.unlink()
@@ -33,6 +33,13 @@ class DatabaseBackupService:
             source_counts = self._critical_counts(connection)
         finally:
             connection.close()
+        source_wal = Path(f"{source}.wal")
+        if source_wal.exists() and source_wal.stat().st_size > 0:
+            recheck_conn = duckdb.connect(str(source))
+            try:
+                recheck_conn.execute("CHECKPOINT")
+            finally:
+                recheck_conn.close()
         shutil.copy2(source, temporary)
         copied = self.verify(temporary, expected_counts=source_counts)
         os.replace(temporary, target)
@@ -60,12 +67,20 @@ class DatabaseBackupService:
         source = Path(backup).resolve()
         target = Path(destination).resolve()
         manifest = self._load_manifest(source)
+        target_wal_paths = [Path(f"{target}.wal"), target.with_suffix(".wal")]
         if target.exists() and not overwrite:
             raise FileExistsError(f"Restore destination already exists: {target}")
         if self._sha256(source) != manifest["sha256"]:
             raise ValueError("Backup hash does not match its manifest.")
-        verified = self.verify(source, expected_counts=manifest["critical_counts"])
-        target.parent.mkdir(parents=True, exist_ok=True)
+        self._check_writable_dir(target.parent)
+        # Clean up any orphaned WAL files at destination before restoring
+        for wal_path in target_wal_paths:
+            if wal_path.exists():
+                if not overwrite and not target.exists():
+                    # Orphaned WAL with no target database
+                    wal_path.unlink()
+                elif overwrite:
+                    wal_path.unlink()
         temporary = target.with_suffix(target.suffix + ".restore-partial")
         if temporary.exists():
             temporary.unlink()
@@ -73,6 +88,7 @@ class DatabaseBackupService:
         try:
             self.verify(temporary, expected_counts=manifest["critical_counts"])
             os.replace(temporary, target)
+            verified = self.verify(target, expected_counts=manifest["critical_counts"])
         finally:
             if temporary.exists():
                 temporary.unlink()
@@ -136,3 +152,13 @@ class DatabaseBackupService:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         return digest.hexdigest()
+
+    @staticmethod
+    def _check_writable_dir(directory: Path) -> None:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / f".write_probe_{os.getpid()}_{datetime.now(timezone.utc).timestamp()}"
+        try:
+            probe.touch()
+            probe.unlink()
+        except OSError as exc:
+            raise PermissionError(f"Destination directory is not writable: {directory}") from exc
