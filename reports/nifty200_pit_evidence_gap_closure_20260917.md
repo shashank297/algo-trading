@@ -3,7 +3,7 @@
 ## Measured final build
 
 - Branch: `codex/nifty200-pit-2012-anchor`
-- Build timestamp: `2026-09-17T17:19:52Z` (UTC)
+- Build timestamp: `2026-09-17T17:28:28Z` (UTC)
 - Campaign: `2012-01-02` through `2026-08-20`
 - Sources: 570 total (`A1=565`, `A2=4`, `B1=1`); source-hash errors: 0
 - Event observations: 1,583; canonical events: 729 (`ADD=364`, `DROP=365`)
