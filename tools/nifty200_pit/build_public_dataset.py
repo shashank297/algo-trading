@@ -415,7 +415,10 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
             "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
             "series": str(raw.get("SERIES") or "").strip().upper(),
             "company_name": str(raw.get("NAME OF COMPANY") or "").strip() or None,
-            "valid_from": listing_date.isoformat() if listing_date else None,
+            # Preserve the exchange's listing date for the existing resolver
+            # contract; the dated snapshot remains the evidence boundary.
+            "listing_date": listing_date.isoformat() if listing_date else None,
+            "valid_from": listing_date.isoformat() if listing_date else snapshot_date.isoformat(),
             "valid_until": None, "source_url": source.source_url,
             "source_sha256": source.source_sha256, "source_tier": source.source_tier,
             "snapshot_date": snapshot_date.isoformat(),
@@ -435,13 +438,15 @@ def parse_bhavcopy_identities(
                 continue
             text = archive.read(member).decode('utf-8-sig')
             for raw in csv.DictReader(io.StringIO(text)):
-                when = _parse_day(raw.get('TIMESTAMP'))
-                symbol = str(raw.get('SYMBOL') or '').strip()
-                isin = str(raw.get('ISIN') or '').strip()
+                normalized = {str(key).strip().casefold(): value for key, value in raw.items() if key is not None}
+                when = _parse_day(normalized.get('timestamp') or normalized.get('trad dt') or normalized.get('traddt'))
+                symbol = str(normalized.get('symbol') or normalized.get('ticker') or normalized.get('tckrsymb') or '').strip()
+                isin = str(normalized.get('isin') or normalized.get('isin number') or '').strip()
+                series = str(normalized.get('series') or normalized.get('sctysrs') or '').strip().upper()
                 # Daily files also carry bonds under the issuer's same symbol
                 # (e.g. IFCI ND/NH and HUDCO N2). Only normal equity-series
                 # rows are identity evidence for these index constituents.
-                if str(raw.get('SERIES') or '').strip().upper() != 'EQ':
+                if series != 'EQ':
                     continue
                 if not when or not symbol or not re.fullmatch(r'IN[A-Z0-9]{10}', isin):
                     continue
@@ -451,7 +456,7 @@ def parse_bhavcopy_identities(
                     raise ValueError(f'Bhavcopy timestamp disagrees with catalogue: {source.source_url}')
                 rows.append({
                     'instrument_id': f'NSE-ISIN:{isin}', 'isin': isin, 'symbol': symbol,
-                    'series': str(raw.get('SERIES') or '').strip().upper(), 'company_name': None,
+                    'series': series, 'company_name': None,
                     'valid_from': when.isoformat(), 'valid_until': (when + timedelta(days=1)).isoformat(),
                     'snapshot_date': when.isoformat(), 'source_url': source.source_url,
                     'source_sha256': source.source_sha256, 'source_tier': source.source_tier,
@@ -783,6 +788,10 @@ def _apply_documented_isin_continuity(
          "11b2a619b064c270d04a3fedc14633317d0a87959a212f98dad5349ad14babc5",
          "b3cf8eed2deecdf468f0249870e4b0869aac49f3a4c38e93edbddd53f1c4a604",
          "fba772ecc40bb05c24d29c49f634c79cef0d9a736daa58f266f58ee5f675199d"),
+        ("CESC", "INE486A01013", "INE486A01021", "2021-09-16", "2021-09-21", 3,
+         "a3135b48b38e6f314d9524fc63c7ac0ff2a95234077e9beaddccf296c2cd635c",
+         "9809dd7f425e1fb372458874fb492321a7d5a96c367a1a8446bc16144cf75f68",
+         "bea670d1419fbb711d65e11ff3f03e223b91c931313460ee4933b388c2c25922"),
     ]
     needed = {digest for rule in rules for digest in rule[6:]}
     verified = {source.source_sha256: source for source in sources
@@ -1227,6 +1236,29 @@ def _known_at_rows(events: list[Any]) -> list[dict[str, Any]]:
     } for event in events]
 
 
+def _event_date_snapshot_rows(events: list[Any]) -> list[dict[str, Any]]:
+    """Index canonical event evidence without claiming a full membership snapshot."""
+    return [{
+        "snapshot_date": event.effective_date.isoformat(),
+        "snapshot_kind": "EVENT_DATE_EVIDENCE_INDEX",
+        "instrument_id": event.instrument_id,
+        "isin": event.isin,
+        "symbol": event.symbol,
+        "company_name": event.company_name,
+        "action": event.action.value if hasattr(event.action, "value") else event.action,
+        "announcement_date": event.announcement_date.isoformat(),
+        "known_at": event.known_at.isoformat(),
+        "known_at_basis": event.known_at_basis,
+        "effective_date": event.effective_date.isoformat(),
+        "source_url": event.source_url,
+        "source_sha256": event.source_sha256,
+        "source_tier": event.source_tier,
+        "event_hash": event.event_hash,
+        "review_status": event.review_status.value if hasattr(event.review_status, "value") else event.review_status,
+        "confidence": event.confidence.value if hasattr(event.confidence, "value") else event.confidence,
+    } for event in events]
+
+
 def _historical_master_rows(
     instrument_master: list[dict[str, Any]], aliases: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -1239,6 +1271,7 @@ def _historical_master_rows(
         "company_name": row.get("company_name"),
         "valid_from": row.get("valid_from"),
         "valid_until": row.get("valid_until"),
+        "validity_basis": row.get("validity_basis", "LISTING_DATE_CONTEXT"),
         "identity_event_type": (
             row.get("identity_event_type") or "HISTORICAL_SECURITY_MASTER_SNAPSHOT"
             if row.get("source_url") != SECURITIES_MASTER_URL
@@ -1948,6 +1981,8 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         (source for source in security_sources if source.source_url == SECURITIES_MASTER_URL), None,
     )
     current_instrument_master = parse_security_master(current_security_source) if current_security_source else []
+    for row in current_instrument_master:
+        row["validity_basis"] = "CURRENT_SNAPSHOT_ONLY"
     historical_instrument_master = [
         row
         for security_source in security_sources
@@ -1965,7 +2000,10 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         (str(row['snapshot_date'])[:10], str(row.get('symbol') or '').upper()) for row in snapshots
     )
     for source in sources:
-        if '/content/historical/EQUITIES/' in source.source_url and source.source_url.endswith('bhav.csv.zip'):
+        if (
+            ('/content/historical/EQUITIES/' in source.source_url and source.source_url.endswith('bhav.csv.zip'))
+            or '/content/cm/' in source.source_url
+        ):
             instrument_rows.extend(
                 row for row in parse_bhavcopy_identities(source, identity_keys=required_identity_keys)
             )
@@ -2074,6 +2112,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         anchor_differences=anchor_differences,
     )
     replay_counts = list(report.metrics["daily_member_counts"].values())
+    event_date_rows = _event_date_snapshot_rows(reconciliation.events)
     report = replace(report, metrics=report.metrics | {
         "calendar_version": calendar.version,
         "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
@@ -2084,6 +2123,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "maximum_active_constituent_count": max(replay_counts, default=0),
         "sessions_not_expected_count": report.metrics["count_check_failures"],
         "known_at_unresolved_count": sum(event.known_at is None or not event.known_at_basis for event in reconciliation.events),
+        "event_date_snapshot_row_count": len(event_date_rows),
         "redundant_workbook_observation_count": len(considered_observations) - len(reconciliation_observations),
         "contradicted_challenger_count": len(challenger_dispositions),
         "current_security_master_rows": len(current_instrument_master),
@@ -2284,6 +2324,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         f"B1={sum(source.source_tier == 'B1' for source in sources)}.\n"
         f"- Event observations: {len(observations)}; canonical events: {len(reconciliation.events)}.\n"
         f"- Monthly snapshot rows: {len(snapshots)} across {len(by_date)} checkpoints.\n"
+        f"- Event-date evidence index rows: {len(event_date_rows)}; this is not a full membership snapshot.\n"
         f"- Durable identity mappings: {sum(row.get('confidence') == 'CERTIFIED' for row in aliases)} certified; "
         f"{sum(row.get('confidence') != 'CERTIFIED' for row in aliases)} remain manual-review candidates.\n"
         f"- Coverage gaps or non-200 checkpoints: {len(coverage_gaps)} campaign months.\n"
@@ -2303,6 +2344,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     write_artifacts(
         artifact_dir, source_records=sources, observations=observations, events=all_events,
         aliases=aliases, intervals=interval_result.intervals, monthly_snapshots=snapshots,
+        event_date_snapshots=event_date_rows,
         conflicts=conflicts, validation_report=report,
         identity_map_hash=sha256_file(artifact_dir / "identity_continuity_evidence.json"),
         campaign_from=CAMPAIGN_FROM.isoformat(), campaign_to=CAMPAIGN_TO.isoformat(),
@@ -2325,6 +2367,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     write_artifacts(
         artifact_dir, source_records=sources, observations=observations, events=all_events,
         aliases=aliases, intervals=interval_result.intervals, monthly_snapshots=snapshots,
+        event_date_snapshots=event_date_rows,
         conflicts=conflicts, validation_report=report,
         identity_map_hash=sha256_file(artifact_dir / "identity_continuity_evidence.json"),
         campaign_from=CAMPAIGN_FROM.isoformat(), campaign_to=CAMPAIGN_TO.isoformat(),

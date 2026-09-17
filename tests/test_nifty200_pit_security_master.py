@@ -23,7 +23,9 @@ def test_security_master_identity_is_period_valid(tmp_path):
 
     rows = parse_security_master(SourceRecord("https://example/EQUITY_L.csv", str(source), "hash", "2026-09-17T00:00:00+00:00"))
     assert rows[0]["instrument_id"] == "NSE-ISIN:INE123"
+    assert rows[0]["listing_date"] == "2015-01-01"
     assert rows[0]["valid_from"] == "2015-01-01"
+    rows[0]["validity_basis"] = "CURRENT_SNAPSHOT_ONLY"
     assert resolve_observation(Observation(symbol="ABC", effective_date=date(2015, 1, 2)), rows).confidence == "CERTIFIED"
 
 
@@ -222,6 +224,7 @@ def test_archived_security_master_row_keeps_historical_provenance(tmp_path):
     assert rows[0]["source_tier"] == "A2"
     assert rows[0]["instrument_id"] == "NSE-ISIN:INE123"
     assert rows[0]["snapshot_date"] == "2011-10-30"
+    assert rows[0]["listing_date"] == "2010-01-01"
     assert rows[0]["valid_from"] == "2010-01-01"
     assert rows[0]["valid_until"] is None
 
@@ -349,6 +352,31 @@ def test_bhavcopy_identity_filter_retains_only_requested_date_symbols(tmp_path):
         document_date="2020-01-01",
     ), identity_keys={("2020-01-01", "KEEP")})
     assert [row["symbol"] for row in rows] == ["KEEP"]
+
+
+def test_udiff_bhavcopy_identity_parser_accepts_iso_columns(tmp_path):
+    from tools.nifty200_pit.build_public_dataset import parse_bhavcopy_identities
+    from tools.nifty200_pit.models import SourceRecord
+
+    archive = tmp_path / "BhavCopy_NSE_CM_0_0_0_20240930_F_0000.csv.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr(
+            "BhavCopy_NSE_CM_0_0_0_20240930_F_0000.csv",
+            "TradDt,TckrSymb,SctySrs,ISIN\n2024-09-30,ABC,EQ,INE123456789\n",
+        )
+    rows = parse_bhavcopy_identities(SourceRecord(
+        "https://archives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_20240930_F_0000.csv.zip",
+        str(archive), "hash", "now", document_date="2024-09-30",
+    ))
+
+    assert [(row["symbol"], row["isin"], row["snapshot_date"]) for row in rows] == [
+        ("ABC", "INE123456789", "2024-09-30"),
+    ]
+
+
+def test_bhavcopy_url_switches_to_udiff_after_legacy_discontinuation():
+    assert "historical/EQUITIES" in harvest_security_master.bhavcopy_url(date(2024, 7, 7))
+    assert "content/cm/BhavCopy_NSE_CM_0_0_0_20240708_F_0000.csv.zip" in harvest_security_master.bhavcopy_url(date(2024, 7, 8))
 
 
 def test_bhavcopy_parser_rejects_wrong_catalogue_date(tmp_path):

@@ -16,9 +16,10 @@ DATE_PATTERNS = (
     re.compile(r"(?:(?:effect(?:ive)?)\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", re.I),
     re.compile(r"(?:(?:effect(?:ive)?)\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2}\s*,?\s+\d{4})", re.I),
 )
-SYMBOL_RE = re.compile(r"\b[A-Z][A-Z0-9&.-]{1,19}\b")
+SYMBOL_TOKEN = r"[A-Z0-9][A-Z0-9&.-]{1,19}"
+SYMBOL_RE = re.compile(rf"\b{SYMBOL_TOKEN}\b")
 ROW_RE = re.compile(
-    r"^\s*(?:(\d{1,3})\s+)?(.+?)\s+([A-Z][A-Z0-9&.-]{1,19}(?:\s+[A-Z])?)\s*$"
+    rf"^\s*(?:(\d{{1,3}})\s+)?(.+?)\s+({SYMBOL_TOKEN}(?:\s+[A-Z])?)\s*$"
 )
 PDF_DATE_RE = re.compile(r"ind_prs(\d{2})(\d{2})(\d{4})", re.I)
 INDEX_HEADING_RE = re.compile(

@@ -124,5 +124,23 @@
     "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
     "independent_qa": "NOT_ASSERTED",
     "durable_instrument_id": "NSE-ISIN:INE296A01016"
+  },
+  {
+    "symbol": "CESC",
+    "old_isin": "INE486A01013",
+    "new_isin": "INE486A01021",
+    "identity_event_type": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
+    "source_url": "https://www.cesc.co.in/storage/uploads/reconshare/Reconshcapaudit_30092021.pdf",
+    "source_sha256": "a3135b48b38e6f314d9524fc63c7ac0ff2a95234077e9beaddccf296c2cd635c",
+    "source_page": 3,
+    "before_reference_date": "2021-09-16",
+    "before_source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2021/SEP/cm16SEP2021bhav.csv.zip",
+    "before_source_sha256": "9809dd7f425e1fb372458874fb492321a7d5a96c367a1a8446bc16144cf75f68",
+    "after_reference_date": "2021-09-21",
+    "after_source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2021/SEP/cm21SEP2021bhav.csv.zip",
+    "after_source_sha256": "bea670d1419fbb711d65e11ff3f03e223b91c931313460ee4933b388c2c25922",
+    "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
+    "independent_qa": "NOT_ASSERTED",
+    "durable_instrument_id": "NSE-ISIN:INE486A01013"
   }
 ]

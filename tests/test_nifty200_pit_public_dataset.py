@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
 import pytest
 
@@ -7,6 +7,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _blocker_ledger,
     _coverage,
     _csv_snapshot_rows,
+    _event_date_snapshot_rows,
     _monthly_gap_rows,
     _replay_checkpoint_comparison,
     _snapshot_date,
@@ -539,6 +540,26 @@ def test_event_identity_metrics_count_missing_required_identities():
     assert result["unresolved_identity_count"] == 1
     assert result["durable_id_resolution_percent"] == 50
     assert result["isin_resolution_percent"] == 50
+
+
+def test_event_date_snapshot_rows_are_event_evidence_not_membership_snapshots():
+    event = SimpleNamespace(
+        effective_date=date(2024, 3, 28), announcement_date=date(2024, 2, 28),
+        known_at=datetime(2024, 2, 29, 0, 0),
+        instrument_id="NSE-ISIN:INE1", isin="INE1", symbol="ABC",
+        company_name="ABC Ltd", action="ADD", known_at_basis="EXACT_SOURCE_TIMESTAMP",
+        source_url="https://example.test/event.pdf", source_sha256="a" * 64,
+        source_tier="A1", event_hash="event-1", review_status="ACCEPTED",
+        confidence="CERTIFIED",
+    )
+
+    rows = _event_date_snapshot_rows([event])
+
+    assert rows[0]["snapshot_kind"] == "EVENT_DATE_EVIDENCE_INDEX"
+    assert rows[0]["snapshot_date"] == "2024-03-28"
+    assert rows[0]["event_hash"] == "event-1"
+
+
 def test_covid_deferral_preserves_assertion_without_inventing_replacement_date(tmp_path, monkeypatch):
     from datetime import date
     from tools.nifty200_pit import build_public_dataset as builder

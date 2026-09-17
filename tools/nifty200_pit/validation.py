@@ -123,6 +123,7 @@ def validate_campaign(
         "interval_count": len(rows), "event_count": len(event_rows), "conflict_count": len(conflict_rows),
         "high_critical_conflicts": sum(conflict.severity in {"HIGH", "CRITICAL"} for conflict in conflict_rows),
         "source_hash_errors": len(source_hash_errors), "anchor_difference_count": len(anchor_differences),
+        "replay_checkpoint_difference_count": len(anchor_differences),
         "daily_member_counts": counts,
         "daily_expected_member_counts": {
             day.isoformat(): expected_member_counts.get(day, required_member_count)

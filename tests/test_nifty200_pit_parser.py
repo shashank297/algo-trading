@@ -55,6 +55,22 @@ def test_parser_accepts_compact_rows_and_pdf_split_symbols():
     ]
 
 
+def test_parser_accepts_digit_leading_official_symbol():
+    rows = parse_nifty200_text(
+        "1) Nifty 200 Index\nThe following companies are being included:\n"
+        "Sr. No. Company Name Symbol\n"
+        "1 360 ONE WAM Ltd. 360ONE\n",
+        source_url="https://www.niftyindices.com/Press_Release/ind_prs22082025.pdf",
+        source_sha256="9" * 64,
+        announcement_date=date(2025, 8, 22),
+        effective_date=date(2025, 9, 30),
+    )
+
+    assert [(row.symbol, row.company_name, row.action) for row in rows] == [
+        ("360ONE", "360 ONE WAM Ltd.", Action.ADD),
+    ]
+
+
 def test_parser_maps_explicit_tata_motors_dvr_label_to_exchange_symbol():
     rows = parse_nifty200_text(
         "1) Nifty 200 Index\nThe following company is being included:\n"
