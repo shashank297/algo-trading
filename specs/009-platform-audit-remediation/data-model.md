@@ -13,7 +13,7 @@ class TradeProposal:
     capital: float
     current_position_notional: float = 0.0
     ...
-    
+
     @property
     def is_same_direction_increase(self) -> bool:
         """True if the proposed trade increases the magnitude of the current position in the same direction."""
@@ -57,7 +57,7 @@ class InstrumentAlias:
     valid_from: date
     valid_until: date | None
     confidence: str # 'CERTIFIED' | 'MANUAL_REVIEW'
-    
+
     def __post_init__(self):
         if self.valid_until is not None and self.valid_from >= self.valid_until:
             raise ValueError(f"Inverted alias validity interval: {self.valid_from} >= {self.valid_until}")

@@ -40,8 +40,6 @@ def test_failed_migration_rolls_back_atomically(tmp_path, monkeypatch):
         )
     finally:
         con.close()
-
-
 def test_history_insert_failure_rolls_back_atomically(tmp_path):
     """If recording into schema_migrations fails, the migration's DDL must roll back."""
     db_path = str(tmp_path / "test_history_fail.duckdb")
@@ -83,4 +81,3 @@ def test_history_insert_failure_rolls_back_atomically(tmp_path):
         assert "rollback_table" not in tables, "rollback_table must be rolled back on history insert error"
     finally:
         con.close()
-

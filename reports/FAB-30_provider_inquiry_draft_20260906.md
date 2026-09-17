@@ -1,11 +1,11 @@
 # FAB-30 — Draft External Provider Inquiry: Historical NIFTY 200 PIT Dataset
 
-**Date:** 2026-09-06  
-**Task:** FAB-30 (`5df98343-f451-4858-a4ec-da5734ff993f`)  
-**Project:** Algo Trading — Research, Backtesting & Paper Trading (`bc59843d-1e91-4232-af11-19d37b952301`)  
-**Recipient:** NSE Indices Ltd. (`indices@nse.co.in`)  
-**Subject:** Request for Historical NIFTY 200 Point-in-Time Constituent Dataset (2012–2026)  
-**Status:** DRAFT PREPARED — PENDING HUMAN BOARD APPROVAL (DO NOT SEND AUTOMATICALLY)  
+**Date:** 2026-09-06<br>
+**Task:** FAB-30 (`5df98343-f451-4858-a4ec-da5734ff993f`)<br>
+**Project:** Algo Trading — Research, Backtesting & Paper Trading (`bc59843d-1e91-4232-af11-19d37b952301`)<br>
+**Recipient:** NSE Indices Ltd. (`indices@nse.co.in`)<br>
+**Subject:** Request for Historical NIFTY 200 Point-in-Time Constituent Dataset (2012–2026)<br>
+**Status:** DRAFT PREPARED — PENDING HUMAN BOARD APPROVAL (DO NOT SEND AUTOMATICALLY)
 
 ---
 
@@ -93,6 +93,6 @@ We look forward to your guidance and response.
 
 Sincerely,
 
-Quantitative Research & Platform Engineering  
+Quantitative Research & Platform Engineering
 Algo Trading Platform
 ```

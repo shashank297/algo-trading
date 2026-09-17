@@ -200,5 +200,3 @@ def test_valid_approval_passes():
         expected_foundation_cert_id="cert-123",
         expected_scope="PAPER_TRADING_SINGLE_RUN",
     )
-
-
