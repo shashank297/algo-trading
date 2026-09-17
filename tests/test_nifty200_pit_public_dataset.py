@@ -17,6 +17,10 @@ from tools.nifty200_pit.build_public_dataset import (
     _identity_aliases,
     _anchor_replay_forensics,
     _valid_checkpoint_groups,
+    HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL,
+    HISTORICAL_INDEX_CONSTITUENT_2014_URL,
+    HISTORICAL_INDEX_CONSTITUENT_2015_URL,
+    HISTORICAL_INDEX_CONSTITUENT_URLS,
     parse_archived_index_constituent_snapshot,
     parse_symbol_changes,
 )
@@ -89,6 +93,14 @@ def test_archived_index_constituent_parser_rejects_non_equity_and_invalid_isin_r
     rows = parse_archived_index_constituent_snapshot(source)
 
     assert [row["symbol"] for row in rows] == ["KEEP"]
+
+
+def test_archived_index_constituent_capture_set_includes_each_dated_official_archive():
+    assert HISTORICAL_INDEX_CONSTITUENT_URLS == {
+        HISTORICAL_INDEX_CONSTITUENT_2014_URL,
+        HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL,
+        HISTORICAL_INDEX_CONSTITUENT_2015_URL,
+    }
 
 
 def test_pdf_snapshot_parser_does_not_promote_sector_continuation_to_symbol(monkeypatch):

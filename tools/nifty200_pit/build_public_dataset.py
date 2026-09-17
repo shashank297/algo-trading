@@ -60,7 +60,19 @@ HISTORICAL_INDEX_CONSTITUENT_2014_URL = (
     "https://web.archive.org/web/20140122091713id_/"
     "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
 )
-HISTORICAL_INDEX_CONSTITUENT_2014_DATE = "2014-01-13"
+HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL = (
+    "https://web.archive.org/web/20140709091522id_/"
+    "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_2015_URL = (
+    "https://web.archive.org/web/20150325063347id_/"
+    "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_URLS = {
+    HISTORICAL_INDEX_CONSTITUENT_2014_URL,
+    HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL,
+    HISTORICAL_INDEX_CONSTITUENT_2015_URL,
+}
 SYMBOL_CHANGES_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
 MONTH_NAME = {name.lower(): number for number, name in enumerate(
@@ -2019,7 +2031,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         SECURITIES_MASTER_URL, HISTORICAL_SECURITY_MASTER_URL,
         HISTORICAL_SECURITY_MASTER_2017_ARCHIVE_URL,
         HISTORICAL_SECURITY_MASTER_2021_ARCHIVE_URL,
-        HISTORICAL_INDEX_CONSTITUENT_2014_URL,
+        *HISTORICAL_INDEX_CONSTITUENT_URLS,
     }
     security_sources = [source for source in sources if source.source_url in security_source_urls]
     current_security_source = next(
@@ -2032,7 +2044,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     for security_source in security_sources:
         if security_source.source_url == SECURITIES_MASTER_URL:
             continue
-        if security_source.source_url == HISTORICAL_INDEX_CONSTITUENT_2014_URL:
+        if security_source.source_url in HISTORICAL_INDEX_CONSTITUENT_URLS:
             historical_instrument_master.extend(parse_archived_index_constituent_snapshot(security_source))
         else:
             historical_instrument_master.extend(parse_security_master(security_source))

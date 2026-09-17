@@ -5,13 +5,13 @@
 - Branch: `codex/nifty200-pit-2012-anchor`
 - Build timestamp: `2026-09-17T17:28:28Z` (UTC)
 - Campaign: `2012-01-02` through `2026-08-20`
-- Sources: 570 total (`A1=565`, `A2=4`, `B1=1`); source-hash errors: 0
+- Sources: 572 total (`A1=565`, `A2=6`, `B1=1`); source-hash errors: 0
 - Event observations: 1,583; canonical events: 729 (`ADD=364`, `DROP=365`)
 - Monthly snapshot rows: 21,650 across 108 snapshot dates
 - Valid 200-member checkpoints: 58; missing/non-200 campaign months: 68
 - Current security-master rows: 2,568
 - Historical identity rows: 22,925; unique historical instruments: 3,444
-- Durable-ID and ISIN resolution: 98.4937%; unresolved event identities: 18
+- Durable-ID and ISIN resolution: 98.5774%; unresolved event identities: 17
 - Constituent intervals: 357
 - Trading sessions checked: 3,613; active-count range: 2..124; sessions not at expected count: 3,613
 - Known-at unresolved canonical events: 0
@@ -20,13 +20,11 @@
 - Diagnostic reverse-anchor checkpoint sets: 108 matches, 0 mismatches; this diagnostic is not authoritative and is not consumed
 - Automated validation: `BLOCKED`
 
-The additional A2 source in this iteration is the archived official NSE file
-`https://web.archive.org/web/20140122091713id_/http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv`,
-retrieved as 200 equity rows with 200 unique symbols and 200 unique ISINs. Its
-content SHA-256 is
-`840b495e70121b6e3c3323f78b33e7b62018abd8f459263418dbf07403786084`.
-It improves historical identity coverage but is dated 2014-01-13 and therefore
-does not establish the 2012-01-02 initial membership anchor.
+The additional A2 sources in this iteration are three archived official NSE
+`ind_cnx200list.csv` captures. They are dated 2014-01-13, 2014-07-09, and
+2015-03-25, and contain dated identity evidence only. Together they improve
+historical identity coverage but do not establish the 2012-01-02 initial
+membership anchor.
 
 ## Blocker classification
 
@@ -50,7 +48,7 @@ The exact unresolved rows, dates, symbols, sources, hashes, and required actions
 - Preserved listing-date provenance in historical identity output without treating a current security master as a complete historical master.
 - Populated `event_date_snapshots.parquet` as an explicitly labelled event-date evidence index. It contains 729 rows and is not a membership snapshot or anchor.
 - Added an unambiguous `replay_checkpoint_difference_count` validation metric.
-- Added a parser for the archived official CNX 200 constituent CSV, preserving A2 provenance and date-only validity; added regression tests for valid and invalid rows.
+- Added a parser for the archived official CNX 200 constituent CSV, preserving A2 provenance and date-only validity; added regression tests for valid and invalid rows and for all three dated archive captures.
 
 ## Remaining free-evidence closure work
 
