@@ -18,7 +18,7 @@ This build covers 2012-01-02 through 2026-08-20. It parses cached official NSE/N
 
 - Source records: 471; source hash errors: 0.
 - Source tiers: A1=467, B1=1.
-- Event observations: 1581; canonical events: 726.
+- Event observations: 1582; canonical events: 727.
 - Monthly snapshot rows: 21650 across 108 checkpoints.
 - Durable identity mappings: 4032 certified; 0 remain manual-review candidates.
 - Coverage gaps or non-200 checkpoints: 68 campaign months.

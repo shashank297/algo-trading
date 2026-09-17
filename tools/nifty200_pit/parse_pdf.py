@@ -13,8 +13,8 @@ from tools.nifty200_pit.models import Action, Observation, ReviewStatus
 
 INDEX_RE = re.compile(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", re.I)
 DATE_PATTERNS = (
-    re.compile(r"(?:effective\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", re.I),
-    re.compile(r"(?:effective\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})", re.I),
+    re.compile(r"(?:(?:effect(?:ive)?)\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", re.I),
+    re.compile(r"(?:(?:effect(?:ive)?)\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2}\s*,?\s+\d{4})", re.I),
 )
 SYMBOL_RE = re.compile(r"\b[A-Z][A-Z0-9&.-]{1,19}\b")
 ROW_RE = re.compile(
@@ -53,6 +53,7 @@ def extract_pdf_pages(source: str | Path | bytes | BytesIO, *, layout: bool = Fa
 
 def _parse_date(value: str) -> date | None:
     value = value.replace(".", "/")
+    value = re.sub(r"\s+,", ",", value)
     for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%B %d, %Y", "%B %d %Y"):
         from datetime import datetime
 
@@ -131,6 +132,54 @@ def _action_for_line(line: str) -> Action | None:
     if re.search(r"\b(drop(?:ped)?|deletion|exclusion|excluded|removed)\b", line, re.I):
         return Action.DROP
     return None
+
+
+def _duplicate_table_rows(text: str, sections: list[tuple[int, str]]) -> list[tuple[Action, str, str]]:
+    """Recover symbols from a repeated PDF table with a company-only first pass.
+
+    Some older IISL PDFs contain the same change table twice because of native
+    PDF drawing order.  The first pass has serial number and company name only;
+    a later pass has the same company name followed by its symbol.
+    """
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    recovered: list[tuple[Action, str, str]] = []
+    for _, section_text in sections:
+        current_action: Action | None = None
+        for line in section_text.splitlines():
+            action = _action_for_line(line)
+            if action is not None and not ROW_RE.match(line):
+                current_action = action
+                continue
+            if current_action is None:
+                continue
+            match = re.match(r"^\d{1,3}\s+(.+?)\s*$", line)
+            if match is None or re.search(r"\b(?:Sr\.?|No\.?|Company Name|Symbol)\b", line, re.I):
+                continue
+            company_name = match.group(1).strip()
+            name_tokens = re.findall(r"[A-Za-z0-9&.-]+", company_name)
+            if not name_tokens:
+                continue
+            normalized_name = [token.casefold() for token in name_tokens]
+            for candidate_index, candidate in enumerate(lines):
+                tokens = re.findall(r"[A-Za-z0-9&.-]+", candidate)
+                if len(tokens) != len(normalized_name) + 1:
+                    continue
+                if [token.casefold() for token in tokens[:-1]] != normalized_name:
+                    continue
+                symbol = tokens[-1]
+                if not re.fullmatch(r"[A-Z][A-Z0-9&.-]{1,19}", symbol):
+                    continue
+                symbol_action = current_action
+                for index in range(candidate_index - 1, -1, -1):
+                    preceding_action = _action_for_line(lines[index])
+                    if preceding_action is not None:
+                        symbol_action = preceding_action
+                        break
+                if symbol_action is None:
+                    continue
+                recovered.append((symbol_action, company_name, symbol))
+                break
+    return recovered
 
 
 def _parse_narrative_nifty200_change(
@@ -325,6 +374,20 @@ def parse_nifty200_text(
                 source_url=source_url, source_sha256=source_sha256, source_page=source_page,
                 source_tier=source_tier, extraction_method="PDF_TEXT", extractor_version=extractor_version,
                 confidence=confidence, review_status=review, raw_text=raw_text,
+            ))
+    if not rows:
+        for action, company_name, symbol in _duplicate_table_rows(text, sections):
+            confidence = "PROVISIONAL" if announcement and known_at and effective else "MANUAL_REVIEW"
+            review = ReviewStatus.UNRESOLVED if confidence == "PROVISIONAL" else ReviewStatus.MANUAL_REVIEW
+            reason = "INDEX_CHANGE" if confidence == "PROVISIONAL" else "missing_explicit_publication_date"
+            rows.append(Observation(
+                source_index_name=source_index_name, symbol=symbol, company_name=company_name,
+                announcement_date=announcement, known_at=known_at, known_at_basis=basis,
+                effective_date=effective, action=action, reason=reason,
+                source_url=source_url, source_sha256=source_sha256, source_page=source_page,
+                source_tier=source_tier, extraction_method="PDF_TEXT_DUPLICATE_TABLE",
+                extractor_version=extractor_version, confidence=confidence, review_status=review,
+                raw_text=f"{company_name} {symbol}",
             ))
     if not rows:
         # Keep support for compact text releases used by the existing parser

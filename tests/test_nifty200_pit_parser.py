@@ -1,7 +1,7 @@
 from datetime import date
 
 from tools.nifty200_pit.models import Action
-from tools.nifty200_pit.parse_pdf import find_effective_date, parse_nifty200_text
+from tools.nifty200_pit.parse_pdf import find_effective_date, parse_nifty200_text, parse_pdf
 
 
 def test_parser_handles_cnx_name_and_add_drop_rows():
@@ -205,3 +205,15 @@ def test_multi_index_correction_grid_does_not_turn_revocation_into_membership():
         revoked_only, source_url="official", source_sha256="a" * 64,
         announcement_date=date(2024, 3, 19),
     ) == []
+
+
+def test_parser_extracts_duplicate_native_table_fragment_from_2011_notice():
+    from pathlib import Path
+
+    source = Path("data/raw/nifty200_pit_public_sources/press_releases/candidates/ind_prs01122011.pdf")
+    rows = parse_pdf(source)
+
+    assert [(row.symbol, row.action, row.effective_date) for row in rows] == [
+        ("IBREALEST", Action.DROP, date(2011, 12, 7)),
+        ("REDINGTON", Action.ADD, date(2011, 12, 7)),
+    ]
