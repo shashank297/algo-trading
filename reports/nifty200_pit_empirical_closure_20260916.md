@@ -6,7 +6,7 @@ Campaign: `2012-01-02` through `2026-08-20`
 
 Branch: `codex/nifty200-pit-2012-anchor`
 
-Worktree HEAD at report refresh: `d41f907d151ab907c40b13f627fcd6e443faf89a`
+Worktree HEAD at report refresh: `761207bfc2246ce77a61f9096c77350f4a527a50`
 `origin/main`: `a8f383149187b8d0bbfb23253ba81c464ec8563f`
 
 ## Result
