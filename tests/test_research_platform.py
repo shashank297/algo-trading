@@ -54,7 +54,7 @@ class FailingProvider:
     name = "failing"
 
     def fetch_bars(self, request: BarRequest) -> DatasetSnapshot:
-        raise RuntimeError("provider unavailable")
+        raise ProviderUnavailable("provider unavailable")
 
 
 class FakeResponse:
@@ -117,6 +117,58 @@ class ResearchPlatformTests(unittest.TestCase):
         self.assertEqual([row[0] for row in statuses], ["FAILED", "SUCCEEDED"])
         alias = self.db.conn.execute("SELECT provider_symbol FROM instrument_aliases").fetchone()[0]
         self.assertEqual(alias, "NIFTY")
+
+    def test_provider_unclassified_error_not_swallowed(self) -> None:
+        class BuggyProvider:
+            name = "buggy"
+
+            def fetch_bars(self, request: BarRequest) -> DatasetSnapshot:
+                raise KeyError("programming bug")
+
+        registry = ProviderRegistry([BuggyProvider(), StaticProvider(self.frame)], self.db)
+        with self.assertRaises(KeyError):
+            registry.fetch_bars(self._request())
+
+    def test_openbb_adjustment_evidence_verification(self) -> None:
+        split_session = FakeSession()
+        split_session.get = lambda url, params, timeout: FakeResponse({  # type: ignore
+            "results": [
+                {
+                    "date": "2026-08-10T09:15:00Z",
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.5,
+                    "adj_close": 50.25,
+                    "volume": 1000,
+                },
+            ]
+        })
+        # If caller requested UNADJUSTED, provider must raise ProviderUnavailable due to mismatch
+        with self.assertRaisesRegex(ProviderUnavailable, "Provider data evidence indicates SPLIT_ADJUSTED"):
+            OpenBBHttpProvider("http://localhost:6900", session=split_session).fetch_bars(
+                BarRequest(
+                    symbol="NIFTY",
+                    exchange="NSE",
+                    timeframe="1d",
+                    start=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                    end=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                    adjustment=PriceAdjustment.UNADJUSTED,
+                )
+            )
+
+        # If caller requested SPLIT_ADJUSTED, provider accepts and records SPLIT_ADJUSTED
+        snapshot = OpenBBHttpProvider("http://localhost:6900", session=split_session).fetch_bars(
+            BarRequest(
+                symbol="NIFTY",
+                exchange="NSE",
+                timeframe="1d",
+                start=datetime(2026, 8, 1, tzinfo=timezone.utc),
+                end=datetime(2026, 9, 1, tzinfo=timezone.utc),
+                adjustment=PriceAdjustment.SPLIT_ADJUSTED,
+            )
+        )
+        self.assertEqual(snapshot.provenance.adjustment, PriceAdjustment.SPLIT_ADJUSTED)
 
     def test_openbb_http_adapter_normalizes_without_openbb_dependency(self) -> None:
         snapshot = OpenBBHttpProvider("http://localhost:6900", session=FakeSession()).fetch_bars(self._request())
@@ -215,6 +267,75 @@ class ResearchPlatformTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "SUCCEEDED"):
             orchestrator.cancel_task(task_id)
+
+    def test_cooperative_cancellation_success(self) -> None:
+        orchestrator = TaskOrchestrator(self.db)
+        started = threading.Event()
+
+        def cancellable_worker(cancellation_token: threading.Event) -> dict[str, bool]:
+            started.set()
+            while not cancellation_token.is_set():
+                import time
+                time.sleep(0.01)
+            return {"cancelled": True}
+
+        task_id_holder: list[str] = []
+        worker_thread = threading.Thread(
+            target=lambda: task_id_holder.append(
+                orchestrator.run_task(
+                    goal_id="g-cancel",
+                    task_name="cancellable",
+                    executor=cancellable_worker,
+                    timeout_seconds=5,
+                )[0]
+            )
+        )
+        worker_thread.start()
+        started.wait(timeout=2.0)
+        # Find task ID from DB
+        row = self.db.conn.execute("SELECT task_id FROM research_tasks WHERE task_name = 'cancellable'").fetchone()
+        self.assertIsNotNone(row)
+        task_id = row[0]
+        orchestrator.cancel_task(task_id, timeout_seconds=1.0)
+        worker_thread.join(timeout=2.0)
+
+        state = self.db.conn.execute("SELECT state FROM research_tasks WHERE task_id = ?", [task_id]).fetchone()[0]
+        self.assertEqual(state, TaskState.CANCELLED.value)
+
+    def test_cooperative_cancellation_refuses_when_worker_remains_active(self) -> None:
+        orchestrator = TaskOrchestrator(self.db)
+        started = threading.Event()
+        stop_worker = threading.Event()
+
+        def stubborn_worker() -> dict[str, bool]:
+            started.set()
+            while not stop_worker.is_set():
+                import time
+                time.sleep(0.01)
+            return {"done": True}
+
+        worker_thread = threading.Thread(
+            target=lambda: orchestrator.run_task(
+                goal_id="g-stubborn",
+                task_name="stubborn",
+                executor=stubborn_worker,
+                timeout_seconds=5,
+            )
+        )
+        worker_thread.start()
+        started.wait(timeout=2.0)
+        row = self.db.conn.execute("SELECT task_id FROM research_tasks WHERE task_name = 'stubborn'").fetchone()
+        task_id = row[0]
+
+        try:
+            with self.assertRaisesRegex(RuntimeError, "CANCELLATION_UNTERMINATED"):
+                orchestrator.cancel_task(task_id, timeout_seconds=0.1)
+
+            state = self.db.conn.execute("SELECT state FROM research_tasks WHERE task_id = ?", [task_id]).fetchone()[0]
+            self.assertEqual(state, TaskState.RUNNING.value)
+        finally:
+            stop_worker.set()
+            worker_thread.join(timeout=2.0)
 
         responses = {
             role: {

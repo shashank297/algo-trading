@@ -73,6 +73,55 @@ class SchedulerTests(unittest.TestCase):
                 economic_contract_hash(manual_engine.policy.model_dump()),
             )
 
+    def test_scheduler_skips_ingestion_on_non_trading_day(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        ist = ZoneInfo("Asia/Kolkata")
+        # Sunday 2026-09-20 is a weekend / non-trading day
+        sunday_dt = datetime(2026, 9, 20, 16, 0, tzinfo=ist)
+        config = {
+            "operations": {
+                "ingestion_universe_snapshot": "TEST",
+                "benchmark": "NIFTY200",
+            }
+        }
+        with patch("scheduler.load_runtime_config", return_value=config), patch(
+            "scheduler.main"
+        ) as ingestion:
+            run_job(as_of=sunday_dt)
+        ingestion.assert_not_called()
+
+    def test_scheduler_allows_special_weekend_session(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        ist = ZoneInfo("Asia/Kolkata")
+        # Saturday 2026-10-24 with special session override
+        saturday_dt = datetime(2026, 10, 24, 18, 30, tzinfo=ist)
+        config = {
+            "market_calendar": {
+                "overrides": [
+                    {
+                        "date": "2026-10-24",
+                        "type": "SPECIAL_SESSION",
+                        "reason": "Muhurat Trading",
+                        "start": "18:00",
+                        "end": "19:15",
+                    }
+                ]
+            },
+            "operations": {
+                "ingestion_universe_snapshot": "TEST",
+                "benchmark": "NIFTY200",
+            },
+        }
+        with patch("scheduler.load_runtime_config", return_value=config), patch(
+            "scheduler.main", return_value=0
+        ) as ingestion:
+            run_job(as_of=saturday_dt)
+        ingestion.assert_called_once_with([
+            "--universe-snapshot", "TEST", "--benchmark", "NIFTY200",
+        ])
+
 
 if __name__ == "__main__":
     unittest.main()

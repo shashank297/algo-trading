@@ -18,13 +18,15 @@ class TaskOrchestrator:
 
     def __init__(self, db: DuckDBManager) -> None:
         self.db = db
+        self._active_tasks: dict[str, tuple[threading.Event, threading.Thread | None]] = {}
+        self._lock = threading.Lock()
 
     def run_task(
         self,
         *,
         goal_id: str,
         task_name: str,
-        executor: Callable[[], dict[str, Any]],
+        executor: Callable[..., dict[str, Any]],
         assigned_agent: str | None = None,
         parent_task_id: str | None = None,
         max_retries: int = 0,
@@ -34,6 +36,19 @@ class TaskOrchestrator:
         task_id: str | None = None,
     ) -> tuple[str, dict[str, Any] | None]:
         """Execute a trusted task and store terminal state plus serialized output."""
+
+        import inspect
+
+        def _invoke_executor(fn: Callable[..., Any], token: threading.Event) -> Any:
+            try:
+                sig = inspect.signature(fn)
+                if "cancellation_token" in sig.parameters:
+                    return fn(cancellation_token=token)
+                elif len(sig.parameters) >= 1:
+                    return fn(token)
+            except (ValueError, TypeError):
+                pass
+            return fn()
 
         task_id = task_id or str(uuid.uuid4())
         self.db.create_research_task(
@@ -54,6 +69,7 @@ class TaskOrchestrator:
             return task_id, None
 
         active_worker: threading.Thread | None = None
+        cancellation_token = threading.Event()
         for attempt in range(max_retries + 1):
             if active_worker is not None and active_worker.is_alive():
                 # Enforce fail-closed non-overlapping retry invariant
@@ -76,8 +92,17 @@ class TaskOrchestrator:
                 started_at=datetime.now(timezone.utc),
             )
             if timeout_seconds is None:
+                with self._lock:
+                    self._active_tasks[task_id] = (cancellation_token, threading.current_thread())
                 try:
-                    output = executor()
+                    output = _invoke_executor(executor, cancellation_token)
+                    if cancellation_token.is_set():
+                        self.db.update_research_task(
+                            task_id,
+                            state=TaskState.CANCELLED.value,
+                            finished_at=datetime.now(timezone.utc),
+                        )
+                        return task_id, output
                     self.db.update_research_task(
                         task_id,
                         state=TaskState.SUCCEEDED.value,
@@ -86,6 +111,13 @@ class TaskOrchestrator:
                     )
                     return task_id, output
                 except Exception as exc:
+                    if cancellation_token.is_set():
+                        self.db.update_research_task(
+                            task_id,
+                            state=TaskState.CANCELLED.value,
+                            finished_at=datetime.now(timezone.utc),
+                        )
+                        return task_id, None
                     if attempt < max_retries:
                         self.db.update_research_task(task_id, state=TaskState.RETRYING.value, error_message=str(exc))
                         continue
@@ -96,16 +128,21 @@ class TaskOrchestrator:
                         finished_at=datetime.now(timezone.utc),
                     )
                     raise
+                finally:
+                    with self._lock:
+                        self._active_tasks.pop(task_id, None)
             else:
                 outcomes: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
 
                 def run_fn() -> None:
                     try:
-                        outcomes.put((True, executor()))
+                        outcomes.put((True, _invoke_executor(executor, cancellation_token)))
                     except BaseException as exc:
                         outcomes.put((False, exc))
 
                 active_worker = threading.Thread(target=run_fn, name="bounded-research-task", daemon=True)
+                with self._lock:
+                    self._active_tasks[task_id] = (cancellation_token, active_worker)
                 active_worker.start()
                 try:
                     succeeded, value = outcomes.get(timeout=timeout_seconds)
@@ -122,6 +159,17 @@ class TaskOrchestrator:
                         finished_at=datetime.now(timezone.utc),
                     )
                     raise TimeoutError(err_msg) from exc
+                finally:
+                    with self._lock:
+                        self._active_tasks.pop(task_id, None)
+
+                if cancellation_token.is_set():
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.CANCELLED.value,
+                        finished_at=datetime.now(timezone.utc),
+                    )
+                    return task_id, value if succeeded else None
 
                 if succeeded:
                     self.db.update_research_task(
@@ -150,10 +198,31 @@ class TaskOrchestrator:
         self._require_state(task_id, {TaskState.WAITING})
         self.db.update_research_task(task_id, state=TaskState.PENDING.value)
 
-    def cancel_task(self, task_id: str) -> None:
-        """Cancel a task before or during execution."""
+    def cancel_task(self, task_id: str, timeout_seconds: float = 2.0) -> None:
+        """Cancel a task cooperatively, refusing to falsely report stopped execution while side effects can continue."""
 
         self._require_state(task_id, {TaskState.PENDING, TaskState.WAITING, TaskState.RETRYING, TaskState.RUNNING})
+        with self._lock:
+            active_task = self._active_tasks.get(task_id)
+
+        if active_task is not None:
+            token, worker = active_task
+            token.set()
+            if worker is not None and worker != threading.current_thread() and worker.is_alive():
+                worker.join(timeout=timeout_seconds)
+                if worker.is_alive():
+                    err_msg = (
+                        f"Task '{task_id}' was requested to cancel, but worker thread did not terminate within "
+                        f"{timeout_seconds}s and remains actively executing (CANCELLATION_UNTERMINATED). "
+                        f"Refusing to report stopped execution while worker can still perform side effects."
+                    )
+                    self.db.update_research_task(
+                        task_id,
+                        state=TaskState.RUNNING.value,
+                        error_message=err_msg,
+                    )
+                    raise RuntimeError(err_msg)
+
         self.db.update_research_task(task_id, state=TaskState.CANCELLED.value, finished_at=datetime.now(timezone.utc))
 
     def _require_state(self, task_id: str, allowed: set[TaskState]) -> None:

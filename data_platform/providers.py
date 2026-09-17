@@ -18,6 +18,21 @@ class ProviderUnavailable(RuntimeError):
     """Raised when one provider cannot satisfy a complete request."""
 
 
+class AuthenticationError(RuntimeError):
+    """Raised when provider authentication fails."""
+
+
+CLASSIFIED_AVAILABILITY_ERRORS = (
+    ProviderUnavailable,
+    AuthenticationError,
+    ConnectionError,
+    TimeoutError,
+    requests.exceptions.ConnectionError,
+    requests.exceptions.Timeout,
+    requests.exceptions.HTTPError,
+)
+
+
 class MarketDataProvider(Protocol):
     """Interface that keeps strategy code independent of data vendors."""
 
@@ -40,7 +55,7 @@ class ProviderRegistry:
             started_at = datetime.now(timezone.utc)
             try:
                 snapshot = provider.fetch_bars(request)
-            except Exception as exc:
+            except CLASSIFIED_AVAILABILITY_ERRORS as exc:
                 errors.append(f"{provider.name}: {exc}")
                 self._record_attempt(provider.name, request, "FAILED", started_at, str(exc))
                 continue
@@ -190,6 +205,34 @@ class OpenBBHttpProvider:
         if not isinstance(records, list):
             raise ProviderUnavailable("OpenBB response did not contain a list of bars.")
         frame = pd.DataFrame(records).rename(columns={"date": "timestamp"})
+
+        # Verify adjustment semantics from data evidence rather than trusting caller-supplied labels
+        detected_adjustment = PriceAdjustment.UNADJUSTED
+        if isinstance(payload, dict) and "adjustment" in payload:
+            raw_adj = str(payload["adjustment"]).upper()
+            if "SPLIT" in raw_adj:
+                detected_adjustment = PriceAdjustment.SPLIT_ADJUSTED
+            elif "TOTAL" in raw_adj:
+                detected_adjustment = PriceAdjustment.TOTAL_RETURN
+            elif "UNADJUSTED" in raw_adj or "RAW" in raw_adj:
+                detected_adjustment = PriceAdjustment.UNADJUSTED
+        elif "adj_close" in frame.columns and "close" in frame.columns:
+            if not (frame["adj_close"] == frame["close"]).all():
+                detected_adjustment = PriceAdjustment.SPLIT_ADJUSTED
+            else:
+                detected_adjustment = PriceAdjustment.UNADJUSTED
+        elif "adjustment" in frame.columns:
+            unique_adj = frame["adjustment"].dropna().unique()
+            if len(unique_adj) == 1:
+                val = str(unique_adj[0]).upper()
+                if val in PriceAdjustment.__members__:
+                    detected_adjustment = PriceAdjustment(val)
+
+        if detected_adjustment != request.adjustment:
+            raise ProviderUnavailable(
+                f"Provider data evidence indicates {detected_adjustment.value}, but {request.adjustment.value} was requested."
+            )
+
         return DatasetSnapshot.from_bars(
             instrument=Instrument(
                 canonical_symbol=request.symbol,
@@ -200,7 +243,7 @@ class OpenBBHttpProvider:
             ),
             timeframe=request.timeframe,
             bars=frame,
-            adjustment=request.adjustment,
+            adjustment=detected_adjustment,
             timezone_name=request.timezone,
             metadata={"endpoint": url, "params": params},
         )

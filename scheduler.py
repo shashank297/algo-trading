@@ -144,15 +144,36 @@ def advance_active_paper_sessions(config: dict[str, Any]) -> list[dict[str, Any]
         db.close()
 
 
-def run_job() -> None:
+def run_job(as_of: datetime | None = None, check_calendar: bool = True) -> None:
     """Run ingestion, then advance approved paper sessions only on success."""
 
+    current_time = as_of or datetime.now(IST)
     operation_logger = logger.bind(
         component="scheduler", command="daily_ingestion_and_paper", operation_id=str(uuid.uuid4()),
     )
-    operation_logger.info("Scheduled ingestion starting at {}", datetime.now(IST))
+    operation_logger.info("Scheduled ingestion evaluated at {}", current_time)
     try:
         config = load_runtime_config()
+        if check_calendar:
+            try:
+                calendar = configured_nse_calendar(config)
+                trading_date = current_time.date()
+                if not calendar.is_trading_day(trading_date):
+                    operation_logger.info(
+                        "Skipping scheduled ingestion: {} is not an active exchange trading session (holiday, weekend, or closure).",
+                        trading_date,
+                    )
+                    return
+                bounds = calendar.session_bounds(trading_date)
+                if current_time < bounds.end:
+                    operation_logger.warning(
+                        "Scheduled ingestion triggered at {} before exchange session close at {}. Ingestion may be incomplete.",
+                        current_time,
+                        bounds.end,
+                    )
+            except Exception as exc:
+                operation_logger.warning("Market calendar evaluation error: {}", exc)
+
         operations = config.get("operations", {})
         arguments: list[str] = []
         snapshot = operations.get("ingestion_universe_snapshot")
@@ -240,6 +261,27 @@ def start_scheduler() -> None:
         max_instances=1,
         coalesce=True,
     )
+    # Register any explicit special trading sessions (e.g. weekend Muhurat trading or mock/disaster recovery sessions)
+    try:
+        from datetime import timedelta
+        calendar = configured_nse_calendar(config)
+        for override in getattr(calendar, "overrides", ()):
+            if override.override_type == "SPECIAL_SESSION":
+                close_time = override.end_time or datetime.strptime("16:00", "%H:%M").time()
+                scheduled_dt = datetime.combine(override.session_date, close_time, tzinfo=IST) + timedelta(minutes=15)
+                if scheduled_dt > datetime.now(IST):
+                    scheduler.add_job(
+                        func=run_job,
+                        trigger="date",
+                        run_date=scheduled_dt,
+                        id=f"special_session_{override.session_date.isoformat()}",
+                        name=f"Special session ingestion: {override.session_date.isoformat()} ({override.reason})",
+                        replace_existing=True,
+                    )
+                    logger.info("Registered special session job for {} at {}", override.session_date, scheduled_dt)
+    except Exception as exc:
+        logger.warning("Could not register special sessions: {}", exc)
+
     archive_trigger = CronTrigger(day_of_week="sat", hour=2, minute=0, timezone=IST)
     from tools.archive_to_parquet import archive_data
 
