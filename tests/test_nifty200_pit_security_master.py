@@ -21,8 +21,9 @@ def test_security_master_identity_is_period_valid(tmp_path):
     from tools.nifty200_pit.build_public_dataset import parse_security_master
     from tools.nifty200_pit.models import SourceRecord
 
-    rows = parse_security_master(SourceRecord("https://example/EQUITY_L.csv", str(source), "hash", "now"))
+    rows = parse_security_master(SourceRecord("https://example/EQUITY_L.csv", str(source), "hash", "2026-09-17T00:00:00+00:00"))
     assert rows[0]["instrument_id"] == "NSE-ISIN:INE123"
+    assert rows[0]["valid_from"] == "2015-01-01"
     assert resolve_observation(Observation(symbol="ABC", effective_date=date(2015, 1, 2)), rows).confidence == "CERTIFIED"
 
 
@@ -216,10 +217,13 @@ def test_archived_security_master_row_keeps_historical_provenance(tmp_path):
     from tools.nifty200_pit.models import SourceRecord
 
     rows = parse_security_master(SourceRecord(
-        HISTORICAL_SECURITY_MASTER_URL, str(source), "hash", "now", source_tier="A2",
+        HISTORICAL_SECURITY_MASTER_URL, str(source), "hash", "2026-09-17", source_tier="A2", document_date="2011-10-30",
     ))
     assert rows[0]["source_tier"] == "A2"
     assert rows[0]["instrument_id"] == "NSE-ISIN:INE123"
+    assert rows[0]["snapshot_date"] == "2011-10-30"
+    assert rows[0]["valid_from"] == "2010-01-01"
+    assert rows[0]["valid_until"] is None
 
 
 def test_symbol_change_alias_resolves_exact_multi_hop_chain():
@@ -330,6 +334,21 @@ def test_bhavcopy_identity_is_exact_day_evidence_not_membership(tmp_path):
         assert resolve_observation(Observation(symbol="NBCC", effective_date=day), rows).instrument_id is None
     resolved = resolve_observation(Observation(symbol="NBCC", effective_date=date(2016, 4, 1)), rows)
     assert resolved.isin == "INE095N01015"
+
+
+def test_bhavcopy_identity_filter_retains_only_requested_date_symbols(tmp_path):
+    import zipfile
+    from tools.nifty200_pit.build_public_dataset import parse_bhavcopy_identities
+    from tools.nifty200_pit.models import SourceRecord
+
+    archive = tmp_path / "cm01JAN2020bhav.csv.zip"
+    with zipfile.ZipFile(archive, "w") as output:
+        output.writestr("cm01JAN2020bhav.csv", "SYMBOL,SERIES,TIMESTAMP,ISIN\nKEEP,EQ,01-Jan-2020,INE123456789\nDROP,EQ,01-Jan-2020,INE987654321\n")
+    rows = parse_bhavcopy_identities(SourceRecord(
+        "https://example.test/bhav.zip", str(archive), "hash", "now",
+        document_date="2020-01-01",
+    ), identity_keys={("2020-01-01", "KEEP")})
+    assert [row["symbol"] for row in rows] == ["KEEP"]
 
 
 def test_bhavcopy_parser_rejects_wrong_catalogue_date(tmp_path):

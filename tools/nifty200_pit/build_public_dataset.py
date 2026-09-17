@@ -395,6 +395,9 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
     required = {"SYMBOL", "NAME OF COMPANY", "DATE OF LISTING", "ISIN NUMBER"}
     if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
         return []
+    snapshot_date = _parse_day(source.document_date or str(source.retrieved_at)[:10])
+    if snapshot_date is None:
+        return []
     rows: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
     for original in reader:
@@ -415,12 +418,15 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
             "valid_from": listing_date.isoformat() if listing_date else None,
             "valid_until": None, "source_url": source.source_url,
             "source_sha256": source.source_sha256, "source_tier": source.source_tier,
-            "snapshot_date": source.document_date,
+            "snapshot_date": snapshot_date.isoformat(),
+            "identity_event_type": "DATED_SECURITY_MASTER_SNAPSHOT",
         })
     return rows
 
 
-def parse_bhavcopy_identities(source: SourceRecord) -> list[dict[str, Any]]:
+def parse_bhavcopy_identities(
+    source: SourceRecord, *, identity_keys: set[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
     """Read dated ISIN evidence; a bhavcopy does not establish index membership."""
     rows: list[dict[str, Any]] = []
     with zipfile.ZipFile(source.local_path) as archive:
@@ -438,6 +444,8 @@ def parse_bhavcopy_identities(source: SourceRecord) -> list[dict[str, Any]]:
                 if str(raw.get('SERIES') or '').strip().upper() != 'EQ':
                     continue
                 if not when or not symbol or not re.fullmatch(r'IN[A-Z0-9]{10}', isin):
+                    continue
+                if identity_keys is not None and (when.isoformat(), symbol.upper()) not in identity_keys:
                     continue
                 if source.document_date and when.isoformat() != source.document_date:
                     raise ValueError(f'Bhavcopy timestamp disagrees with catalogue: {source.source_url}')
@@ -771,6 +779,10 @@ def _apply_documented_isin_continuity(
          "ff186e104f0ec6fce4257422655e453aa289a9b80389b44fff260177856d4521",
          "2c1bba907be7866dfccaa6e6380b60341d18547ff389f4100526043d0b541dc1",
          "1c29705c1138d2852db6f0eb0bfd25d61d649e57711b818c57fa033326b2d6cb"),
+        ("BAJFINANCE", "INE296A01016", "INE296A01024", "2016-09-07", "2016-09-09", 1,
+         "11b2a619b064c270d04a3fedc14633317d0a87959a212f98dad5349ad14babc5",
+         "b3cf8eed2deecdf468f0249870e4b0869aac49f3a4c38e93edbddd53f1c4a604",
+         "fba772ecc40bb05c24d29c49f634c79cef0d9a736daa58f266f58ee5f675199d"),
     ]
     needed = {digest for rule in rules for digest in rule[6:]}
     verified = {source.source_sha256: source for source in sources
@@ -1955,8 +1967,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     for source in sources:
         if '/content/historical/EQUITIES/' in source.source_url and source.source_url.endswith('bhav.csv.zip'):
             instrument_rows.extend(
-                row for row in parse_bhavcopy_identities(source)
-                if (str(row['snapshot_date']), str(row['symbol']).upper()) in required_identity_keys
+                row for row in parse_bhavcopy_identities(source, identity_keys=required_identity_keys)
             )
     instrument_master: list[dict[str, Any]] = []
     seen_identity_rows: set[tuple[str, str, str]] = set()

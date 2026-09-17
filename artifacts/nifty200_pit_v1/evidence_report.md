@@ -16,14 +16,14 @@ This build covers 2012-01-02 through 2026-08-20. It parses cached official NSE/N
 
 ## Results
 
-- Source records: 471; source hash errors: 0.
-- Source tiers: A1=467, B1=1.
+- Source records: 565; source hash errors: 0.
+- Source tiers: A1=561, B1=1.
 - Event observations: 1582; canonical events: 728.
 - Monthly snapshot rows: 21650 across 108 checkpoints.
-- Durable identity mappings: 4032 certified; 0 remain manual-review candidates.
+- Durable identity mappings: 4033 certified; 0 remain manual-review candidates.
 - Coverage gaps or non-200 checkpoints: 68 campaign months.
-- NSE sessions checked: 3613; replay count range: 0..122.
-- Blocker ledger rows: 3738; known_at unresolved canonical events: 0.
+- NSE sessions checked: 3613; replay count range: 2..124.
+- Blocker ledger rows: 3847; known_at unresolved canonical events: 0.
 - Automated validation: **BLOCKED**.
 
 The package is intentionally blocked because the available evidence does not yet provide a complete, causally timestamped, durable-identity reconstruction for every campaign day. No synthetic initial membership or fabricated ISIN was created.

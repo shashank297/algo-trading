@@ -106,5 +106,23 @@
     "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
     "independent_qa": "NOT_ASSERTED",
     "durable_instrument_id": "NSE-ISIN:INE095N01015"
+  },
+  {
+    "symbol": "BAJFINANCE",
+    "old_isin": "INE296A01016",
+    "new_isin": "INE296A01024",
+    "identity_event_type": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
+    "source_url": "https://www.msei.in/SX-Content/Circulars/2016/September/Circular-4496.pdf",
+    "source_sha256": "11b2a619b064c270d04a3fedc14633317d0a87959a212f98dad5349ad14babc5",
+    "source_page": 1,
+    "before_reference_date": "2016-09-07",
+    "before_source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2016/SEP/cm07SEP2016bhav.csv.zip",
+    "before_source_sha256": "b3cf8eed2deecdf468f0249870e4b0869aac49f3a4c38e93edbddd53f1c4a604",
+    "after_reference_date": "2016-09-09",
+    "after_source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2016/SEP/cm09SEP2016bhav.csv.zip",
+    "after_source_sha256": "fba772ecc40bb05c24d29c49f634c79cef0d9a736daa58f266f58ee5f675199d",
+    "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
+    "independent_qa": "NOT_ASSERTED",
+    "durable_instrument_id": "NSE-ISIN:INE296A01016"
   }
 ]

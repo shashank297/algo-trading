@@ -17,7 +17,7 @@ def test_identity_prefers_period_valid_isin():
 
 
 def test_fuzzy_identity_never_auto_certifies():
-    result = resolve_observation(_observation(company_name="Example Industries"), [{"instrument_id": "SEC-1", "company_name": "Example Industriez"}])
+    result = resolve_observation(_observation(symbol="", company_name="Example Industries"), [{"instrument_id": "SEC-1", "company_name": "Example Industriez"}])
     assert result.instrument_id is None
     assert result.confidence == "MANUAL_REVIEW"
 
@@ -63,6 +63,22 @@ def test_manual_review_alias_is_not_certified_even_when_it_has_an_identifier():
     assert result.instrument_id is None
     assert result.confidence == "MANUAL_REVIEW"
     assert result.candidates == ("CANDIDATE",)
+
+
+def test_symbol_miss_does_not_run_unbounded_fuzzy_identity_scan():
+    result = resolve_observation(
+        _observation(symbol="UNKNOWN", company_name="Example Industries"),
+        [{"instrument_id": "SEC-1", "symbol": "OTHER", "company_name": "Example Industriez"}],
+    )
+    assert result.instrument_id is None
+    assert result.confidence == "UNRESOLVED"
+
+
+def test_batch_identity_resolution_reuses_exact_indexes():
+    observations = [_observation(symbol="SAME", effective_date=date(2015, 1, 1)) for _ in range(25)]
+    rows = [{"instrument_id": "SEC-1", "isin": "INE123", "symbol": "SAME", "valid_from": "2010-01-01"}]
+    resolved = resolve_observations(observations, rows)
+    assert all(item.instrument_id == "SEC-1" and item.confidence == "CERTIFIED" for item in resolved)
 
 
 def test_certified_alias_still_requires_a_real_identifier_and_valid_period():

@@ -62,6 +62,28 @@ def _unique_instrument_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(unique.values())
 
 
+def _build_indexes(
+    rows: Iterable[dict[str, Any]], aliases: Iterable[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
+    filtered = [dict(row) for row in rows if str(row.get("series") or "").upper() != "IL"]
+    by_isin: dict[str, list[dict[str, Any]]] = {}
+    by_symbol: dict[str, list[dict[str, Any]]] = {}
+    by_company: dict[str, list[dict[str, Any]]] = {}
+    by_alias: dict[str, list[dict[str, Any]]] = {}
+    for row in filtered:
+        if key := _norm(row.get("isin")):
+            by_isin.setdefault(key, []).append(row)
+        if key := _norm(row.get("symbol")):
+            by_symbol.setdefault(key, []).append(row)
+        if key := _norm_company(row.get("company_name")):
+            by_company.setdefault(key, []).append(row)
+    for alias in aliases:
+        if str(alias.get("series") or "").upper() != "IL":
+            if key := _norm(alias.get("alias_symbol") or alias.get("symbol")):
+                by_alias.setdefault(key, []).append(alias)
+    return filtered, by_isin, by_symbol, by_company, by_alias
+
+
 @dataclass(frozen=True, slots=True)
 class Resolution:
     instrument_id: str | None
@@ -85,24 +107,28 @@ def resolve_observation(
     *,
     aliases: Iterable[dict[str, Any]] = (),
     fuzzy_threshold: float = 0.92,
+    _indexes: tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]] | None = None,
 ) -> Resolution:
     """Resolve by period-valid evidence; fuzzy matches are never certified."""
     obs = observation.to_dict() if isinstance(observation, Observation) else observation
     # IL is the separate inter-institutional market, not the normal equity
     # security represented by an index constituent. Preserve it in the master
     # for provenance but exclude it from normal constituent identity matching.
-    rows = [dict(row) for row in instrument_master if str(row.get("series") or "").upper() != "IL"]
+    if _indexes is None:
+        rows, rows_by_isin, rows_by_symbol, rows_by_company, aliases_by_symbol = _build_indexes(instrument_master, aliases)
+    else:
+        rows, rows_by_isin, rows_by_symbol, rows_by_company, aliases_by_symbol = _indexes
     when = _date(obs.get("effective_date"))
     isin = _norm(obs.get("isin"))
     if isin:
-        exact = [row for row in rows if _norm(row.get("isin")) == isin and _valid_on(row, when)]
+        exact = [row for row in rows_by_isin.get(isin, []) if _valid_on(row, when)]
         if len(exact) == 1:
             return Resolution(str(exact[0]["instrument_id"]), str(exact[0].get("isin") or obs.get("isin")), "PERIOD_VALID_ISIN", "CERTIFIED")
         if len(exact) > 1:
             return Resolution(None, None, "AMBIGUOUS_ISIN", "MANUAL_REVIEW", tuple(str(r.get("instrument_id")) for r in exact))
 
     symbol = _norm(obs.get("symbol"))
-    exact = [row for row in rows if _norm(row.get("symbol")) == symbol and _valid_on(row, when)] if symbol else []
+    exact = [row for row in rows_by_symbol.get(symbol, []) if _valid_on(row, when)] if symbol else []
     unique_exact = _unique_instrument_rows(exact)
     if len(unique_exact) == 1:
         row = unique_exact[0]
@@ -119,8 +145,7 @@ def resolve_observation(
     company_for_match = re.sub(r"\s+DVR\s*$", "", raw_company, flags=re.I)
     company = _norm_company(company_for_match)
     exact_company = [
-        row for row in rows
-        if company and _norm_company(row.get("company_name")) == company and _valid_on(row, when)
+        row for row in rows_by_company.get(company, []) if _valid_on(row, when)
     ]
     if re.search(r"\bDVR\b", raw_company, re.I):
         exact_company = [row for row in exact_company if _norm(row.get("symbol")).endswith("DVR")]
@@ -138,12 +163,9 @@ def resolve_observation(
                           tuple(str(r.get("instrument_id")) for r in exact_company))
 
     alias_matches = []
-    for alias in aliases:
-        if str(alias.get("series") or "").upper() == "IL":
-            continue
-        if symbol and (_norm(alias.get("alias_symbol")) == symbol or _norm(alias.get("symbol")) == symbol):
-            if _valid_on(alias, when):
-                alias_matches.append(alias)
+    for alias in aliases_by_symbol.get(symbol, []) if symbol else []:
+        if _valid_on(alias, when):
+            alias_matches.append(alias)
     if any(
         not str(row.get("instrument_id") or "").strip()
         or str(row.get("instrument_id")).casefold() == "none"
@@ -163,7 +185,16 @@ def resolve_observation(
     if len(alias_matches) > 1:
         return Resolution(None, None, "AMBIGUOUS_ALIAS", "MANUAL_REVIEW", tuple(str(r.get("instrument_id")) for r in alias_matches))
 
+    # A supplied symbol that failed exact/alias resolution is not a reason to
+    # compare the company name against every historical security. Fuzzy output
+    # is manual-review only and is not needed to certify a durable identity.
+    if symbol:
+        return Resolution(None, None, "UNRESOLVED", "UNRESOLVED", (), "no period-valid identity evidence")
+
     target = _norm(obs.get("company_name"))
+    if len(rows) > 1000:
+        return Resolution(None, None, "FUZZY_SEARCH_DEFERRED", "MANUAL_REVIEW", (),
+                          "large historical master requires a bounded manual identity search")
     scored = sorted(((SequenceMatcher(None, target, _norm(row.get("company_name"))).ratio(), row) for row in rows if target),
                     key=lambda value: value[0], reverse=True)
     if scored and scored[0][0] >= fuzzy_threshold:
@@ -175,11 +206,12 @@ def resolve_observation(
 
 def resolve_observations(observations: Iterable[Observation], instrument_master: Iterable[dict[str, Any]], *, aliases: Iterable[dict[str, Any]] = ()) -> list[Observation]:
     rows = list(instrument_master)
+    indexes = _build_indexes(rows, aliases)
     rows_by_instrument = {str(row.get("instrument_id")): row for row in rows if row.get("instrument_id")}
     alias_rows = list(aliases)
     result = []
     for observation in observations:
-        resolution = resolve_observation(observation, rows, aliases=alias_rows)
+        resolution = resolve_observation(observation, rows, aliases=alias_rows, _indexes=indexes)
         payload = observation.to_dict() | {
             "instrument_id": resolution.instrument_id,
             "isin": resolution.isin or observation.isin,
