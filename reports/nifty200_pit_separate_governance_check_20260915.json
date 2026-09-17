@@ -1,0 +1,12 @@
+{
+  "origin_main": "a8f383149187b8d0bbfb23253ba81c464ec8563f",
+  "family_function": "def _ensure_campaign_1_family(\n    db: DuckDBManager,\n    *,\n    universe_snapshot_id: str,\n    benchmark_symbol: str | None,\n    cost_model_version: str,\n) -> None:\n    \"\"\"Register or validate the immutable Campaign 1 trial family.\"\"\"\n\n    configurations = materialize_campaign_1_configurations()\n    existing = db.get_experiment_family(CAMPAIGN_1_ID)\n    if existing is not None:\n        if int(existing[\"maximum_trials\"]) != CAMPAIGN_1_MAXIMUM_TRIALS:\n            raise ValueError(\"Campaign 1 experiment family trial budget mismatch.\")\n        if str(existing.get(\"universe_snapshot_id\", universe_snapshot_id)) != universe_snapshot_id:\n            raise ValueError(\"Campaign 1 experiment family universe mismatch.\")\n        return\n\n    strategy_names = sorted({item[\"strategy_name\"] for item in configurations})\n    family = ExperimentFamilySpec(\n        experiment_family_id=CAMPAIGN_1_ID,\n        hypothesis=\"Campaign 1 authoritative event-driven Indian-equity screening\",\n        strategy_names=strategy_names,\n        strategy_versions=[StrategyRegistry.metadata(name).version for name in strategy_names],\n        universe_snapshot_id=universe_snapshot_id,\n        timeframe=\"1d\",\n        feature_versions=[\"features-v1\"],\n        cost_model_version=cost_model_version,\n        parameter_space={\n            name: dict(StrategyRegistry.metadata(name).parameter_grid)\n            for name in strategy_names\n        },\n        maximum_trials=CAMPAIGN_1_MAXIMUM_TRIALS,\n        selection_metric=\"net_return_drawdown_turnover_stability\",\n        walk_forward_design={\"mode\": \"nested_expanding\", \"purge\": \"configured\", \"embargo\": \"configured\"},\n        source_revision=\"campaign-1-baseline\",\n        operator_notes=f\"benchmark={benchmark_symbol or 'NIFTY200'}; authoritative event-driven only\",\n    )\n    db.register_experiment_family(family)",
+  "pipeline_risk_hash_lines": [
+    "CAMPAIGN_FROZEN_RISK_POLICY_HASH = \"8330bb013ffd1d22acb2c60d715066a43b239cd35b382e772c4a7d47c7d72a3c\""
+  ],
+  "risk_policy_git_blob_sha256": "e1e933466508921007c1bc765686db2dcfd21781551edd2c760805b6ba88a5bf",
+  "declared_policy_hash": "9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
+  "computed_limits_hash": "9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
+  "baseline_v2_on_main": false,
+  "governance_files_modified_by_this_iteration": false
+}

@@ -1,0 +1,306 @@
+[
+  {
+    "date": "2013-09-27",
+    "symbol": "MADRASCEM",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/SEP/cm27SEP2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2013-09-27\\data\\raw\\nifty200_pit_public_sources\\raw\\33\\33470fd6ca590bccc258452014e55dc7ca014922f17d6b86ea2ff2ac14b93d74.zip",
+      "source_sha256": "33470fd6ca590bccc258452014e55dc7ca014922f17d6b86ea2ff2ac14b93d74",
+      "retrieved_at": "2026-09-16T05:42:20.227267+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/SEP/cm27SEP2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"47878-1547726258000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:38 GMT",
+      "file_size": 47878
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE331A01037",
+        "isin": "INE331A01037",
+        "symbol": "MADRASCEM",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-09-27",
+        "valid_until": "2013-09-28",
+        "snapshot_date": "2013-09-27",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/SEP/cm27SEP2013bhav.csv.zip",
+        "source_sha256": "33470fd6ca590bccc258452014e55dc7ca014922f17d6b86ea2ff2ac14b93d74",
+        "source_tier": "A1",
+        "source_member": "cm27SEP2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2013-09-30",
+    "symbol": "RAMCOCEM",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/SEP/cm30SEP2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2013-09-30\\data\\raw\\nifty200_pit_public_sources\\raw\\ac\\acfd69a9fe6a9c304135c7fabe8a104044b1f769e6730d6f87dfe1b26c6b7455.zip",
+      "source_sha256": "acfd69a9fe6a9c304135c7fabe8a104044b1f769e6730d6f87dfe1b26c6b7455",
+      "retrieved_at": "2026-09-16T05:42:20.226901+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/SEP/cm30SEP2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"47751-1547726258000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:38 GMT",
+      "file_size": 47751
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE331A01037",
+        "isin": "INE331A01037",
+        "symbol": "RAMCOCEM",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-09-30",
+        "valid_until": "2013-10-01",
+        "snapshot_date": "2013-09-30",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/SEP/cm30SEP2013bhav.csv.zip",
+        "source_sha256": "acfd69a9fe6a9c304135c7fabe8a104044b1f769e6730d6f87dfe1b26c6b7455",
+        "source_tier": "A1",
+        "source_member": "cm30SEP2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2013-10-03",
+    "symbol": "SESAGOA",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm03OCT2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2013-10-03\\data\\raw\\nifty200_pit_public_sources\\raw\\b3\\b37f19ec2cc8b7fd8d2854218653be6c8659da0235500278d3fc1ad3ef3b8f9e.zip",
+      "source_sha256": "b37f19ec2cc8b7fd8d2854218653be6c8659da0235500278d3fc1ad3ef3b8f9e",
+      "retrieved_at": "2026-09-16T05:42:20.227121+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm03OCT2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"48473-1547726257000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:37 GMT",
+      "file_size": 48473
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE205A01025",
+        "isin": "INE205A01025",
+        "symbol": "SESAGOA",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-10-03",
+        "valid_until": "2013-10-04",
+        "snapshot_date": "2013-10-03",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm03OCT2013bhav.csv.zip",
+        "source_sha256": "b37f19ec2cc8b7fd8d2854218653be6c8659da0235500278d3fc1ad3ef3b8f9e",
+        "source_tier": "A1",
+        "source_member": "cm03OCT2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2013-10-04",
+    "symbol": "SSLT",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm04OCT2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2013-10-04\\data\\raw\\nifty200_pit_public_sources\\raw\\04\\04875a55de103a81c925a8ad368b6dbb019b515f825451966aa2e5d8ad60e7cb.zip",
+      "source_sha256": "04875a55de103a81c925a8ad368b6dbb019b515f825451966aa2e5d8ad60e7cb",
+      "retrieved_at": "2026-09-16T05:42:20.947836+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm04OCT2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"48332-1547726257000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:37 GMT",
+      "file_size": 48332
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE205A01025",
+        "isin": "INE205A01025",
+        "symbol": "SSLT",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-10-04",
+        "valid_until": "2013-10-05",
+        "snapshot_date": "2013-10-04",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm04OCT2013bhav.csv.zip",
+        "source_sha256": "04875a55de103a81c925a8ad368b6dbb019b515f825451966aa2e5d8ad60e7cb",
+        "source_tier": "A1",
+        "source_member": "cm04OCT2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2013-10-22",
+    "symbol": "UNIPHOS",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm22OCT2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2013-10-22\\data\\raw\\nifty200_pit_public_sources\\raw\\0d\\0d206c84f17c8e54be8d2dfbf562c647e064726cdfff1f708d3a993f92160c4b.zip",
+      "source_sha256": "0d206c84f17c8e54be8d2dfbf562c647e064726cdfff1f708d3a993f92160c4b",
+      "retrieved_at": "2026-09-16T05:42:20.948050+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm22OCT2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"50434-1547726258000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:38 GMT",
+      "file_size": 50434
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE628A01036",
+        "isin": "INE628A01036",
+        "symbol": "UNIPHOS",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-10-22",
+        "valid_until": "2013-10-23",
+        "snapshot_date": "2013-10-22",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm22OCT2013bhav.csv.zip",
+        "source_sha256": "0d206c84f17c8e54be8d2dfbf562c647e064726cdfff1f708d3a993f92160c4b",
+        "source_tier": "A1",
+        "source_member": "cm22OCT2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2013-10-23",
+    "symbol": "UPL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm23OCT2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2013-10-23\\data\\raw\\nifty200_pit_public_sources\\raw\\99\\99c39829b1c6042b314e7224bf4dcdc3dc8fe4c16e164c7b7de601b6942cb64d.zip",
+      "source_sha256": "99c39829b1c6042b314e7224bf4dcdc3dc8fe4c16e164c7b7de601b6942cb64d",
+      "retrieved_at": "2026-09-16T05:42:20.947645+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm23OCT2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"49584-1547726258000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:38 GMT",
+      "file_size": 49584
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE628A01036",
+        "isin": "INE628A01036",
+        "symbol": "UPL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-10-23",
+        "valid_until": "2013-10-24",
+        "snapshot_date": "2013-10-23",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/OCT/cm23OCT2013bhav.csv.zip",
+        "source_sha256": "99c39829b1c6042b314e7224bf4dcdc3dc8fe4c16e164c7b7de601b6942cb64d",
+        "source_tier": "A1",
+        "source_member": "cm23OCT2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2014-05-21",
+    "symbol": "INFOTECENT",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/MAY/cm21MAY2014bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2014-05-21\\data\\raw\\nifty200_pit_public_sources\\raw\\4f\\4ff7fcee61a8b091d77694f8fe6c327f740aba0cc4f13ef724e298a9e29b74fc.zip",
+      "source_sha256": "4ff7fcee61a8b091d77694f8fe6c327f740aba0cc4f13ef724e298a9e29b74fc",
+      "retrieved_at": "2026-09-16T05:42:21.680290+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/MAY/cm21MAY2014bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"57645-1547726261000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:41 GMT",
+      "file_size": 57645
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE136B01020",
+        "isin": "INE136B01020",
+        "symbol": "INFOTECENT",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2014-05-21",
+        "valid_until": "2014-05-22",
+        "snapshot_date": "2014-05-21",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/MAY/cm21MAY2014bhav.csv.zip",
+        "source_sha256": "4ff7fcee61a8b091d77694f8fe6c327f740aba0cc4f13ef724e298a9e29b74fc",
+        "source_tier": "A1",
+        "source_member": "cm21MAY2014bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  },
+  {
+    "date": "2014-05-22",
+    "symbol": "CYIENT",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/MAY/cm22MAY2014bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\rename_bhavcopies_20260916\\2014-05-22\\data\\raw\\nifty200_pit_public_sources\\raw\\77\\77438e263b31c6e5f521986973eae46460a34df83db6aef11156909c5c183d0f.zip",
+      "source_sha256": "77438e263b31c6e5f521986973eae46460a34df83db6aef11156909c5c183d0f",
+      "retrieved_at": "2026-09-16T05:42:21.639644+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/MAY/cm22MAY2014bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"57942-1547726261000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:41 GMT",
+      "file_size": 57942
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE136B01020",
+        "isin": "INE136B01020",
+        "symbol": "CYIENT",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2014-05-22",
+        "valid_until": "2014-05-23",
+        "snapshot_date": "2014-05-22",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/MAY/cm22MAY2014bhav.csv.zip",
+        "source_sha256": "77438e263b31c6e5f521986973eae46460a34df83db6aef11156909c5c183d0f",
+        "source_tier": "A1",
+        "source_member": "cm22MAY2014bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ],
+    "status": "DATED_IDENTITY_ONLY_NOT_INDEX_MEMBERSHIP"
+  }
+]

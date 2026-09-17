@@ -1,0 +1,150 @@
+[
+  {
+    "date": "2014-09-19",
+    "symbol": "KSCL",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm19SEP2014bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\identity_continuity_acquisition_20260915\\2014-09-19\\data\\raw\\nifty200_pit_public_sources\\raw\\60\\60024fed82ae7a9436e7242b2dec1cca7292fd73fd5bef49d699b2f04fa9bd4d.zip",
+      "source_sha256": "60024fed82ae7a9436e7242b2dec1cca7292fd73fd5bef49d699b2f04fa9bd4d",
+      "retrieved_at": "2026-09-15T16:06:51.880171+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm19SEP2014bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"58936-1547726262000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:42 GMT",
+      "file_size": 58936
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE455I01029",
+        "isin": "INE455I01029",
+        "symbol": "KSCL",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2014-09-19",
+        "valid_until": "2014-09-20",
+        "snapshot_date": "2014-09-19",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2014/SEP/cm19SEP2014bhav.csv.zip",
+        "source_sha256": "60024fed82ae7a9436e7242b2dec1cca7292fd73fd5bef49d699b2f04fa9bd4d",
+        "source_tier": "A1",
+        "source_member": "cm19SEP2014bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ]
+  },
+  {
+    "date": "2015-03-27",
+    "symbol": "GRUH",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAR/cm27MAR2015bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\identity_continuity_acquisition_20260915\\2015-03-27\\data\\raw\\nifty200_pit_public_sources\\raw\\5e\\5ec6a39cd8b5070d314f4a3a5dc198ef3b5d18c6cf18c0644c021f35b6fce096.zip",
+      "source_sha256": "5ec6a39cd8b5070d314f4a3a5dc198ef3b5d18c6cf18c0644c021f35b6fce096",
+      "retrieved_at": "2026-09-15T16:06:51.891437+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAR/cm27MAR2015bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"56865-1547726265000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:45 GMT",
+      "file_size": 56865
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE580B01029",
+        "isin": "INE580B01029",
+        "symbol": "GRUH",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2015-03-27",
+        "valid_until": "2015-03-28",
+        "snapshot_date": "2015-03-27",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2015/MAR/cm27MAR2015bhav.csv.zip",
+        "source_sha256": "5ec6a39cd8b5070d314f4a3a5dc198ef3b5d18c6cf18c0644c021f35b6fce096",
+        "source_tier": "A1",
+        "source_member": "cm27MAR2015bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ]
+  },
+  {
+    "date": "2013-04-01",
+    "symbol": "AMARAJABAT",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/APR/cm01APR2013bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\identity_continuity_acquisition_20260915\\2013-04-01\\data\\raw\\nifty200_pit_public_sources\\raw\\ac\\ac3ed3621278660d58650f982a99b97dcab52fb0905fb7b99871fc44e05552a8.zip",
+      "source_sha256": "ac3ed3621278660d58650f982a99b97dcab52fb0905fb7b99871fc44e05552a8",
+      "retrieved_at": "2026-09-15T16:06:51.899444+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/APR/cm01APR2013bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"53581-1547726254000\"",
+      "last_modified": "Thu, 17 Jan 2019 11:57:34 GMT",
+      "file_size": 53581
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE885A01032",
+        "isin": "INE885A01032",
+        "symbol": "AMARAJABAT",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2013-04-01",
+        "valid_until": "2013-04-02",
+        "snapshot_date": "2013-04-01",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2013/APR/cm01APR2013bhav.csv.zip",
+        "source_sha256": "ac3ed3621278660d58650f982a99b97dcab52fb0905fb7b99871fc44e05552a8",
+        "source_tier": "A1",
+        "source_member": "cm01APR2013bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ]
+  },
+  {
+    "date": "2020-09-25",
+    "symbol": "NAVINFLUOR",
+    "source": {
+      "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/SEP/cm25SEP2020bhav.csv.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\identity_continuity_acquisition_20260915\\2020-09-25\\data\\raw\\nifty200_pit_public_sources\\raw\\57\\579148b2c647823c4b6681d55c93ac6042f0982e39fe067c3d7eb23a17eac2f9.zip",
+      "source_sha256": "579148b2c647823c4b6681d55c93ac6042f0982e39fe067c3d7eb23a17eac2f9",
+      "retrieved_at": "2026-09-15T16:06:52.383603+00:00",
+      "content_type": "application/zip",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/SEP/cm25SEP2020bhav.csv.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "W/\"70725-1601035344000\"",
+      "last_modified": "Fri, 25 Sep 2020 12:02:24 GMT",
+      "file_size": 70725
+    },
+    "identity_rows": [
+      {
+        "instrument_id": "NSE-ISIN:INE048G01026",
+        "isin": "INE048G01026",
+        "symbol": "NAVINFLUOR",
+        "series": "EQ",
+        "company_name": null,
+        "valid_from": "2020-09-25",
+        "valid_until": "2020-09-26",
+        "snapshot_date": "2020-09-25",
+        "source_url": "https://nsearchives.nseindia.com/content/historical/EQUITIES/2020/SEP/cm25SEP2020bhav.csv.zip",
+        "source_sha256": "579148b2c647823c4b6681d55c93ac6042f0982e39fe067c3d7eb23a17eac2f9",
+        "source_tier": "A1",
+        "source_member": "cm25SEP2020bhav.csv",
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY"
+      }
+    ]
+  }
+]

@@ -124,6 +124,12 @@ class MarketCalendar:
         current = self._to_local(timestamp)
         if not self.is_trading_day(current.date()):
             return False
+        for interruption in self._overrides_for(current.date(), "INTERRUPTION"):
+            if interruption.start_time and interruption.end_time:
+                start = datetime.combine(current.date(), interruption.start_time, tzinfo=self.zone)
+                end = datetime.combine(current.date(), interruption.end_time, tzinfo=self.zone)
+                if start <= current < end:
+                    return False
         window = self.session_bounds(current.date())
         return window.start <= current <= window.end
 
@@ -275,8 +281,13 @@ class PandasNSECalendar(MarketCalendar):
         for index, row in schedule.iterrows():
             trading_date = pd.Timestamp(index).date()
             scheduled_dates.add(trading_date)
+            if self._overrides_for(trading_date, "CLOSED"):
+                continue
             start = pd.Timestamp(row["market_open"]).tz_convert(self.zone)
             end = pd.Timestamp(row["market_close"]).tz_convert(self.zone)
+            if self._overrides_for(trading_date, "SPECIAL_SESSION"):
+                special = super().session_bounds(trading_date)
+                start, end = pd.Timestamp(special.start), pd.Timestamp(special.end)
             values = pd.date_range(start, end - timedelta(minutes=1), freq="min")
             for interruption in self._overrides_for(trading_date, "INTERRUPTION"):
                 if interruption.start_time and interruption.end_time:
@@ -289,9 +300,16 @@ class PandasNSECalendar(MarketCalendar):
                 override.override_type == "SPECIAL_SESSION"
                 and start_date <= override.session_date <= end_date
                 and override.session_date not in scheduled_dates
+                and not self._overrides_for(override.session_date, "CLOSED")
             ):
                 bounds = super().session_bounds(override.session_date)
-                ranges.append(pd.date_range(bounds.start, bounds.end - timedelta(minutes=1), freq="min"))
+                values = pd.date_range(bounds.start, bounds.end - timedelta(minutes=1), freq="min")
+                for interruption in self._overrides_for(override.session_date, "INTERRUPTION"):
+                    if interruption.start_time and interruption.end_time:
+                        interruption_start = datetime.combine(override.session_date, interruption.start_time, tzinfo=self.zone)
+                        interruption_end = datetime.combine(override.session_date, interruption.end_time, tzinfo=self.zone)
+                        values = values[(values < interruption_start) | (values >= interruption_end)]
+                ranges.append(values)
         if not ranges:
             return pd.DatetimeIndex([])
         result = ranges[0]
@@ -327,6 +345,13 @@ class PandasNSECalendar(MarketCalendar):
             valid = session is not None and (
                 timeframe == "1d" or session[0] <= timestamp <= session[1]
             )
+            if valid and timeframe != "1d":
+                for interruption in self._overrides_for(timestamp.date(), "INTERRUPTION"):
+                    if interruption.start_time and interruption.end_time:
+                        start = datetime.combine(timestamp.date(), interruption.start_time, tzinfo=self.zone)
+                        end = datetime.combine(timestamp.date(), interruption.end_time, tzinfo=self.zone)
+                        if start <= timestamp < end:
+                            valid = False
             if not valid:
                 out_of_session.append(timestamp.isoformat())
         actual_dates = set(local.date)

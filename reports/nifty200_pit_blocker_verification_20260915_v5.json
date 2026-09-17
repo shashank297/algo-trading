@@ -1,0 +1,112 @@
+[
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "pytest",
+      "tests\\test_nifty200_pit_calendar_consistency.py",
+      "tests\\test_nifty200_pit_causality.py",
+      "tests\\test_nifty200_pit_certification.py",
+      "tests\\test_nifty200_pit_identity.py",
+      "tests\\test_nifty200_pit_importer.py",
+      "tests\\test_nifty200_pit_intervals.py",
+      "tests\\test_nifty200_pit_manifest.py",
+      "tests\\test_nifty200_pit_parser.py",
+      "tests\\test_nifty200_pit_public_dataset.py",
+      "tests\\test_nifty200_pit_reconciliation.py",
+      "tests\\test_nifty200_pit_security_master.py",
+      "tests\\test_nifty200_pit_sources.py",
+      "-vv"
+    ],
+    "exit_code": 1,
+    "elapsed_seconds": 5.01,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_0.log"
+  },
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "pytest",
+      "tests\\test_storage.py",
+      "-vv"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 16.42,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_1.log"
+  },
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "ruff",
+      "check",
+      "."
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.18,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_2.log"
+  },
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "mypy",
+      "ai_research/",
+      "tools/",
+      "data_platform/",
+      "storage/"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 5.82,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_3.log"
+  },
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "pyright"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 17.59,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_4.log"
+  },
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "compileall",
+      "-q",
+      "main.py",
+      "research.py",
+      "run_pipeline.py",
+      "tools",
+      "data_platform",
+      "storage",
+      "tests"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.32,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_5.log"
+  },
+  {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 0.15,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_6.log"
+  },
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "pytest",
+      "-q"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 493.09,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_7.log"
+  }
+]

@@ -1,0 +1,1657 @@
+[
+  {
+    "month": "2012-01",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-02",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-03",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-04",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-05",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-06",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-07",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-08",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-09",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-10",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-11",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2012-12",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2012.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2013-01",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2013.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2013-02",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2013.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2013-03",
+    "url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2013.zip",
+    "error": "BadZipFile('File is not a zip file')",
+    "finding": "SOURCE_DOWNLOAD_OR_PARSE_FAILURE"
+  },
+  {
+    "month": "2022-04",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Apr2022\\data\\raw\\nifty200_pit_public_sources\\raw\\f1\\f153df160f9fbae4cd1be5c15b3c0c7d2487fadd85bb75d99bde68fb67021bf0.zip",
+      "source_sha256": "f153df160f9fbae4cd1be5c15b3c0c7d2487fadd85bb75d99bde68fb67021bf0",
+      "retrieved_at": "2026-09-15T15:59:19.971455+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"09ccd8b1d5ed81:0\"",
+      "last_modified": "Mon, 02 May 2022 12:10:00 GMT",
+      "file_size": 511994
+    },
+    "members": [
+      "NIFTY_50_Apr2022.pdf",
+      "NIFTY_Bank_Apr2022.pdf",
+      "NIFTY_Financial_Services_Apr2022.pdf",
+      "NIFTY_Midcap_Select_Apr2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-05",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\May2022\\data\\raw\\nifty200_pit_public_sources\\raw\\10\\10c5f7efa5940717e9785764f751d29aec0666e706030244768442c080baeee7.zip",
+      "source_sha256": "10c5f7efa5940717e9785764f751d29aec0666e706030244768442c080baeee7",
+      "retrieved_at": "2026-09-15T16:01:06.166574+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"09c1ad08375d81:0\"",
+      "last_modified": "Wed, 01 Jun 2022 06:50:00 GMT",
+      "file_size": 511971
+    },
+    "members": [
+      "NIFTY_50_May2022.pdf",
+      "NIFTY_Bank_May2022.pdf",
+      "NIFTY_Financial_Services_May2022.pdf",
+      "NIFTY_Midcap_Select_May2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-06",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jun2022\\data\\raw\\nifty200_pit_public_sources\\raw\\bf\\bfe76223f0b4e63cb75419326909ff55802ef32d22f78106164be990cec18aa3.zip",
+      "source_sha256": "bfe76223f0b4e63cb75419326909ff55802ef32d22f78106164be990cec18aa3",
+      "retrieved_at": "2026-09-15T16:01:06.141605+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0f072803c8dd81:0\"",
+      "last_modified": "Fri, 01 Jul 2022 11:20:00 GMT",
+      "file_size": 511969
+    },
+    "members": [
+      "NIFTY_50_Jun2022.pdf",
+      "NIFTY_Bank_Jun2022.pdf",
+      "NIFTY_Financial_Services_Jun2022.pdf",
+      "NIFTY_Midcap_Select_Jun2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-07",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jul2022\\data\\raw\\nifty200_pit_public_sources\\raw\\7e\\7ef348d36fdda233546ac156eeae11aa25e4cf83795ae4396f9498e6f5916a95.zip",
+      "source_sha256": "7ef348d36fdda233546ac156eeae11aa25e4cf83795ae4396f9498e6f5916a95",
+      "retrieved_at": "2026-09-15T16:01:06.472914+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0c0a65866a5d81:0\"",
+      "last_modified": "Mon, 01 Aug 2022 05:20:00 GMT",
+      "file_size": 511991
+    },
+    "members": [
+      "NIFTY_50_Jul2022.pdf",
+      "NIFTY_Bank_Jul2022.pdf",
+      "NIFTY_Financial_Services_Jul2022.pdf",
+      "NIFTY_Midcap_Select_Jul2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-08",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Aug2022\\data\\raw\\nifty200_pit_public_sources\\raw\\c5\\c532b04bc964b8a0ac58fe55c54c7a0d0411b3d8e5aff4020072e67f9fdad0e6.zip",
+      "source_sha256": "c532b04bc964b8a0ac58fe55c54c7a0d0411b3d8e5aff4020072e67f9fdad0e6",
+      "retrieved_at": "2026-09-15T16:01:06.727346+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0e07aa8cdbdd81:0\"",
+      "last_modified": "Thu, 01 Sep 2022 06:40:00 GMT",
+      "file_size": 637548
+    },
+    "members": [
+      "NIFTY_50_Aug2022.pdf",
+      "NIFTY_Bank_Aug2022.pdf",
+      "NIFTY_Financial_Services_Aug2022.pdf",
+      "NIFTY_Midcap_Select_Aug2022.pdf",
+      "NIFTY_IT_Aug2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-09",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Sep2022\\data\\raw\\nifty200_pit_public_sources\\raw\\ec\\ec9e8d8a37fd3cacfe1e231c5644c57bfae2aec1eccb41fd20b0e28e3c9ba711.zip",
+      "source_sha256": "ec9e8d8a37fd3cacfe1e231c5644c57bfae2aec1eccb41fd20b0e28e3c9ba711",
+      "retrieved_at": "2026-09-15T16:01:06.708585+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"06cdc1e5d7d81:0\"",
+      "last_modified": "Mon, 03 Oct 2022 08:50:00 GMT",
+      "file_size": 637504
+    },
+    "members": [
+      "NIFTY_50_Sep2022.pdf",
+      "NIFTY_Bank_Sep2022.pdf",
+      "NIFTY_Financial_Services_Sep2022.pdf",
+      "NIFTY_Midcap_Select_Sep2022.pdf",
+      "NIFTY_IT_Sep2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-10",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Oct2022\\data\\raw\\nifty200_pit_public_sources\\raw\\d7\\d7d6e17a01105cf20dd311f50e544dbcbc2979600b78cda9857583c72c66ce19.zip",
+      "source_sha256": "d7d6e17a01105cf20dd311f50e544dbcbc2979600b78cda9857583c72c66ce19",
+      "retrieved_at": "2026-09-15T16:01:07.216261+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"074a17be2edd81:0\"",
+      "last_modified": "Tue, 01 Nov 2022 11:10:00 GMT",
+      "file_size": 637519
+    },
+    "members": [
+      "NIFTY_50_Oct2022.pdf",
+      "NIFTY_Bank_Oct2022.pdf",
+      "NIFTY_Financial_Services_Oct2022.pdf",
+      "NIFTY_Midcap_Select_Oct2022.pdf",
+      "NIFTY_IT_Oct2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-11",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Nov2022\\data\\raw\\nifty200_pit_public_sources\\raw\\fd\\fd72c84a32992483abf9cf8d1bfe5a0704a850348bd6847d2ebe331ffa62c35f.zip",
+      "source_sha256": "fd72c84a32992483abf9cf8d1bfe5a0704a850348bd6847d2ebe331ffa62c35f",
+      "retrieved_at": "2026-09-15T16:01:07.418786+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"088d61d585d91:0\"",
+      "last_modified": "Thu, 01 Dec 2022 07:40:00 GMT",
+      "file_size": 637556
+    },
+    "members": [
+      "NIFTY_50_Nov2022.pdf",
+      "NIFTY_Bank_Nov2022.pdf",
+      "NIFTY_Financial_Services_Nov2022.pdf",
+      "NIFTY_Midcap_Select_Nov2022.pdf",
+      "NIFTY_IT_Nov2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2022-12",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2022.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Dec2022\\data\\raw\\nifty200_pit_public_sources\\raw\\ca\\caceb64f4cda5e4b8a7eed227112d1549e47ad3b51f60149fdd5219c82e7da29.zip",
+      "source_sha256": "caceb64f4cda5e4b8a7eed227112d1549e47ad3b51f60149fdd5219c82e7da29",
+      "retrieved_at": "2026-09-15T16:01:07.292882+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2022.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0d8659491cd91:0\"",
+      "last_modified": "Fri, 30 Dec 2022 12:20:00 GMT",
+      "file_size": 637523
+    },
+    "members": [
+      "NIFTY_50_Dec2022.pdf",
+      "NIFTY_Bank_Dec2022.pdf",
+      "NIFTY_Financial_Services_Dec2022.pdf",
+      "NIFTY_Midcap_Select_Dec2022.pdf",
+      "NIFTY_IT_Dec2022.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-01",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jan2023\\data\\raw\\nifty200_pit_public_sources\\raw\\ff\\ff027e10f4257a999728b511b9db341d0c7880ebb13b49be1e5818cf387b6005.zip",
+      "source_sha256": "ff027e10f4257a999728b511b9db341d0c7880ebb13b49be1e5818cf387b6005",
+      "retrieved_at": "2026-09-15T16:01:07.740429+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0dc84b8335d91:0\"",
+      "last_modified": "Tue, 31 Jan 2023 14:50:00 GMT",
+      "file_size": 637515
+    },
+    "members": [
+      "NIFTY_50_Jan2023.pdf",
+      "NIFTY_Bank_Jan2023.pdf",
+      "NIFTY_Financial_Services_Jan2023.pdf",
+      "NIFTY_Midcap_Select_Jan2023.pdf",
+      "NIFTY_IT_Jan2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-02",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Feb2023\\data\\raw\\nifty200_pit_public_sources\\raw\\09\\0927000d5e3a41f8201e2aefb325841e7d86083af639668316c2bf7cd600a0a9.zip",
+      "source_sha256": "0927000d5e3a41f8201e2aefb325841e7d86083af639668316c2bf7cd600a0a9",
+      "retrieved_at": "2026-09-15T16:01:07.878383+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"044bc203f4cd91:0\"",
+      "last_modified": "Wed, 01 Mar 2023 13:10:00 GMT",
+      "file_size": 637510
+    },
+    "members": [
+      "NIFTY_50_Feb2023.pdf",
+      "NIFTY_Bank_Feb2023.pdf",
+      "NIFTY_Financial_Services_Feb2023.pdf",
+      "NIFTY_Midcap_Select_Feb2023.pdf",
+      "NIFTY_IT_Feb2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-03",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Mar2023\\data\\raw\\nifty200_pit_public_sources\\raw\\cb\\cbaa34dbb6401328663269d2fc4412ef947c0909acc47dbd3e242d9fc540d594.zip",
+      "source_sha256": "cbaa34dbb6401328663269d2fc4412ef947c0909acc47dbd3e242d9fc540d594",
+      "retrieved_at": "2026-09-15T16:01:08.038828+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0a8c0a24b64d91:0\"",
+      "last_modified": "Sat, 01 Apr 2023 03:40:00 GMT",
+      "file_size": 637470
+    },
+    "members": [
+      "NIFTY_50_Mar2023.pdf",
+      "NIFTY_Bank_Mar2023.pdf",
+      "NIFTY_Financial_Services_Mar2023.pdf",
+      "NIFTY_Midcap_Select_Mar2023.pdf",
+      "NIFTY_IT_Mar2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-04",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Apr2023\\data\\raw\\nifty200_pit_public_sources\\raw\\07\\07f8815188f8c5938e4a76abbb1e736ce6efc76de785ebba16a2eb82edcb650f.zip",
+      "source_sha256": "07f8815188f8c5938e4a76abbb1e736ce6efc76de785ebba16a2eb82edcb650f",
+      "retrieved_at": "2026-09-15T16:01:08.285098+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"090cf8bce79d91:0\"",
+      "last_modified": "Fri, 28 Apr 2023 12:40:00 GMT",
+      "file_size": 637481
+    },
+    "members": [
+      "NIFTY_50_Apr2023.pdf",
+      "NIFTY_Bank_Apr2023.pdf",
+      "NIFTY_Financial_Services_Apr2023.pdf",
+      "NIFTY_Midcap_Select_Apr2023.pdf",
+      "NIFTY_IT_Apr2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-05",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\May2023\\data\\raw\\nifty200_pit_public_sources\\raw\\a3\\a303555139ecad3acf8b64f3f83438f21df00a55fb40b7ede4356ba2982827fc.zip",
+      "source_sha256": "a303555139ecad3acf8b64f3f83438f21df00a55fb40b7ede4356ba2982827fc",
+      "retrieved_at": "2026-09-15T16:01:08.443803+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"02c6ac6694d91:0\"",
+      "last_modified": "Thu, 01 Jun 2023 08:50:00 GMT",
+      "file_size": 637445
+    },
+    "members": [
+      "NIFTY_50_May2023.pdf",
+      "NIFTY_Bank_May2023.pdf",
+      "NIFTY_Financial_Services_May2023.pdf",
+      "NIFTY_Midcap_Select_May2023.pdf",
+      "NIFTY_IT_May2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-06",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jun2023\\data\\raw\\nifty200_pit_public_sources\\raw\\3d\\3d8c42783687a0588195ffd5babb3eeac4c36911e8417a04e5533bda22dc525f.zip",
+      "source_sha256": "3d8c42783687a0588195ffd5babb3eeac4c36911e8417a04e5533bda22dc525f",
+      "retrieved_at": "2026-09-15T16:01:08.554739+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"08c766151abd91:0\"",
+      "last_modified": "Fri, 30 Jun 2023 12:50:00 GMT",
+      "file_size": 637474
+    },
+    "members": [
+      "NIFTY_50_Jun2023.pdf",
+      "NIFTY_Bank_Jun2023.pdf",
+      "NIFTY_Financial_Services_Jun2023.pdf",
+      "NIFTY_Midcap_Select_Jun2023.pdf",
+      "NIFTY_IT_Jun2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-07",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jul2023\\data\\raw\\nifty200_pit_public_sources\\raw\\c9\\c910fa1e2c03f68cc6dd2b9edc1d810cece9592c91f4b53e4427c02c5f879d84.zip",
+      "source_sha256": "c910fa1e2c03f68cc6dd2b9edc1d810cece9592c91f4b53e4427c02c5f879d84",
+      "retrieved_at": "2026-09-15T16:01:08.849664+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0349e6b5c3d91:0\"",
+      "last_modified": "Mon, 31 Jul 2023 13:50:00 GMT",
+      "file_size": 637530
+    },
+    "members": [
+      "NIFTY_50_Jul2023.pdf",
+      "NIFTY_Bank_Jul2023.pdf",
+      "NIFTY_Financial_Services_Jul2023.pdf",
+      "NIFTY_Midcap_Select_Jul2023.pdf",
+      "NIFTY_IT_Jul2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-08",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Aug2023\\data\\raw\\nifty200_pit_public_sources\\raw\\19\\19232e6d3f35034bbdec6e8498a784e1b19719c85b5a4b152bbdc6fdbd4e6730.zip",
+      "source_sha256": "19232e6d3f35034bbdec6e8498a784e1b19719c85b5a4b152bbdc6fdbd4e6730",
+      "retrieved_at": "2026-09-15T16:01:09.008938+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"05ce286a0dcd91:0\"",
+      "last_modified": "Fri, 01 Sep 2023 06:50:00 GMT",
+      "file_size": 637529
+    },
+    "members": [
+      "NIFTY_50_Aug2023.pdf",
+      "NIFTY_Bank_Aug2023.pdf",
+      "NIFTY_Financial_Services_Aug2023.pdf",
+      "NIFTY_Midcap_Select_Aug2023.pdf",
+      "NIFTY_IT_Aug2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-09",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Sep2023\\data\\raw\\nifty200_pit_public_sources\\raw\\fb\\fb4f0fb8c173c667aa01e8a42ff697b953e1ceedc6256ea418d9a62233131d40.zip",
+      "source_sha256": "fb4f0fb8c173c667aa01e8a42ff697b953e1ceedc6256ea418d9a62233131d40",
+      "retrieved_at": "2026-09-15T16:01:09.159205+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"09c9638e4f2d91:0\"",
+      "last_modified": "Fri, 29 Sep 2023 14:50:00 GMT",
+      "file_size": 637432
+    },
+    "members": [
+      "NIFTY_50_Sep2023.pdf",
+      "NIFTY_Bank_Sep2023.pdf",
+      "NIFTY_Financial_Services_Sep2023.pdf",
+      "NIFTY_Midcap_Select_Sep2023.pdf",
+      "NIFTY_IT_Sep2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-10",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Oct2023\\data\\raw\\nifty200_pit_public_sources\\raw\\f8\\f854b625bfe34aaf997a3d9c2e36b3d961f67d4464542a7a0958aa4441a2940c.zip",
+      "source_sha256": "f854b625bfe34aaf997a3d9c2e36b3d961f67d4464542a7a0958aa4441a2940c",
+      "retrieved_at": "2026-09-15T16:01:09.411172+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0cc45c2f8bda1:0\"",
+      "last_modified": "Tue, 31 Oct 2023 12:50:00 GMT",
+      "file_size": 637453
+    },
+    "members": [
+      "NIFTY_50_Oct2023.pdf",
+      "NIFTY_Bank_Oct2023.pdf",
+      "NIFTY_Financial_Services_Oct2023.pdf",
+      "NIFTY_Midcap_Select_Oct2023.pdf",
+      "NIFTY_IT_Oct2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-11",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Nov2023\\data\\raw\\nifty200_pit_public_sources\\raw\\2c\\2c4244930209bb4540b488278fbd97d39bcf6c83ca71b2b3c9c1d70516a77988.zip",
+      "source_sha256": "2c4244930209bb4540b488278fbd97d39bcf6c83ca71b2b3c9c1d70516a77988",
+      "retrieved_at": "2026-09-15T16:01:09.535091+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0b46e1c9423da1:0\"",
+      "last_modified": "Thu, 30 Nov 2023 13:50:00 GMT",
+      "file_size": 637443
+    },
+    "members": [
+      "NIFTY_50_Nov2023.pdf",
+      "NIFTY_Bank_Nov2023.pdf",
+      "NIFTY_Financial_Services_Nov2023.pdf",
+      "NIFTY_Midcap_Select_Nov2023.pdf",
+      "NIFTY_IT_Nov2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2023-12",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2023.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Dec2023\\data\\raw\\nifty200_pit_public_sources\\raw\\12\\12bb4a7bb1e1e52cbfa11c79e4819fe07edae3863bf8615c1a722fb6d18891fe.zip",
+      "source_sha256": "12bb4a7bb1e1e52cbfa11c79e4819fe07edae3863bf8615c1a722fb6d18891fe",
+      "retrieved_at": "2026-09-15T16:01:09.722845+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2023.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0ecaab5603ada1:0\"",
+      "last_modified": "Fri, 29 Dec 2023 14:10:00 GMT",
+      "file_size": 637456
+    },
+    "members": [
+      "NIFTY_50_Dec2023.pdf",
+      "NIFTY_Bank_Dec2023.pdf",
+      "NIFTY_Financial_Services_Dec2023.pdf",
+      "NIFTY_Midcap_Select_Dec2023.pdf",
+      "NIFTY_IT_Dec2023.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-01",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jan2024\\data\\raw\\nifty200_pit_public_sources\\raw\\07\\07f378cf0caf1ee342689795bc81126492be964d197db0ace374d48a33a44002.zip",
+      "source_sha256": "07f378cf0caf1ee342689795bc81126492be964d197db0ace374d48a33a44002",
+      "retrieved_at": "2026-09-15T16:01:09.946182+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0282855c054da1:0\"",
+      "last_modified": "Thu, 01 Feb 2024 03:40:00 GMT",
+      "file_size": 637442
+    },
+    "members": [
+      "NIFTY_50_Jan2024.pdf",
+      "NIFTY_Bank_Jan2024.pdf",
+      "NIFTY_Financial_Services_Jan2024.pdf",
+      "NIFTY_Midcap_Select_Jan2024.pdf",
+      "NIFTY_IT_Jan2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-02",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Feb2024\\data\\raw\\nifty200_pit_public_sources\\raw\\7e\\7ed356a0c08ba430be183c6adffc9bfb4c8ed737c70ac2edcfb2ebcb77cfb18f.zip",
+      "source_sha256": "7ed356a0c08ba430be183c6adffc9bfb4c8ed737c70ac2edcfb2ebcb77cfb18f",
+      "retrieved_at": "2026-09-15T16:01:10.057067+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0a0292c1d6bda1:0\"",
+      "last_modified": "Thu, 29 Feb 2024 14:40:00 GMT",
+      "file_size": 637442
+    },
+    "members": [
+      "NIFTY_50_Feb2024.pdf",
+      "NIFTY_Bank_Feb2024.pdf",
+      "NIFTY_Financial_Services_Feb2024.pdf",
+      "NIFTY_Midcap_Select_Feb2024.pdf",
+      "NIFTY_IT_Feb2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-03",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Mar2024\\data\\raw\\nifty200_pit_public_sources\\raw\\a5\\a5dc521e224c021d97e60a0c3b9d061ea6e6c49f0e793e9422a5bb2c995dd7cf.zip",
+      "source_sha256": "a5dc521e224c021d97e60a0c3b9d061ea6e6c49f0e793e9422a5bb2c995dd7cf",
+      "retrieved_at": "2026-09-15T15:59:19.944744+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"08cd271e81da1:0\"",
+      "last_modified": "Thu, 28 Mar 2024 12:50:00 GMT",
+      "file_size": 637430
+    },
+    "members": [
+      "NIFTY_50_Mar2024.pdf",
+      "NIFTY_Bank_Mar2024.pdf",
+      "NIFTY_Financial_Services_Mar2024.pdf",
+      "NIFTY_Midcap_Select_Mar2024.pdf",
+      "NIFTY_IT_Mar2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-04",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Apr2024\\data\\raw\\nifty200_pit_public_sources\\raw\\7b\\7ba79caa262e6f285f774c866e67d725f4265fb2a5cde114f8f2ba48a4f5c946.zip",
+      "source_sha256": "7ba79caa262e6f285f774c866e67d725f4265fb2a5cde114f8f2ba48a4f5c946",
+      "retrieved_at": "2026-09-15T16:01:10.315420+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0f897e539bda1:0\"",
+      "last_modified": "Tue, 30 Apr 2024 13:40:00 GMT",
+      "file_size": 772005
+    },
+    "members": [
+      "NIFTY_50_Apr2024.pdf",
+      "NIFTY_Bank_Apr2024.pdf",
+      "NIFTY_Financial_Services_Apr2024.pdf",
+      "NIFTY_Midcap_Select_Apr2024.pdf",
+      "NIFTY_IT_Apr2024.pdf",
+      "NIFTY_Next_50_Apr2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-05",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\May2024\\data\\raw\\nifty200_pit_public_sources\\raw\\f1\\f1bfb197336e19bcc258d85889c6a5f2ac1d01ab60a589097be5c910bc857530.zip",
+      "source_sha256": "f1bfb197336e19bcc258d85889c6a5f2ac1d01ab60a589097be5c910bc857530",
+      "retrieved_at": "2026-09-15T16:01:10.485227+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0d0a1a657b3da1:0\"",
+      "last_modified": "Fri, 31 May 2024 12:40:00 GMT",
+      "file_size": 769119
+    },
+    "members": [
+      "NIFTY_50_May2024.pdf",
+      "NIFTY_Bank_May2024.pdf",
+      "NIFTY_Financial_Services_May2024.pdf",
+      "NIFTY_Midcap_Select_May2024.pdf",
+      "NIFTY_IT_May2024.pdf",
+      "NIFTY_Next_50_May2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-06",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jun2024\\data\\raw\\nifty200_pit_public_sources\\raw\\5d\\5d5f6609cffcc780d21c264b79e2e8a700859b4fb23c39fc94643d6d757da7e0.zip",
+      "source_sha256": "5d5f6609cffcc780d21c264b79e2e8a700859b4fb23c39fc94643d6d757da7e0",
+      "retrieved_at": "2026-09-15T16:01:10.592042+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"02ce5367bc9da1:0\"",
+      "last_modified": "Fri, 28 Jun 2024 16:50:00 GMT",
+      "file_size": 769186
+    },
+    "members": [
+      "NIFTY_50_Jun2024.pdf",
+      "NIFTY_Bank_Jun2024.pdf",
+      "NIFTY_Financial_Services_Jun2024.pdf",
+      "NIFTY_Midcap_Select_Jun2024.pdf",
+      "NIFTY_IT_Jun2024.pdf",
+      "NIFTY_Next_50_Jun2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-07",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jul2024\\data\\raw\\nifty200_pit_public_sources\\raw\\4e\\4e35c6c7d655c4615c4ecd15285c857e5d591bf49149e98f9d83c644b6331652.zip",
+      "source_sha256": "4e35c6c7d655c4615c4ecd15285c857e5d591bf49149e98f9d83c644b6331652",
+      "retrieved_at": "2026-09-15T16:01:10.982913+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0a4bc1f56e3da1:0\"",
+      "last_modified": "Wed, 31 Jul 2024 14:30:00 GMT",
+      "file_size": 772024
+    },
+    "members": [
+      "NIFTY_50_Jul2024.pdf",
+      "NIFTY_Bank_Jul2024.pdf",
+      "NIFTY_Financial_Services_Jul2024.pdf",
+      "NIFTY_Midcap_Select_Jul2024.pdf",
+      "NIFTY_IT_Jul2024.pdf",
+      "NIFTY_Next_50_Jul2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-08",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Aug2024\\data\\raw\\nifty200_pit_public_sources\\raw\\9a\\9a1b2a5c7f8db60246e7180251e523eeef0806ce8d235345b4b3d94840bb5264.zip",
+      "source_sha256": "9a1b2a5c7f8db60246e7180251e523eeef0806ce8d235345b4b3d94840bb5264",
+      "retrieved_at": "2026-09-15T16:01:11.055652+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"09c62e3ebfada1:0\"",
+      "last_modified": "Fri, 30 Aug 2024 14:50:00 GMT",
+      "file_size": 772047
+    },
+    "members": [
+      "NIFTY_50_Aug2024.pdf",
+      "NIFTY_Bank_Aug2024.pdf",
+      "NIFTY_Financial_Services_Aug2024.pdf",
+      "NIFTY_Midcap_Select_Aug2024.pdf",
+      "NIFTY_IT_Aug2024.pdf",
+      "NIFTY_Next_50_Aug2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-09",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Sep2024\\data\\raw\\nifty200_pit_public_sources\\raw\\5a\\5ad8a872d9d67519df0c4f320537d93b39c742e80c8f577964994157abf69649.zip",
+      "source_sha256": "5ad8a872d9d67519df0c4f320537d93b39c742e80c8f577964994157abf69649",
+      "retrieved_at": "2026-09-15T16:01:11.144645+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"01013374c13db1:0\"",
+      "last_modified": "Mon, 30 Sep 2024 15:20:00 GMT",
+      "file_size": 772165
+    },
+    "members": [
+      "NIFTY_50_Sep2024.pdf",
+      "NIFTY_Bank_Sep2024.pdf",
+      "NIFTY_Financial_Services_Sep2024.pdf",
+      "NIFTY_Midcap_Select_Sep2024.pdf",
+      "NIFTY_IT_Sep2024.pdf",
+      "NIFTY_Next_50_Sep2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-10",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Oct2024\\data\\raw\\nifty200_pit_public_sources\\raw\\4c\\4cfe006e942f637cffd4a50550bb166bb770c98053e8e5c78fdd48cc82e7141d.zip",
+      "source_sha256": "4cfe006e942f637cffd4a50550bb166bb770c98053e8e5c78fdd48cc82e7141d",
+      "retrieved_at": "2026-09-15T16:01:11.697436+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0c4b730962bdb1:0\"",
+      "last_modified": "Thu, 31 Oct 2024 13:10:00 GMT",
+      "file_size": 772216
+    },
+    "members": [
+      "NIFTY_50_Oct2024.pdf",
+      "NIFTY_Bank_Oct2024.pdf",
+      "NIFTY_Financial_Services_Oct2024.pdf",
+      "NIFTY_Midcap_Select_Oct2024.pdf",
+      "NIFTY_IT_Oct2024.pdf",
+      "NIFTY_Next_50_Oct2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-11",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Nov2024\\data\\raw\\nifty200_pit_public_sources\\raw\\dd\\dd81b3be2aa76205bd31a55f7d4303c8d14ceb88cfea78a2755289067e6fb3b8.zip",
+      "source_sha256": "dd81b3be2aa76205bd31a55f7d4303c8d14ceb88cfea78a2755289067e6fb3b8",
+      "retrieved_at": "2026-09-15T16:01:11.612274+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0d88e25942db1:0\"",
+      "last_modified": "Fri, 29 Nov 2024 12:20:00 GMT",
+      "file_size": 772296
+    },
+    "members": [
+      "NIFTY_50_Nov2024.pdf",
+      "NIFTY_Bank_Nov2024.pdf",
+      "NIFTY_Financial_Services_Nov2024.pdf",
+      "NIFTY_Midcap_Select_Nov2024.pdf",
+      "NIFTY_IT_Nov2024.pdf",
+      "NIFTY_Next_50_Nov2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2024-12",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2024.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Dec2024\\data\\raw\\nifty200_pit_public_sources\\raw\\c2\\c25bd0e1dffa353e6ef06e303fb9bc70ca9deb37b00a1fb206620916f9a3a8db.zip",
+      "source_sha256": "c25bd0e1dffa353e6ef06e303fb9bc70ca9deb37b00a1fb206620916f9a3a8db",
+      "retrieved_at": "2026-09-15T16:01:11.684996+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2024.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772186
+    },
+    "members": [
+      "NIFTY_50_Dec2024.pdf",
+      "NIFTY_Bank_Dec2024.pdf",
+      "NIFTY_Financial_Services_Dec2024.pdf",
+      "NIFTY_Midcap_Select_Dec2024.pdf",
+      "NIFTY_IT_Dec2024.pdf",
+      "NIFTY_Next_50_Dec2024.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-01",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jan2025\\data\\raw\\nifty200_pit_public_sources\\raw\\22\\2209682560f48d1ee8dddd0ea5dad3c3ae8d3d7a9281c533270c298c7c8ddb59.zip",
+      "source_sha256": "2209682560f48d1ee8dddd0ea5dad3c3ae8d3d7a9281c533270c298c7c8ddb59",
+      "retrieved_at": "2026-09-15T16:01:12.178397+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772398
+    },
+    "members": [
+      "NIFTY_50_Jan2025.pdf",
+      "NIFTY_Bank_Jan2025.pdf",
+      "NIFTY_Financial_Services_Jan2025.pdf",
+      "NIFTY_Midcap_Select_Jan2025.pdf",
+      "NIFTY_IT_Jan2025.pdf",
+      "NIFTY_Next_50_Jan2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-02",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Feb2025\\data\\raw\\nifty200_pit_public_sources\\raw\\9f\\9fd7e78567e2bf0bbe5e0e172c65c50af97694a0ef115960552d0106c0b7e827.zip",
+      "source_sha256": "9fd7e78567e2bf0bbe5e0e172c65c50af97694a0ef115960552d0106c0b7e827",
+      "retrieved_at": "2026-09-15T16:01:12.271748+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772238
+    },
+    "members": [
+      "NIFTY_50_Feb2025.pdf",
+      "NIFTY_Bank_Feb2025.pdf",
+      "NIFTY_Financial_Services_Feb2025.pdf",
+      "NIFTY_Midcap_Select_Feb2025.pdf",
+      "NIFTY_IT_Feb2025.pdf",
+      "NIFTY_Next_50_Feb2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-03",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Mar2025\\data\\raw\\nifty200_pit_public_sources\\raw\\0b\\0b574467951ba383eb62f012c1c92871b3ae77c30688e2bc349194e239838929.zip",
+      "source_sha256": "0b574467951ba383eb62f012c1c92871b3ae77c30688e2bc349194e239838929",
+      "retrieved_at": "2026-09-15T16:01:12.290249+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772274
+    },
+    "members": [
+      "NIFTY_50_Mar2025.pdf",
+      "NIFTY_Bank_Mar2025.pdf",
+      "NIFTY_Financial_Services_Mar2025.pdf",
+      "NIFTY_Midcap_Select_Mar2025.pdf",
+      "NIFTY_IT_Mar2025.pdf",
+      "NIFTY_Next_50_Mar2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-04",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Apr2025\\data\\raw\\nifty200_pit_public_sources\\raw\\33\\331fdd535f330d9f4add4a9e8f89b637ac958875510f778551cb8bad25b2ba61.zip",
+      "source_sha256": "331fdd535f330d9f4add4a9e8f89b637ac958875510f778551cb8bad25b2ba61",
+      "retrieved_at": "2026-09-15T16:01:12.746208+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772381
+    },
+    "members": [
+      "NIFTY_50_Apr2025.pdf",
+      "NIFTY_Bank_Apr2025.pdf",
+      "NIFTY_Financial_Services_Apr2025.pdf",
+      "NIFTY_Midcap_Select_Apr2025.pdf",
+      "NIFTY_IT_Apr2025.pdf",
+      "NIFTY_Next_50_Apr2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-05",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\May2025\\data\\raw\\nifty200_pit_public_sources\\raw\\e8\\e8d1a0cbf0390a518088c5f68a0d53f001fddf95db8305bdce34b6552084c8f8.zip",
+      "source_sha256": "e8d1a0cbf0390a518088c5f68a0d53f001fddf95db8305bdce34b6552084c8f8",
+      "retrieved_at": "2026-09-15T16:01:12.844523+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772383
+    },
+    "members": [
+      "NIFTY_50_May2025.pdf",
+      "NIFTY_Bank_May2025.pdf",
+      "NIFTY_Financial_Services_May2025.pdf",
+      "NIFTY_Midcap_Select_May2025.pdf",
+      "NIFTY_IT_May2025.pdf",
+      "NIFTY_Next_50_May2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-06",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jun2025\\data\\raw\\nifty200_pit_public_sources\\raw\\d1\\d15a87268f223754924bbe52d1e06d281f7d9fbcab2bb6d6bdd3f4c284ac204a.zip",
+      "source_sha256": "d15a87268f223754924bbe52d1e06d281f7d9fbcab2bb6d6bdd3f4c284ac204a",
+      "retrieved_at": "2026-09-15T16:01:12.875809+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0babae337fbdb1:0\"",
+      "last_modified": "Tue, 22 Jul 2025 18:39:00 GMT",
+      "file_size": 772229
+    },
+    "members": [
+      "NIFTY_50_Jun2025.pdf",
+      "NIFTY_Bank_Jun2025.pdf",
+      "NIFTY_Financial_Services_Jun2025.pdf",
+      "NIFTY_Midcap_Select_Jun2025.pdf",
+      "NIFTY_IT_Jun2025.pdf",
+      "NIFTY_Next_50_Jun2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-07",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jul2025\\data\\raw\\nifty200_pit_public_sources\\raw\\44\\4431bafaa39eb84ba0da4935ad131fbf42ede3c65cadd40cddc472230ff194b7.zip",
+      "source_sha256": "4431bafaa39eb84ba0da4935ad131fbf42ede3c65cadd40cddc472230ff194b7",
+      "retrieved_at": "2026-09-15T16:01:13.311234+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0ae6bed182dc1:0\"",
+      "last_modified": "Thu, 31 Jul 2025 12:45:00 GMT",
+      "file_size": 772210
+    },
+    "members": [
+      "NIFTY_50_Jul2025.pdf",
+      "NIFTY_Bank_Jul2025.pdf",
+      "NIFTY_Financial_Services_Jul2025.pdf",
+      "NIFTY_Midcap_Select_Jul2025.pdf",
+      "NIFTY_IT_Jul2025.pdf",
+      "NIFTY_Next_50_Jul2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-08",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Aug2025\\data\\raw\\nifty200_pit_public_sources\\raw\\31\\3166a80173b90f9cab5705578df00dfab55cc0d2093c4d9b7b2c9e8c89f99fc2.zip",
+      "source_sha256": "3166a80173b90f9cab5705578df00dfab55cc0d2093c4d9b7b2c9e8c89f99fc2",
+      "retrieved_at": "2026-09-15T16:01:13.426866+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"054f5a2e018dc1:0\"",
+      "last_modified": "Fri, 29 Aug 2025 12:30:00 GMT",
+      "file_size": 772234
+    },
+    "members": [
+      "NIFTY_50_Aug2025.pdf",
+      "NIFTY_Bank_Aug2025.pdf",
+      "NIFTY_Financial_Services_Aug2025.pdf",
+      "NIFTY_Midcap_Select_Aug2025.pdf",
+      "NIFTY_IT_Aug2025.pdf",
+      "NIFTY_Next_50_Aug2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-09",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Sep2025\\data\\raw\\nifty200_pit_public_sources\\raw\\7d\\7d6e13b12fcd4902acc5431dfc7426965265d98fbe3299c18a44c8df5be37225.zip",
+      "source_sha256": "7d6e13b12fcd4902acc5431dfc7426965265d98fbe3299c18a44c8df5be37225",
+      "retrieved_at": "2026-09-15T16:01:13.426587+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataSep2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"024b6b31632dc1:0\"",
+      "last_modified": "Tue, 30 Sep 2025 14:30:00 GMT",
+      "file_size": 772245
+    },
+    "members": [
+      "NIFTY_50_Sep2025.pdf",
+      "NIFTY_Bank_Sep2025.pdf",
+      "NIFTY_Financial_Services_Sep2025.pdf",
+      "NIFTY_Midcap_Select_Sep2025.pdf",
+      "NIFTY_IT_Sep2025.pdf",
+      "NIFTY_Next_50_Sep2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-10",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Oct2025\\data\\raw\\nifty200_pit_public_sources\\raw\\bd\\bd3a938875d1b507ad6e8e809be1bb2d8c44001ea18c8618411e53de49f2f805.zip",
+      "source_sha256": "bd3a938875d1b507ad6e8e809be1bb2d8c44001ea18c8618411e53de49f2f805",
+      "retrieved_at": "2026-09-15T16:01:13.856512+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataOct2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"04a5981944adc1:0\"",
+      "last_modified": "Fri, 31 Oct 2025 18:31:00 GMT",
+      "file_size": 772394
+    },
+    "members": [
+      "NIFTY_50_Oct2025.pdf",
+      "NIFTY_Bank_Oct2025.pdf",
+      "NIFTY_Financial_Services_Oct2025.pdf",
+      "NIFTY_Midcap_Select_Oct2025.pdf",
+      "NIFTY_IT_Oct2025.pdf",
+      "NIFTY_Next_50_Oct2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-11",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Nov2025\\data\\raw\\nifty200_pit_public_sources\\raw\\31\\31060ecce6119f2c9a25226cdec2d83ad3e74345dfc036bcd07ce433de2f5c7b.zip",
+      "source_sha256": "31060ecce6119f2c9a25226cdec2d83ad3e74345dfc036bcd07ce433de2f5c7b",
+      "retrieved_at": "2026-09-15T16:01:13.987318+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataNov2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0144a5d174dc1:0\"",
+      "last_modified": "Wed, 24 Dec 2025 12:30:00 GMT",
+      "file_size": 772286
+    },
+    "members": [
+      "NIFTY_50_Nov2025.pdf",
+      "NIFTY_Bank_Nov2025.pdf",
+      "NIFTY_Financial_Services_Nov2025.pdf",
+      "NIFTY_Midcap_Select_Nov2025.pdf",
+      "NIFTY_IT_Nov2025.pdf",
+      "NIFTY_Next_50_Nov2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2025-12",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2025.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Dec2025\\data\\raw\\nifty200_pit_public_sources\\raw\\5b\\5ba998fbbaca9348a83db8b30e69d0475dc38c966ba4108529b10823b4ba3517.zip",
+      "source_sha256": "5ba998fbbaca9348a83db8b30e69d0475dc38c966ba4108529b10823b4ba3517",
+      "retrieved_at": "2026-09-15T16:01:14.033589+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataDec2025.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0542e2e517adc1:0\"",
+      "last_modified": "Wed, 31 Dec 2025 12:30:00 GMT",
+      "file_size": 772605
+    },
+    "members": [
+      "NIFTY_50_Dec2025.pdf",
+      "NIFTY_Bank_Dec2025.pdf",
+      "NIFTY_Financial_Services_Dec2025.pdf",
+      "NIFTY_Midcap_Select_Dec2025.pdf",
+      "NIFTY_IT_Dec2025.pdf",
+      "NIFTY_Next_50_Dec2025.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-01",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jan2026\\data\\raw\\nifty200_pit_public_sources\\raw\\aa\\aa6a9b9c7143df40e8bae983af78db6709fcadd0c7e7dad1bd76320d3ae0d843.zip",
+      "source_sha256": "aa6a9b9c7143df40e8bae983af78db6709fcadd0c7e7dad1bd76320d3ae0d843",
+      "retrieved_at": "2026-09-15T16:01:14.391163+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJan2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0ba21ee291dc1:0\"",
+      "last_modified": "Fri, 30 Jan 2026 12:15:00 GMT",
+      "file_size": 772677
+    },
+    "members": [
+      "NIFTY_50_Jan2026.pdf",
+      "NIFTY_Bank_Jan2026.pdf",
+      "NIFTY_Financial_Services_Jan2026.pdf",
+      "NIFTY_Midcap_Select_Jan2026.pdf",
+      "NIFTY_IT_Jan2026.pdf",
+      "NIFTY_Next_50_Jan2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-02",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Feb2026\\data\\raw\\nifty200_pit_public_sources\\raw\\d5\\d5d418e330e4e7f27f52d6ed450240ad330ffc25a512e1db0f144fd1b1433452.zip",
+      "source_sha256": "d5d418e330e4e7f27f52d6ed450240ad330ffc25a512e1db0f144fd1b1433452",
+      "retrieved_at": "2026-09-15T16:01:14.528607+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataFeb2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"086fbe8a7dc1:0\"",
+      "last_modified": "Fri, 27 Feb 2026 13:00:00 GMT",
+      "file_size": 772536
+    },
+    "members": [
+      "NIFTY_50_Feb2026.pdf",
+      "NIFTY_Bank_Feb2026.pdf",
+      "NIFTY_Financial_Services_Feb2026.pdf",
+      "NIFTY_Midcap_Select_Feb2026.pdf",
+      "NIFTY_IT_Feb2026.pdf",
+      "NIFTY_Next_50_Feb2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-03",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Mar2026\\data\\raw\\nifty200_pit_public_sources\\raw\\fd\\fd650078e31b4315233ff08169625832ecbdf28ead8248e0c6df72dd28a3cd9a.zip",
+      "source_sha256": "fd650078e31b4315233ff08169625832ecbdf28ead8248e0c6df72dd28a3cd9a",
+      "retrieved_at": "2026-09-15T16:01:14.607762+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMar2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0b7e5749c0dc1:0\"",
+      "last_modified": "Mon, 30 Mar 2026 13:30:14 GMT",
+      "file_size": 772407
+    },
+    "members": [
+      "NIFTY_50_Mar2026.pdf",
+      "NIFTY_Bank_Mar2026.pdf",
+      "NIFTY_Financial_Services_Mar2026.pdf",
+      "NIFTY_Midcap_Select_Mar2026.pdf",
+      "NIFTY_IT_Mar2026.pdf",
+      "NIFTY_Next_50_Mar2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-04",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Apr2026\\data\\raw\\nifty200_pit_public_sources\\raw\\52\\5274563ff7ae37380b819661d3af6895f4b81a0ef08afde002010538fba3c82c.zip",
+      "source_sha256": "5274563ff7ae37380b819661d3af6895f4b81a0ef08afde002010538fba3c82c",
+      "retrieved_at": "2026-09-15T16:01:14.917325+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataApr2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"0e97a1a9dd8dc1:0\"",
+      "last_modified": "Thu, 30 Apr 2026 12:30:18 GMT",
+      "file_size": 772838
+    },
+    "members": [
+      "NIFTY_50_Apr2026.pdf",
+      "NIFTY_Bank_Apr2026.pdf",
+      "NIFTY_Financial_Services_Apr2026.pdf",
+      "NIFTY_Midcap_Select_Apr2026.pdf",
+      "NIFTY_IT_Apr2026.pdf",
+      "NIFTY_Next_50_Apr2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-05",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\May2026\\data\\raw\\nifty200_pit_public_sources\\raw\\24\\2491659c8e4e584d673d95b1f096eb88cb2909dad26e2cf8c992a3ff2fab6913.zip",
+      "source_sha256": "2491659c8e4e584d673d95b1f096eb88cb2909dad26e2cf8c992a3ff2fab6913",
+      "retrieved_at": "2026-09-15T16:01:15.111741+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"8067e16071efdc1:0\"",
+      "last_modified": "Fri, 29 May 2026 13:45:15 GMT",
+      "file_size": 772790
+    },
+    "members": [
+      "NIFTY_50_May2026.pdf",
+      "NIFTY_Bank_May2026.pdf",
+      "NIFTY_Financial_Services_May2026.pdf",
+      "NIFTY_Midcap_Select_May2026.pdf",
+      "NIFTY_IT_May2026.pdf",
+      "NIFTY_Next_50_May2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-06",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jun2026\\data\\raw\\nifty200_pit_public_sources\\raw\\c2\\c2f0aa29e9a10e5270b8245242000234afb20741d6da281f43c03a35bafca5b2.zip",
+      "source_sha256": "c2f0aa29e9a10e5270b8245242000234afb20741d6da281f43c03a35bafca5b2",
+      "retrieved_at": "2026-09-15T16:01:15.196507+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJun2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"8029f46b5e13dd1:0\"",
+      "last_modified": "Tue, 14 Jul 2026 07:00:15 GMT",
+      "file_size": 920352
+    },
+    "members": [
+      "NIFTY_50_Jun2026.pdf",
+      "NIFTY_Bank_Jun2026.pdf",
+      "NIFTY_Financial_Services_Jun2026.pdf",
+      "NIFTY_Midcap_Select_Jun2026.pdf",
+      "NIFTY_IT_Jun2026.pdf",
+      "NIFTY_Next_50_Jun2026.pdf",
+      "NIFTY_India_FPI_150_Jun2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-07",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Jul2026\\data\\raw\\nifty200_pit_public_sources\\raw\\11\\1184b58ea5e2b8a7b290ca44810836b07fd9ec024231a59ec2dd63e36deed7a4.zip",
+      "source_sha256": "1184b58ea5e2b8a7b290ca44810836b07fd9ec024231a59ec2dd63e36deed7a4",
+      "retrieved_at": "2026-09-15T16:01:15.431938+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataJul2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"80751deef420dd1:0\"",
+      "last_modified": "Fri, 31 Jul 2026 14:00:23 GMT",
+      "file_size": 920299
+    },
+    "members": [
+      "NIFTY_50_Jul2026.pdf",
+      "NIFTY_Bank_Jul2026.pdf",
+      "NIFTY_Financial_Services_Jul2026.pdf",
+      "NIFTY_Midcap_Select_Jul2026.pdf",
+      "NIFTY_IT_Jul2026.pdf",
+      "NIFTY_Next_50_Jul2026.pdf",
+      "NIFTY_India_FPI_150_Jul2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  },
+  {
+    "month": "2026-08",
+    "source": {
+      "source_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2026.zip",
+      "local_path": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\monthly_acquisition_20260915\\Aug2026\\data\\raw\\nifty200_pit_public_sources\\raw\\3b\\3ba997d427b824f11df58db024a2c6d32c8cfbba862fff11e0896c0f8ad20413.zip",
+      "source_sha256": "3ba997d427b824f11df58db024a2c6d32c8cfbba862fff11e0896c0f8ad20413",
+      "retrieved_at": "2026-09-15T15:59:19.823726+00:00",
+      "content_type": "application/x-zip-compressed",
+      "status": "downloaded",
+      "archive_url": null,
+      "original_url": "https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataAug2026.zip",
+      "document_date": null,
+      "source_tier": "A1",
+      "http_status": 200,
+      "etag": "\"05d2cac4839dd1:0\"",
+      "last_modified": "Mon, 31 Aug 2026 13:00:18 GMT",
+      "file_size": 920221
+    },
+    "members": [
+      "NIFTY_50_Aug2026.pdf",
+      "NIFTY_Bank_Aug2026.pdf",
+      "NIFTY_Financial_Services_Aug2026.pdf",
+      "NIFTY_Midcap_Select_Aug2026.pdf",
+      "NIFTY_IT_Aug2026.pdf",
+      "NIFTY_Next_50_Aug2026.pdf",
+      "NIFTY_India_FPI_150_Aug2026.pdf"
+    ],
+    "parsed_rows": 0,
+    "dates": [],
+    "finding": "NO_NIFTY200_ROWS_IN_DOWNLOADED_ARCHIVE"
+  }
+]

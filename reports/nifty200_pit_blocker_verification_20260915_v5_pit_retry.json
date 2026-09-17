@@ -1,0 +1,23 @@
+{
+  "command": [
+    "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+    "-m",
+    "pytest",
+    "tests\\test_nifty200_pit_calendar_consistency.py",
+    "tests\\test_nifty200_pit_causality.py",
+    "tests\\test_nifty200_pit_certification.py",
+    "tests\\test_nifty200_pit_identity.py",
+    "tests\\test_nifty200_pit_importer.py",
+    "tests\\test_nifty200_pit_intervals.py",
+    "tests\\test_nifty200_pit_manifest.py",
+    "tests\\test_nifty200_pit_parser.py",
+    "tests\\test_nifty200_pit_public_dataset.py",
+    "tests\\test_nifty200_pit_reconciliation.py",
+    "tests\\test_nifty200_pit_security_master.py",
+    "tests\\test_nifty200_pit_sources.py",
+    "-vv"
+  ],
+  "exit_code": 0,
+  "elapsed_seconds": 4.82,
+  "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_blocker_verification_20260915_v5_pit_retry.log"
+}

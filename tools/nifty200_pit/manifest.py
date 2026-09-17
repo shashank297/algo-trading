@@ -80,6 +80,10 @@ def build_manifest(
     campaign_from: str = "2012-01-01",
     campaign_to: str = "2026-08-31",
     known_at_policy: str = "DATE_ONLY_CONSERVATIVE_NEXT_SESSION",
+    independent_qa: str = "NOT_ASSERTED",
+    campaign_readiness: str = "BLOCKED",
+    approved_for_import: bool = False,
+    stage_a_started: bool = False,
 ) -> dict[str, Any]:
     directory = Path(artifact_dir)
     files = {}
@@ -100,9 +104,10 @@ def build_manifest(
         "validation_status": report.get("status", "BLOCKED"),
         "validation_report": report,
         "automated_validation": "AUTOMATED_VALIDATION_PASS" if report.get("status") == "PASS" else "AUTOMATED_VALIDATION_BLOCKED",
-        "independent_qa": "NOT_ASSERTED",
-        "campaign_readiness": "PASS" if report.get("status") == "PASS" else "BLOCKED",
-        "stage_a_started": False,
+        "independent_qa": independent_qa,
+        "campaign_readiness": campaign_readiness,
+        "approved_for_import": approved_for_import,
+        "stage_a_started": stage_a_started,
     }
 
 
@@ -122,6 +127,10 @@ def write_artifacts(
     parser_git_sha: str = "UNKNOWN",
     campaign_from: str = "2012-01-01",
     campaign_to: str = "2026-08-31",
+    independent_qa: str = "NOT_ASSERTED",
+    campaign_readiness: str = "BLOCKED",
+    approved_for_import: bool = False,
+    stage_a_started: bool = False,
 ) -> tuple[Path, dict[str, Any]]:
     directory = Path(artifact_dir)
     directory.mkdir(parents=True, exist_ok=True)
@@ -142,11 +151,13 @@ def write_artifacts(
     report = validation_report.to_dict() if hasattr(validation_report, "to_dict") else dict(validation_report)
     (directory / "validation_report.json").write_text(json.dumps(report, indent=2, sort_keys=True, default=str), encoding="utf-8")
     daily_counts = report.get("metrics", {}).get("daily_member_counts", {})
+    daily_expected = report.get("metrics", {}).get("daily_expected_member_counts", {})
     with (directory / "coverage_report.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["date", "member_count", "required_member_count", "status"])
         for as_of, count in sorted(daily_counts.items()):
-            writer.writerow([as_of, count, 200, "PASS" if count == 200 else "BLOCKED"])
+            expected = daily_expected.get(as_of, 200)
+            writer.writerow([as_of, count, expected, "PASS" if count == expected else "BLOCKED"])
     with (directory / "instrument_resolution_report.csv").open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(["instrument_id", "isin", "symbol", "resolution_status"])
@@ -155,7 +166,9 @@ def write_artifacts(
             writer.writerow([row.get("instrument_id", ""), row.get("isin", ""), row.get("symbol", row.get("alias_symbol", "")), row.get("confidence", "")])
     manifest = build_manifest(directory, source_records=source_rows, validation_report=report,
                               identity_map_hash=identity_map_hash, parser_git_sha=parser_git_sha,
-                              campaign_from=campaign_from, campaign_to=campaign_to)
+                              campaign_from=campaign_from, campaign_to=campaign_to,
+                              independent_qa=independent_qa, campaign_readiness=campaign_readiness,
+                              approved_for_import=approved_for_import, stage_a_started=stage_a_started)
     manifest_path = directory / "evidence_manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2, sort_keys=True, default=str), encoding="utf-8")
     checksum_lines = [f"{sha256_file(path)}  {path.name}" for path in sorted(directory.iterdir()) if path.is_file() and path.name != "sha256sums.txt"]

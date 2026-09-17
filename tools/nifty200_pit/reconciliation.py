@@ -53,6 +53,8 @@ def _event_key(row: Observation) -> tuple[object, ...]:
 
 
 def _canonical(row: Observation, *, holidays: set[date] | None = None) -> CanonicalEvent | None:
+    if str(row.source_tier) not in {"A1", "A2"}:
+        return None
     effective = _as_date(row.effective_date)
     announcement = _as_date(row.announcement_date)
     action = _as_action(row.action)
@@ -89,10 +91,12 @@ def reconcile_observations(
     fail_on_official_conflict: bool = True,
     holidays: set[date] | None = None,
 ) -> ReconciliationResult:
-    rows = list(observations)
+    all_rows = list(observations)
+    rows = [row for row in all_rows if row.review_status != ReviewStatus.SUPERSEDED]
     groups: dict[tuple[object, ...], list[Observation]] = {}
     conflicts: list[Conflict] = []
-    superseded: list[str] = []
+    superseded = [row.observation_id or observation_hash(row) for row in all_rows
+                  if row.review_status == ReviewStatus.SUPERSEDED]
     for row in rows:
         groups.setdefault(_event_key(row), []).append(row)
 
@@ -105,7 +109,10 @@ def reconcile_observations(
         winner = correction[-1] if correction else top[0]
         if correction:
             superseded.extend(row.observation_id or observation_hash(row) for row in top if row is not winner)
-        semantic = {(row.instrument_id, row.symbol, _as_action(row.action), _as_date(row.effective_date)) for row in top}
+        # Symbols can differ across first-party releases after an official
+        # rename while the durable identity, action, and effective date remain
+        # identical. Treat that as corroborating evidence, not a conflict.
+        semantic = {(row.instrument_id, _as_action(row.action), _as_date(row.effective_date)) for row in top}
         if len(semantic) > 1:
             conflicts.append(Conflict(
                 conflict_id=hashlib.sha256(json.dumps([row.to_dict() for row in top], sort_keys=True, default=str).encode()).hexdigest(),
@@ -139,7 +146,10 @@ def reconcile_observations(
         if event is None:
             conflicts.append(Conflict(
                 conflict_id=observation_hash(row), date=_as_date(row.effective_date), severity="HIGH",
-                conflict_type="UNRESOLVED_OBSERVATION", message="Observation lacks dates, durable identity, or known_at evidence.",
+                conflict_type="UNRESOLVED_OBSERVATION",
+                message=("Membership assertion lacks first-party confirmation."
+                         if str(row.source_tier) not in {"A1", "A2"}
+                         else "Observation lacks dates, durable identity, or known_at evidence."),
                 observation_ids=[row.observation_id or observation_hash(row)], source_urls=[row.source_url],
             ))
         else:

@@ -1,0 +1,13 @@
+{
+  "parent_sha256": "c9b9feef248ca89f7d8c8f12009e3d5c409eb4d6c793eee061fb93bf0af1231e",
+  "source_url": "https://www.niftyindices.com/Press_Release/ind_prs23082021.pdf",
+  "extraction_method": "PDF_VISUAL_TRANSCRIPTION",
+  "extracted_by": "Codex visual inspection of locally rendered original PDF pages",
+  "extracted_on": "2026-09-15",
+  "independent_qa": "NOT_ASSERTED",
+  "scope": "Page 1 publication/effective-date clauses and page 14 NIFTY 200 section only; not a transcription of the whole 29-page document. Whitespace and table columns linearized. No identities inferred.",
+  "date_source_page": 1,
+  "date_text": "Mumbai, August 23, 2021\nThese changes shall become effective from September 30, 2021 (close of September 29, 2021).",
+  "event_source_page": 14,
+  "event_text": "10) NIFTY 200\nThe following companies are being excluded:\nSr. No. Company Name Symbol\n1 Abbott India Ltd. ABBOTINDIA\n2 Bombay Burmah Trading Corporation Ltd. BBTC\n3 CESC Ltd. CESC\n4 Godrej Agrovet Ltd. GODREJAGRO\n5 Indiabulls Housing Finance Ltd. IBULHSGFIN\n6 V-Guard Industries Ltd. VGUARD\nThe following companies are being included:\nSr. No. Company Name Symbol\n1 Astral Ltd. ASTRAL\n2 Hindustan Copper Ltd. HINDCOPPER\n3 Indian Bank INDIANB\n4 Indian Railway Finance Corporation Ltd. IRFC\n5 National Aluminium Co. Ltd. NATIONALUM\n6 Tata Communications Ltd. TATACOMM\n11) NIFTY LargeMidcap 250"
+}

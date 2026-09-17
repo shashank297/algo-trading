@@ -1,0 +1,72 @@
+{
+  "branch": {
+    "command": [
+      "git",
+      "branch",
+      "--show-current"
+    ],
+    "exit_code": 0,
+    "stdout": "codex/nifty200-pit-2012-anchor\n",
+    "stderr": ""
+  },
+  "head": {
+    "command": [
+      "git",
+      "rev-parse",
+      "HEAD"
+    ],
+    "exit_code": 0,
+    "stdout": "ea0f8bf9eb031abf3df9a7d46c568f72c0d5df31\n",
+    "stderr": ""
+  },
+  "origin_main": {
+    "command": [
+      "git",
+      "rev-parse",
+      "origin/main"
+    ],
+    "exit_code": 0,
+    "stdout": "a8f383149187b8d0bbfb23253ba81c464ec8563f\n",
+    "stderr": ""
+  },
+  "diff_stat": {
+    "command": [
+      "git",
+      "diff",
+      "--stat"
+    ],
+    "exit_code": 0,
+    "stdout": " .../nifty200_pit_2012_anchor_forensics_20260911.md |   8 +-\n .../nifty200_pit_checkpoint_requirement_audit.md   |  16 +-\n reports/nifty200_pit_initial_anchor_20120102.md    |   2 +-\n tests/test_nifty200_pit_causality.py               |  12 +\n tests/test_nifty200_pit_certification.py           |  31 +-\n tests/test_nifty200_pit_identity.py                |  52 +-\n tests/test_nifty200_pit_manifest.py                |  18 +\n tests/test_nifty200_pit_parser.py                  | 135 ++++\n tests/test_nifty200_pit_public_dataset.py          | 294 ++++++++-\n tests/test_nifty200_pit_reconciliation.py          |  27 +\n tests/test_nifty200_pit_security_master.py         | 277 ++++++++\n tests/test_nifty200_pit_sources.py                 |  29 +\n tools/nifty200_pit/build_public_dataset.py         | 728 ++++++++++++++++++---\n tools/nifty200_pit/causality.py                    |  11 +\n tools/nifty200_pit/harvest_nse.py                  |  11 +-\n tools/nifty200_pit/harvest_security_master.py      | 140 +++-\n tools/nifty200_pit/instrument_resolver.py          |  98 ++-\n tools/nifty200_pit/manifest.py                     |   7 +-\n tools/nifty200_pit/ocr.py                          |  26 +\n tools/nifty200_pit/parse_pdf.py                    | 118 +++-\n tools/nifty200_pit/reconciliation.py               |  18 +-\n tools/nifty200_pit/validation.py                   |  28 +-\n trading_stack/calendars.py                         |  27 +-\n 23 files changed, 1971 insertions(+), 142 deletions(-)\n",
+    "stderr": "warning: in the working copy of 'tests/test_nifty200_pit_causality.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_certification.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_identity.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_manifest.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_parser.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_public_dataset.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_reconciliation.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_security_master.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_sources.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/build_public_dataset.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/causality.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/harvest_nse.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/harvest_security_master.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/instrument_resolver.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/manifest.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/ocr.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/parse_pdf.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/reconciliation.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/validation.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'trading_stack/calendars.py', LF will be replaced by CRLF the next time Git touches it\n"
+  },
+  "status": {
+    "command": [
+      "git",
+      "status",
+      "--short"
+    ],
+    "exit_code": 0,
+    "stdout": " M reports/nifty200_pit_2012_anchor_forensics_20260911.md\n M reports/nifty200_pit_checkpoint_requirement_audit.md\n M reports/nifty200_pit_initial_anchor_20120102.md\n M tests/test_nifty200_pit_causality.py\n M tests/test_nifty200_pit_certification.py\n M tests/test_nifty200_pit_identity.py\n M tests/test_nifty200_pit_manifest.py\n M tests/test_nifty200_pit_parser.py\n M tests/test_nifty200_pit_public_dataset.py\n M tests/test_nifty200_pit_reconciliation.py\n M tests/test_nifty200_pit_security_master.py\n M tests/test_nifty200_pit_sources.py\n M tools/nifty200_pit/build_public_dataset.py\n M tools/nifty200_pit/causality.py\n M tools/nifty200_pit/harvest_nse.py\n M tools/nifty200_pit/harvest_security_master.py\n M tools/nifty200_pit/instrument_resolver.py\n M tools/nifty200_pit/manifest.py\n M tools/nifty200_pit/ocr.py\n M tools/nifty200_pit/parse_pdf.py\n M tools/nifty200_pit/reconciliation.py\n M tools/nifty200_pit/validation.py\n M trading_stack/calendars.py\n?? artifacts/\n?? reports/nifty200_pit_anchor_cdx_probe_20260915.json\n?? reports/nifty200_pit_blocker_resolution_20260912_v3.md\n?? reports/nifty200_pit_blocker_resolution_20260915_v10.md\n?? reports/nifty200_pit_blocker_resolution_20260915_v4.md\n?? reports/nifty200_pit_blocker_resolution_20260915_v7.md\n?? reports/nifty200_pit_blocker_resolution_20260915_v9.md\n?? reports/nifty200_pit_blocker_resolution_20260916_v11.md\n?? reports/nifty200_pit_blocker_verification_20260912.json\n?? reports/nifty200_pit_blocker_verification_20260912_v3.json\n?? reports/nifty200_pit_blocker_verification_20260915_v4.json\n?? reports/nifty200_pit_blocker_verification_20260915_v5.json\n?? reports/nifty200_pit_blocker_verification_20260915_v5_pit_retry.json\n?? reports/nifty200_pit_blocker_verification_20260915_v6.json\n?? reports/nifty200_pit_blocker_verification_20260915_v7.json\n?? reports/nifty200_pit_blocker_verification_20260915_v9.json\n?? reports/nifty200_pit_build_20260916_v11.json\n?? reports/nifty200_pit_calendar_api_probe_20260915.json\n?? reports/nifty200_pit_calendar_api_probe_20260915_v5.json\n?? reports/nifty200_pit_calendar_findings_20260912.md\n?? reports/nifty200_pit_identity_continuity_probe_20260915.json\n?? reports/nifty200_pit_iteration_measured_20260912_v3.json\n?? reports/nifty200_pit_iteration_measured_20260915_v10.json\n?? reports/nifty200_pit_iteration_measured_20260915_v4.json\n?? reports/nifty200_pit_iteration_measured_20260915_v5.json\n?? reports/nifty200_pit_iteration_measured_20260915_v6.json\n?? reports/nifty200_pit_iteration_measured_20260915_v7.json\n?? reports/nifty200_pit_iteration_measured_20260915_v8.json\n?? reports/nifty200_pit_iteration_measured_20260915_v9.json\n?? reports/nifty200_pit_iteration_measured_20260916_v11.json\n?? reports/nifty200_pit_monthly_negative_evidence_20260916.json\n?? reports/nifty200_pit_monthly_source_inventory_20260915.json\n?? reports/nifty200_pit_monthly_source_probe_20260915.json\n?? reports/nifty200_pit_native_empty_pdf_audit_20260915.json\n?? reports/nifty200_pit_piind_dated_identity_20260915.json\n?? reports/nifty200_pit_piind_dated_identity_retry_20260915.json\n?? reports/nifty200_pit_post_pr25_final_20260912.md\n?? reports/nifty200_pit_separate_governance_check_20260915.json\n?? reports/nifty200_pit_split_bhavcopies_20260916.json\n?? reports/nifty200_pit_split_bhavcopies_20260916_after.json\n?? reports/nifty200_pit_split_evidence_acquisition_20260916.json\n?? reports/nifty200_pit_split_evidence_acquisition_20260916_followup.json\n?? reports/nifty200_pit_unresolved_identity_cases_20260916.json\n?? reports/nifty200_pit_verify_20260916_v11.json\n?? reports/nifty200_pit_workspace_state_20260915_v10.json\n?? reports/nifty200_pit_workspace_state_20260915_v9.json\n?? tests/test_nifty200_pit_blocker_classification.py\n?? tests/test_nifty200_pit_calendar_consistency.py\n?? tests/test_nifty200_pit_transcription.py\n?? tools/nifty200_pit/transcriptions/\n",
+    "stderr": ""
+  },
+  "original_status_preserved": {
+    "command": [
+      "git",
+      "status",
+      "--short"
+    ],
+    "exit_code": 0,
+    "stdout": " M reports/strategy_factory_hardened_baseline_20260906.md\n M research.py\n M tests/test_campaign1_governance.py\n?? artifacts/\n?? docs/research_campaign_1_baseline_v2.md\n?? reports/FAB-30_provider_inquiry_draft_20260906.md\n?? reports/campaign1_post_merge_verification_20260910.md\n?? reports/nifty200_pit_checkpoint_requirement_audit.md\n?? reports/nifty200_pit_forensic_closure_20260911.md\n?? reports/nifty200_pit_initial_anchor_20120102.md\n?? reports/nifty200_pit_post_pr25_baseline_20260911.md\n?? reports/nifty200_pit_post_pr25_final_20260911.md\n",
+    "stderr": ""
+  },
+  "diff_check": {
+    "command": [
+      "git",
+      "diff",
+      "--check"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": "warning: in the working copy of 'tests/test_nifty200_pit_causality.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_certification.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_identity.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_manifest.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_parser.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_public_dataset.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_reconciliation.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_security_master.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tests/test_nifty200_pit_sources.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/build_public_dataset.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/causality.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/harvest_nse.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/harvest_security_master.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/instrument_resolver.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/manifest.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/ocr.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/parse_pdf.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/reconciliation.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'tools/nifty200_pit/validation.py', LF will be replaced by CRLF the next time Git touches it\nwarning: in the working copy of 'trading_stack/calendars.py', LF will be replaced by CRLF the next time Git touches it\n"
+  }
+}

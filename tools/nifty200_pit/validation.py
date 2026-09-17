@@ -16,6 +16,23 @@ class CertificationError(ValueError):
     pass
 
 
+def nifty200_expected_security_count(as_of: date) -> int:
+    """Count securities under the documented additional-DVR methodology.
+
+    ind_prs22022016_2.pdf (2016-02-22), section 16, explicitly establishes
+    201 securities from 2016-04-01. ind_prs10062020.pdf, section 12, removes
+    TATAMTRDVR with ten exclusions and nine inclusions from 2020-06-26. The
+    first-party August 23, 2024 release excludes TATAMTRDVR from Nifty 200
+    effective August 30, 2024. All three documents are retained in the public
+    source catalogue.
+    """
+    if date(2016, 4, 1) <= as_of < date(2020, 6, 26):
+        return 201
+    if date(2023, 9, 29) <= as_of < date(2024, 8, 30):
+        return 201
+    return 200
+
+
 def _days(start: date, end: date) -> list[date]:
     return [start + timedelta(days=offset) for offset in range((end - start).days + 1) if (start + timedelta(days=offset)).weekday() < 5]
 
@@ -54,6 +71,7 @@ def validate_campaign(
     campaign_to: date = date(2026, 8, 31),
     trading_days: Iterable[date] | None = None,
     required_member_count: int = 200,
+    expected_member_counts: Mapping[date, int] | None = None,
     conflicts: Iterable[Conflict] = (),
     source_hash_errors: Iterable[str] = (),
     anchor_differences: Iterable[str] = (),
@@ -68,7 +86,8 @@ def validate_campaign(
         active = active_intervals(rows, as_of)
         unique = {row.instrument_id for row in active}
         counts[as_of.isoformat()] = len(unique)
-        if len(unique) != required_member_count:
+        expected = expected_member_counts.get(as_of, required_member_count) if expected_member_counts else required_member_count
+        if len(unique) != expected:
             reasons.append(f"member_count:{as_of.isoformat()}:{len(unique)}")
         if len(active) != len(unique):
             reasons.append(f"duplicate_active_instrument:{as_of.isoformat()}")
@@ -76,6 +95,8 @@ def validate_campaign(
     reasons.extend(str(error) for error in source_hash_errors)
     reasons.extend(str(error) for error in anchor_differences)
     for event in event_rows:
+        if str(event.source_tier).upper() not in {"A1", "A2"}:
+            reasons.append(f"unconfirmed_membership_evidence:{event.event_hash}")
         if not event.instrument_id:
             reasons.append(f"missing_instrument_id:{event.event_hash}")
         if not event.effective_date or not event.known_at:
@@ -93,11 +114,21 @@ def validate_campaign(
     deduped = list(dict.fromkeys(reasons))
     metrics = {
         "campaign_from": campaign_from.isoformat(), "campaign_to": campaign_to.isoformat(),
-        "trading_days_checked": len(days), "count_check_failures": sum(count != required_member_count for count in counts.values()),
+        "trading_days_checked": len(days),
+        "count_check_failures": sum(
+            count != (expected_member_counts.get(date.fromisoformat(day), required_member_count)
+                      if expected_member_counts else required_member_count)
+            for day, count in counts.items()
+        ),
         "interval_count": len(rows), "event_count": len(event_rows), "conflict_count": len(conflict_rows),
         "high_critical_conflicts": sum(conflict.severity in {"HIGH", "CRITICAL"} for conflict in conflict_rows),
         "source_hash_errors": len(source_hash_errors), "anchor_difference_count": len(anchor_differences),
+        "replay_checkpoint_difference_count": len(anchor_differences),
         "daily_member_counts": counts,
+        "daily_expected_member_counts": {
+            day.isoformat(): expected_member_counts.get(day, required_member_count)
+            if expected_member_counts else required_member_count for day in days
+        },
     }
     return ValidationReport(EvidenceStatus.PASS if not deduped else EvidenceStatus.BLOCKED, deduped,
                             metrics, datetime.now(timezone.utc).isoformat())

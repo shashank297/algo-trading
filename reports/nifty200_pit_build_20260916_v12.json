@@ -1,0 +1,12 @@
+[
+  {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "-m",
+      "tools.nifty200_pit.build_public_dataset"
+    ],
+    "exit_code": 0,
+    "elapsed_seconds": 210.72,
+    "log": "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\reports\\nifty200_pit_build_20260916_v12_0.log"
+  }
+]

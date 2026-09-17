@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 from pathlib import Path
 import re
 from urllib.parse import urlparse
@@ -10,6 +11,7 @@ from urllib.parse import urlparse
 import requests
 
 from tools.nifty200_pit.parse_html import extract_links, is_index_change_candidate
+from tools.nifty200_pit.models import SourceRecord
 from tools.nifty200_pit.source_catalogue import SourceCatalogue
 
 DEFAULT_ARCHIVE = "https://www.niftyindices.com/press-release"
@@ -34,15 +36,22 @@ def harvest_urls(
     timeout: tuple[float, float] = (10, 90),
 ) -> list:
     catalogue = SourceCatalogue(Path(root) / "data" / "raw" / "nifty200_pit_public_sources")
+    catalogue_path = catalogue.root / "source_catalogue.json"
+    if catalogue_path.exists():
+        catalogue.records = [SourceRecord(**row) for row in json.loads(catalogue_path.read_text(encoding="utf-8"))]
     client = session or requests.Session()
     client.headers.setdefault("User-Agent", "Nifty200PITResearch/1.0 (provenance-preserving)")
     for url in urls:
         response = client.get(url, timeout=timeout)
         response.raise_for_status()
-        catalogue.add_bytes(response.content, source_url=url, extension=_extension(url, response.headers.get("content-type", "")),
+        record = catalogue.add_bytes(response.content, source_url=url, extension=_extension(url, response.headers.get("content-type", "")),
                             content_type=response.headers.get("content-type", ""), http_status=response.status_code,
                             etag=response.headers.get("etag"), last_modified=response.headers.get("last-modified"),
                             retrieved_at=datetime.now(timezone.utc).isoformat())
+        if any(row.source_url == record.source_url and row.source_sha256 == record.source_sha256
+               for row in catalogue.records[:-1]):
+            catalogue.records.pop()
+        catalogue.save()
     catalogue.save()
     return catalogue.records
 

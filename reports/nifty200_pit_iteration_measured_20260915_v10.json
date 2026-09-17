@@ -1,0 +1,93 @@
+{
+  "build_timestamp": "2026-09-15T16:11:02.362588+00:00",
+  "status": "BLOCKED",
+  "branch": "codex/nifty200-pit-2012-anchor",
+  "head_sha": "ea0f8bf9eb031abf3df9a7d46c568f72c0d5df31",
+  "origin_main_sha": "a8f383149187b8d0bbfb23253ba81c464ec8563f",
+  "source_count": 385,
+  "source_tiers": {
+    "A1": 381,
+    "B1": 1,
+    "A2": 3
+  },
+  "observations": 1580,
+  "canonical_events": 725,
+  "actions": {
+    "DROP": 363,
+    "ADD": 362
+  },
+  "snapshot_rows": 21650,
+  "snapshot_dates": 108,
+  "conflict_severities": {
+    "CRITICAL": 128,
+    "HIGH": 1
+  },
+  "blocker_types": {
+    "COUNT_NOT_200": 3613,
+    "MONTHLY_SNAPSHOT_MISSING": 69,
+    "MISSING_INITIAL_ANCHOR": 128
+  },
+  "blocker_ledger_rows": 3810,
+  "monthly_gap_rows": 68,
+  "artifact_hash_failures": {},
+  "constituent_intervals_sha256": "68dfda87a69294d4db03ad7fa61f08a0f484d84a6d6c08ed6214c3b727a34da5",
+  "independent_qa": "NOT_ASSERTED",
+  "approved_for_import": false,
+  "metrics": {
+    "anchor_candidate_member_count": 200,
+    "anchor_difference_count": 68,
+    "anchor_forward_checkpoint_date": "2013-04-18",
+    "anchor_replay_checkpoint_set_matches": 5,
+    "anchor_replay_checkpoint_set_mismatches": 53,
+    "anchor_replay_session_not_200": 2941,
+    "anchor_reverse_event_count": 80,
+    "anchor_status": "NOT_ESTABLISHED",
+    "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
+    "calendar_verified_override_count": 8,
+    "calendar_version": "nse-pandas-market-calendars-with-evidenced-exceptions",
+    "campaign_from": "2012-01-02",
+    "campaign_to": "2026-08-20",
+    "conflict_count": 129,
+    "contradicted_challenger_count": 19,
+    "count_check_failures": 3613,
+    "current_security_master_rows": 2568,
+    "durable_id_resolution_percent": 97.3132,
+    "event_count": 725,
+    "high_critical_conflicts": 129,
+    "historical_identity_rows": 7912,
+    "identity_observation_count": 1191,
+    "identity_resolution_scope": "FIRST_PARTY_EVENT_OBSERVATIONS_EXCLUDING_SUPERSEDED",
+    "interval_count": 354,
+    "isin_resolution_percent": 97.3132,
+    "known_at_unresolved_count": 0,
+    "maximum_active_constituent_count": 128,
+    "minimum_active_constituent_count": 0,
+    "missing_or_non_200_checkpoints": 68,
+    "redundant_workbook_observation_count": 453,
+    "sessions_not_expected_count": 3613,
+    "source_hash_errors": 0,
+    "trading_days_checked": 3613,
+    "unique_historical_instruments": 3451,
+    "unresolved_identity_count": 32,
+    "valid_200_checkpoints": 58,
+    "valid_expected_count_checkpoints": 108
+  },
+  "dry_run": {
+    "command": [
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\venv_link\\Scripts\\python.exe",
+      "tools/import_nifty200_pit.py",
+      "--input",
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\nifty200_pit_v1\\constituent_intervals.parquet",
+      "--manifest",
+      "C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\artifacts\\nifty200_pit_v1\\evidence_manifest.json",
+      "--dry-run"
+    ],
+    "exit_code": 1,
+    "stdout": "",
+    "stderr": "Traceback (most recent call last):\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 101, in <module>\n    raise SystemExit(main())\n                     ~~~~^^\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 95, in main\n    count = import_intervals(args.input, args.manifest, database=args.database, dry_run=args.dry_run)\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 82, in import_intervals\n    verify_manifest(manifest_path, input_path)\n    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\Shukla\\AppData\\Local\\Temp\\nifty200-pit-security-master\\tools\\import_nifty200_pit.py\", line 35, in verify_manifest\n    raise ValueError(\"Manifest validation is not PASS; import refused\")\nValueError: Manifest validation is not PASS; import refused\n",
+    "database_touched": false,
+    "result": "REFUSED_AS_DESIGNED"
+  },
+  "added_or_changed_event_hashes": 6,
+  "removed_or_replaced_event_hashes": 6
+}
