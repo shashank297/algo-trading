@@ -66,14 +66,22 @@ class PositionSizeValidator(RiskValidator):
         if proposal.is_pure_risk_reduction:
             return proposal.requested_notional, []
         position_limit = proposal.capital * policy.max_position_pct
-        projected_abs_position = abs(proposal.resulting_position_notional)
-        if projected_abs_position > position_limit:
-            # Allow the risk-reducing portion plus allowable new exposure
-            base_offset = abs(proposal.current_position_notional) if proposal.net_exposure_reducing else 0.0
-            available_increasing = max(position_limit - base_offset, 0.0)
-            capped_notional = proposal.risk_reducing_notional + available_increasing
-            if capped_notional < proposal.requested_notional:
-                return capped_notional, ["position_limit_reached" if position_limit <= 0 else "notional_capped_by_risk_policy"]
+
+        if proposal.is_reversal:
+            available_increasing = max(position_limit, 0.0)
+        else:
+            available_increasing = max(position_limit - abs(proposal.current_position_notional), 0.0)
+
+        allowable_increasing = min(proposal.risk_increasing_notional, available_increasing)
+        capped_notional = proposal.risk_reducing_notional + allowable_increasing
+
+        if capped_notional < proposal.requested_notional:
+            reason = (
+                "position_limit_reached"
+                if position_limit <= 0 or (proposal.risk_increasing_notional > 0 and available_increasing <= 0 and capped_notional == 0)
+                else "notional_capped_by_risk_policy"
+            )
+            return capped_notional, [reason]
         return proposal.requested_notional, []
 
 
