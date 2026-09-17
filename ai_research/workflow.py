@@ -146,10 +146,16 @@ class ResearchWorkflow:
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
                 approved_notional=0.0, reasons=["MISSING_OR_INACTIVE_AUTHORITATIVE_RISK_STATE"], policy=self.risk_engine.policy,
             )
+        target_tf = getattr(goal, "timeframe", None) or "1d"
         price_row = self.db.conn.execute(
-            "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
-            [goal.symbol, row[4]],
+            "SELECT close FROM historical_candles WHERE symbol = ? AND timeframe = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+            [goal.symbol, target_tf, row[4]],
         ).fetchone()
+        if not price_row or float(price_row[0]) <= 0:
+            price_row = self.db.conn.execute(
+                "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                [goal.symbol, row[4]],
+            ).fetchone()
         if not price_row or float(price_row[0]) <= 0:
             return RiskDecision(
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
@@ -158,9 +164,14 @@ class ResearchWorkflow:
         price = float(price_row[0])
         equity = float(row[0]) + float(row[1]) * price
         closes = self.db.conn.execute(
-            "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 21",
-            [goal.symbol, row[4]],
+            "SELECT close FROM historical_candles WHERE symbol = ? AND timeframe = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 21",
+            [goal.symbol, target_tf, row[4]],
         ).fetchall()
+        if len(closes) < 21:
+            closes = self.db.conn.execute(
+                "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 21",
+                [goal.symbol, row[4]],
+            ).fetchall()
         if len(closes) < 21:
             return RiskDecision(
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
@@ -170,10 +181,19 @@ class ResearchWorkflow:
         returns = [(prices[index] / prices[index - 1]) - 1.0 for index in range(1, len(prices))]
         mean = sum(returns) / len(returns)
         volatility = (sum((value - mean) ** 2 for value in returns) / len(returns)) ** 0.5
+
+        # Obtain market liquidity from market data (historical_candles), not strategy's own fills
         turnover = self.db.conn.execute(
-            "SELECT COALESCE(SUM(ABS(quantity * price)), 0) FROM strategy_fills WHERE run_id = ? AND CAST(timestamp AS DATE) = CAST(? AS DATE)",
-            [goal.paper_session_id, row[4]],
+            """SELECT COALESCE(SUM(volume * close), 0) FROM historical_candles
+               WHERE symbol = ? AND CAST(timestamp AS DATE) = (
+                   SELECT CAST(timestamp AS DATE) FROM historical_candles
+                   WHERE symbol = ? AND timestamp <= ?
+                   ORDER BY timestamp DESC LIMIT 1
+               )""",
+            [goal.symbol, goal.symbol, row[4]],
         ).fetchone()
+
+
         return self.risk_engine.evaluate(TradeProposal(
             symbol=goal.symbol, requested_notional=equity * 0.05, capital=equity,
             current_position_notional=float(row[1]) * price,
@@ -200,7 +220,7 @@ class ResearchWorkflow:
             [session_id],
         ).fetchall()
         symbols = {goal.symbol, *(str(row[0]) for row in holdings)}
-        marks = self._authoritative_marks(symbols, session[3])
+        marks = self._authoritative_marks(symbols, session[3], timeframe=getattr(goal, "timeframe", None) or "1d")
         if marks is None:
             return self._reject_authoritative(goal, starting_capital, "MISSING_AUTHORITATIVE_PORTFOLIO_MARK_PRICE")
         sectors = self._authoritative_sectors(symbols, str(session[5]))
@@ -215,14 +235,19 @@ class ResearchWorkflow:
         equity = float(session[0]) + sum(quantity * marks[symbol] for symbol, quantity in quantities.items())
         if equity <= 0:
             return self._reject_authoritative(goal, starting_capital, "NON_POSITIVE_AUTHORITATIVE_PORTFOLIO_EQUITY")
-        volatility = self._portfolio_volatility(quantities, marks, session[3])
+        volatility = self._portfolio_volatility(quantities, marks, session[3], timeframe=getattr(goal, "timeframe", None) or "1d")
         if volatility is None:
             return self._reject_authoritative(goal, starting_capital, "INSUFFICIENT_AUTHORITATIVE_PORTFOLIO_VAR_HISTORY")
         turnover = self.db.conn.execute(
-            """SELECT COALESCE(SUM(ABS(quantity * price)), 0) FROM strategy_fills
-               WHERE run_id = ? AND CAST(timestamp AS DATE) = CAST(? AS DATE)""",
-            [session_id, session[3]],
+            """SELECT COALESCE(SUM(volume * close), 0) FROM historical_candles
+               WHERE symbol = ? AND CAST(timestamp AS DATE) = (
+                   SELECT CAST(timestamp AS DATE) FROM historical_candles
+                   WHERE symbol = ? AND timestamp <= ?
+                   ORDER BY timestamp DESC LIMIT 1
+               )""",
+            [goal.symbol, goal.symbol, session[3]],
         ).fetchone()
+
         peak = float(session[1] or equity)
         if self.risk_engine is None:
             return self._reject_authoritative(goal, equity, "MISSING_AUTHORITATIVE_RISK_ENGINE")
@@ -255,13 +280,18 @@ class ResearchWorkflow:
             approved_notional=0.0, reasons=[reason], policy=policy,
         )
 
-    def _authoritative_marks(self, symbols: set[str], as_of: Any) -> dict[str, float] | None:
+    def _authoritative_marks(self, symbols: set[str], as_of: Any, timeframe: str = "1d") -> dict[str, float] | None:
         marks: dict[str, float] = {}
         for symbol in symbols:
             row = self.db.conn.execute(
-                "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
-                [symbol, as_of],
+                "SELECT close FROM historical_candles WHERE symbol = ? AND timeframe = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                [symbol, timeframe, as_of],
             ).fetchone()
+            if not row or float(row[0]) <= 0:
+                row = self.db.conn.execute(
+                    "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
+                    [symbol, as_of],
+                ).fetchone()
             if not row or float(row[0]) <= 0:
                 return None
             marks[symbol] = float(row[0])
@@ -276,21 +306,28 @@ class ResearchWorkflow:
         return sectors if symbols.issubset(sectors) else None
 
     def _portfolio_volatility(
-        self, quantities: dict[str, float], marks: dict[str, float], as_of: Any,
+        self, quantities: dict[str, float], marks: dict[str, float], as_of: Any, timeframe: str = "1d",
     ) -> float | None:
         active = {symbol: quantity for symbol, quantity in quantities.items() if quantity != 0}
         if not active:
             return None
         rows = self.db.conn.execute(
             """SELECT symbol, timestamp, close FROM historical_candles
-               WHERE symbol IN (SELECT UNNEST(?)) AND timestamp <= ? ORDER BY timestamp DESC""",
-            [list(active), as_of],
+               WHERE symbol IN (SELECT UNNEST(?)) AND timeframe = ? AND timestamp <= ? ORDER BY timestamp DESC""",
+            [list(active), timeframe, as_of],
         ).fetchall()
+        if len(rows) < 21 * len(active):
+            rows = self.db.conn.execute(
+                """SELECT symbol, timestamp, close FROM historical_candles
+                   WHERE symbol IN (SELECT UNNEST(?)) AND timestamp <= ? ORDER BY timestamp DESC""",
+                [list(active), as_of],
+            ).fetchall()
         series: dict[str, list[float]] = {symbol: [] for symbol in active}
         for symbol, _, close in rows:
             values = series[str(symbol)]
             if len(values) < 21:
                 values.append(float(close))
+
         if any(len(values) < 21 for values in series.values()):
             return None
         weights_total = sum(abs(quantity * marks[symbol]) for symbol, quantity in active.items())
