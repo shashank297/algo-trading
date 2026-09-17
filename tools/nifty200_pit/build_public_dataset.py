@@ -10,9 +10,8 @@ from __future__ import annotations
 
 import csv
 from collections import Counter
-from datetime import date, datetime, time, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
-import hashlib
 import io
 import json
 from pathlib import Path
@@ -33,7 +32,7 @@ from tools.nifty200_pit.parse_pdf import (
     parse_nifty200_text,
 )
 from tools.nifty200_pit.reconciliation import observation_hash, reconcile_observations
-from tools.nifty200_pit.instrument_resolver import resolve_observations
+from tools.nifty200_pit.instrument_resolver import resolve_observation, resolve_observations
 from tools.nifty200_pit.source_catalogue import sha256_file
 from tools.nifty200_pit.validation import nifty200_expected_security_count, validate_campaign, verify_source_hashes
 from trading_stack.calendars import MarketCalendar, SessionOverride, build_nse_calendar
@@ -1069,6 +1068,7 @@ def _monthly_gap_rows(
     snapshots: list[dict[str, Any]],
     intervals: list[Any],
     sources: list[SourceRecord],
+    checkpoint_comparisons: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     source_by_month = _source_by_month(sources)
     snapshots_by_month: dict[str, list[dict[str, Any]]] = {}
@@ -1098,6 +1098,14 @@ def _monthly_gap_rows(
         else:
             status = "B_SNAPSHOT_NON_200"
             action = "manual table audit to distinguish parser extraction from methodology/count difference"
+        source_status = status
+        comparisons = [row for row in checkpoint_comparisons or [] if row["checkpoint_date"][:7] == month]
+        replay_status = "NOT_COMPARED"
+        if comparisons:
+            replay_status = "PASS" if all(row["status"] == "PASS" for row in comparisons) else "BLOCKED"
+        if source_status == "PASS" and replay_status != "PASS":
+            status = "REPLAY_SNAPSHOT_MISMATCH" if replay_status == "BLOCKED" else "REPLAY_NOT_COMPARED"
+            action = "Inspect replay_checkpoint_differences.csv; source count alone does not establish replay membership."
         rows.append({
             "month": month,
             "official_snapshot_found": str(official_found).upper(),
@@ -1109,9 +1117,87 @@ def _monthly_gap_rows(
             "replay_member_count": replay_count if replay_count is not None else "",
             "snapshot_vs_replay_diff": (replay_count - observed) if replay_count is not None else "",
             "status": status,
+            "source_count_status": source_status,
+            "replay_status": replay_status,
             "action_needed": action,
         })
     return rows
+
+
+def _replay_checkpoint_comparison(
+    snapshots: list[dict[str, Any]], intervals: list[Any],
+    instrument_master: list[dict[str, Any]], aliases: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Compare real intervals, not the reverse-anchor candidate, to checkpoints."""
+    master_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    aliases_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in instrument_master:
+        master_by_symbol.setdefault(_symbol_key(row.get("symbol")), []).append(row)
+    for row in aliases:
+        aliases_by_symbol.setdefault(_symbol_key(row.get("alias_symbol") or row.get("symbol")), []).append(row)
+    summaries: list[dict[str, Any]] = []
+    differences: list[dict[str, Any]] = []
+    for checkpoint, official_rows in _valid_checkpoint_groups(snapshots):
+        active = {row.instrument_id: row for row in active_intervals(intervals, checkpoint)}
+        official_ids: set[str] = set()
+        missing = unresolved = alias_matches = 0
+        for source in official_rows:
+            symbol = _symbol_key(source.get("symbol"))
+            resolution = resolve_observation(
+                {"symbol": source.get("symbol"), "effective_date": checkpoint},
+                master_by_symbol.get(symbol, []), aliases=aliases_by_symbol.get(symbol, []),
+            )
+            identifier = resolution.instrument_id
+            kind = ""
+            if resolution.confidence != "CERTIFIED" or not identifier:
+                unresolved += 1
+                kind = "MISSING_DURABLE_IDENTITY"
+            else:
+                duplicate = identifier in official_ids
+                official_ids.add(identifier)
+                if duplicate:
+                    kind = "DUPLICATE_OFFICIAL_IDENTITY"
+                elif identifier not in active:
+                    missing += 1
+                    kind = "MISSING_FROM_RECONSTRUCTION"
+                elif _symbol_key(active[identifier].symbol_at_entry) != symbol:
+                    # Dated identity evidence can match an old entry symbol to
+                    # its official alias; do not call that a missing ADD/DROP.
+                    alias_matches += 1
+            if kind:
+                differences.append({
+                    "checkpoint_date": checkpoint.isoformat(), "difference_type": kind,
+                    "symbol": source.get("symbol", ""), "company_name": source.get("company_name", ""),
+                    "instrument_id": identifier or "", "isin": resolution.isin or "",
+                    "source_url": source.get("source_url", ""), "source_sha256": source.get("source_sha256", ""),
+                    "entry_event_hash": "", "exit_event_hash": "",
+                    "resolution_method": resolution.method, "resolution_status": "UNRESOLVED",
+                })
+        unexpected = sorted(set(active) - official_ids)
+        duplicate_identities = len(official_rows) - unresolved - len(official_ids)
+        for identifier in unexpected:
+            interval = active[identifier]
+            differences.append({
+                "checkpoint_date": checkpoint.isoformat(), "difference_type": "UNEXPECTED_IN_RECONSTRUCTION",
+                "symbol": interval.symbol_at_entry, "company_name": interval.company_name,
+                "instrument_id": identifier, "isin": interval.isin_at_entry,
+                "source_url": official_rows[0].get("source_url", ""),
+                "source_sha256": official_rows[0].get("source_sha256", ""),
+                "entry_event_hash": interval.entry_event_hash, "exit_event_hash": interval.exit_event_hash or "",
+                "resolution_method": "UNRESOLVED_CHECKPOINT_IDENTITIES" if unresolved else "DURABLE_ID_SET_DIFFERENCE",
+                "resolution_status": "UNRESOLVED",
+            })
+        summaries.append({
+            "checkpoint_date": checkpoint.isoformat(), "official_count": len(official_rows),
+            "replay_count": len(active), "missing_count": missing, "unexpected_count": len(unexpected),
+            "unresolved_identity_count": unresolved, "symbol_alias_match_count": alias_matches,
+            "duplicate_identity_count": duplicate_identities,
+            "source_url": official_rows[0].get("source_url", ""),
+            "source_sha256": official_rows[0].get("source_sha256", ""),
+            "status": "BLOCKED" if missing or unexpected or unresolved or duplicate_identities else "PASS",
+            "comparison_basis": "AUTHORITATIVE_INTERVALS_WITH_PERIOD_VALID_IDENTITIES",
+        })
+    return summaries, differences
 
 
 def _known_at_rows(events: list[Any]) -> list[dict[str, Any]]:
@@ -1390,7 +1476,7 @@ def _anchor_replay_forensics(
         master = master_by_symbol.get(symbol, {})
         lineage = reverse_lineage.get(symbol)
         symbol_name = str(source.get("symbol") or (getattr(lineage, "symbol", "") if lineage else "") or master.get("symbol") or symbol).upper()
-        inst_id = (getattr(lineage, "instrument_id", None) if lineage else None) or master.get("instrument_id") or f"NSE-SYMBOL:{symbol_name}"
+        inst_id = (getattr(lineage, "instrument_id", None) if lineage else None) or master.get("instrument_id") or ""
         isin_val = (getattr(lineage, "isin", None) if lineage else None) or master.get("isin") or ""
 
         lineage_source_url = getattr(lineage, "source_url", "") if lineage else ""
@@ -1408,15 +1494,15 @@ def _anchor_replay_forensics(
             "anchor_status": "NOT_ASSERTED", "eligible_for_replay": False,
             "evidence_basis": "REVERSE_CANONICAL_EVENTS_FROM_LATER_CHECKPOINT",
             "forward_checkpoint_date": checkpoint_date.isoformat(),
-            "source_url": source.get("source_url", "") or lineage_source_url or "https://www.niftyindices.com",
-            "source_sha256": source.get("source_sha256", "") or lineage_source_sha or hashlib.sha256(b"INITIAL_ANCHOR").hexdigest(),
+            "source_url": source.get("source_url", "") or lineage_source_url,
+            "source_sha256": source.get("source_sha256", "") or lineage_source_sha,
             "source_member": source.get("source_member", ""), "source_tier": source.get("source_tier", "A1"),
             "confidence": "MANUAL_REVIEW", "review_status": "MANUAL_REVIEW",
             "notes": "Diagnostic reverse-replay candidate only; later checkpoint evidence does not prove 2012-01-02 membership.",
             "index_name": "NIFTY 200", "anchor_date": CAMPAIGN_FROM.isoformat(),
             "member_status": "REVERSED_CANONICAL_DROP" if lineage and not source else "FORWARD_CHECKPOINT_MEMBER",
-            "evidence_date": checkpoint_date.isoformat(), "effective_date": lineage_effective or CAMPAIGN_FROM.isoformat(),
-            "known_at": lineage_known_at or datetime.combine(CAMPAIGN_FROM, time(0, 0), tzinfo=timezone.utc).isoformat(),
+            "evidence_date": checkpoint_date.isoformat(), "effective_date": lineage_effective,
+            "known_at": lineage_known_at,
             "resolution_method": "EXACT_CURRENT_SYMBOL" if master else "LINEAGE_HISTORICAL_IDENTITY",
         })
 
@@ -1689,6 +1775,13 @@ def _blocker_ledger(
         })
 
     for reason in report.reasons:
+        if reason.startswith("replay_checkpoint:"):
+            _, as_of, details = reason.split(":", 2)
+            append(reason, blocker_type="REPLAY_SNAPSHOT_MISMATCH", as_of=as_of,
+                   observed=details, severity="CRITICAL",
+                   root_cause="Actual interval replay does not match the period-valid official checkpoint identities.",
+                   resolution_source="replay_checkpoint_differences.csv")
+            continue
         if reason.startswith("member_count:"):
             _, as_of, observed = reason.split(":", 2)
             append(reason, blocker_type="COUNT_NOT_200", as_of=as_of,
@@ -1745,6 +1838,8 @@ def _blocker_ledger(
                 kind = "DUPLICATE_EVENT"
             elif conflict_type == "MISSING_INITIAL_ANCHOR":
                 kind = "MISSING_INITIAL_ANCHOR"
+            elif conflict_type == "CALENDAR_NOT_CERTIFIED":
+                kind = "CALENDAR_NOT_CERTIFIED"
             elif "IDENTITY" in conflict_type:
                 kind = "HISTORICAL_SYMBOL_CHANGE"
             elif "COVERAGE" in conflict_type:
@@ -1921,9 +2016,14 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     coverage = _coverage(snapshots)
     annual_coverage = _annual_coverage(coverage)
     coverage_gaps = [row for row in coverage if row["status"] != "PASS"]
+    checkpoint_comparisons, checkpoint_differences = _replay_checkpoint_comparison(
+        snapshots, interval_result.intervals, instrument_master, aliases,
+    )
     checkpoint_mismatches = [
-        f"{row['checkpoint_date']}:missing={row['missing_count']},unexpected={row['unexpected_count']}"
-        for row in anchor_forensics.get("checkpoint_rows", []) if row.get("set_match") != "PASS"
+        f"replay_checkpoint:{row['checkpoint_date']}:missing={row['missing_count']},"
+        f"unexpected={row['unexpected_count']},unresolved_identity={row['unresolved_identity_count']},"
+        f"duplicate_identity={row['duplicate_identity_count']}"
+        for row in checkpoint_comparisons if row["status"] != "PASS"
     ]
     anchor_differences = checkpoint_mismatches
     if not reconciliation.events:
@@ -1948,6 +2048,14 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
             required_action="ACQUIRE_FIRST_PARTY_HISTORICAL_ANCHOR",
         ))
     historical_master = _historical_master_rows(instrument_master, aliases)
+    # Verified exceptions improve the repository calendar but are not a complete
+    # campaign-wide exchange-session audit. Keep that evidence gap actionable.
+    conflicts.append(Conflict(
+        conflict_id="calendar_not_certified", date=None, severity="HIGH",
+        conflict_type="CALENDAR_NOT_CERTIFIED",
+        message="Campaign calendar has evidenced exceptions but lacks a complete official session audit for 2012-2026.",
+        required_action="VERIFY_OFFICIAL_HOLIDAYS_AND_SPECIAL_SESSIONS",
+    ))
     report = validate_campaign(
         interval_result.intervals, all_events, campaign_from=CAMPAIGN_FROM, campaign_to=CAMPAIGN_TO,
         trading_days=trading_days, conflicts=conflicts, source_hash_errors=source_errors,
@@ -1959,6 +2067,8 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "calendar_version": calendar.version,
         "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
         "calendar_verified_override_count": len(calendar_overrides),
+        "replay_checkpoint_matches": sum(row["status"] == "PASS" for row in checkpoint_comparisons),
+        "replay_checkpoint_mismatches": len(checkpoint_mismatches),
         "minimum_active_constituent_count": min(replay_counts, default=0),
         "maximum_active_constituent_count": max(replay_counts, default=0),
         "sessions_not_expected_count": report.metrics["count_check_failures"],
@@ -1992,7 +2102,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     _write_csv(derived / "unresolved_gaps.csv", coverage_gaps)
     _write_json(derived / "validation_report.json", report.to_dict())
 
-    monthly_gap_rows = _monthly_gap_rows(coverage, snapshots, interval_result.intervals, sources)
+    monthly_gap_rows = _monthly_gap_rows(coverage, snapshots, interval_result.intervals, sources, checkpoint_comparisons)
     known_at_rows = _known_at_rows(reconciliation.events)
     blocker_rows = _blocker_ledger(
         report, conflicts=conflicts, events=reconciliation.events, snapshots=snapshots,
@@ -2091,6 +2201,8 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         encoding="utf-8",
     )
     _write_csv(artifact_dir / "monthly_gap_analysis.csv", monthly_gap_rows)
+    _write_csv(artifact_dir / "replay_checkpoint_comparison.csv", checkpoint_comparisons)
+    _write_csv(artifact_dir / "replay_checkpoint_differences.csv", checkpoint_differences)
     _write_json(artifact_dir / "identity_continuity_evidence.json", identity_continuity_audit["links"])
     _write_csv(artifact_dir / "identity_continuity_audit.csv", identity_continuity_audit["observations"])
     _write_csv(artifact_dir / "known_at_audit.csv", known_at_rows)

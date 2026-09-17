@@ -38,8 +38,6 @@ def build_intervals(
     closed: list[ConstituentInterval] = []
     conflicts: list[Conflict] = []
     for event in ordered:
-        if event.effective_date < horizon_start:
-            continue
         if event.action in (Action.ADD, Action.INITIAL_MEMBER):
             if event.instrument_id in active:
                 conflicts.append(_conflict(event, "DUPLICATE_ADD", "Cannot add an already active instrument."))
@@ -55,7 +53,10 @@ def build_intervals(
         elif event.action == Action.DROP:
             prior = active.pop(event.instrument_id, None)
             if prior is None:
-                conflicts.append(_conflict(event, "REMOVAL_OF_ABSENT_MEMBER", "Cannot remove an inactive instrument."))
+                # A removal before the requested horizon establishes absence
+                # at its start; it does not require inventing an earlier ADD.
+                if event.effective_date >= horizon_start:
+                    conflicts.append(_conflict(event, "REMOVAL_OF_ABSENT_MEMBER", "Cannot remove an inactive instrument."))
                 continue
             closed.append(ConstituentInterval(
                 interval_id=prior.interval_id, index_id=prior.index_id, instrument_id=prior.instrument_id,
@@ -65,7 +66,10 @@ def build_intervals(
                 exit_event_hash=event.event_hash, confidence=prior.confidence, dataset_version=prior.dataset_version,
                 synthetic=prior.synthetic,
             ))
-    result = closed + list(active.values())
+    # Preserve evidenced pre-horizon entry dates and lineage for memberships
+    # still active in the horizon. Do not seed any other initial members.
+    result = [row for row in closed + list(active.values())
+              if row.effective_until is None or row.effective_until > horizon_start]
     return IntervalBuildResult(sorted(result, key=lambda row: (row.effective_from, row.instrument_id)), conflicts)
 
 

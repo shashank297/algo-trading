@@ -1,5 +1,6 @@
 from datetime import date
 from types import SimpleNamespace
+import pytest
 
 from tools.nifty200_pit.build_public_dataset import (
     _annual_coverage,
@@ -7,6 +8,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _coverage,
     _csv_snapshot_rows,
     _monthly_gap_rows,
+    _replay_checkpoint_comparison,
     _snapshot_date,
     parse_challenger_events,
     _checkpoint_forensics,
@@ -114,7 +116,8 @@ def test_monthly_gap_analysis_classifies_official_dvr_201_security_checkpoint():
 
     rows = _monthly_gap_rows(coverage, snapshots, [], [source])
 
-    assert rows[0]["status"] == "PASS"
+    assert rows[0]["status"] == "REPLAY_NOT_COMPARED"
+    assert rows[0]["source_count_status"] == "PASS"
     assert rows[0]["expected_count"] == 201
 
 
@@ -129,6 +132,65 @@ def test_coverage_historical_dvr_count_requires_dvr_and_correct_period():
     for row in rows:
         row["snapshot_date"] = "2020-06-30"
     assert next(row for row in _coverage(rows) if row["period"] == "2020-06")["status"] == "BLOCKED"
+
+
+@pytest.mark.parametrize("case", ["match", "wrong_member", "missing_identity", "alias", "duplicate_identity"])
+def test_actual_checkpoint_reconciliation_checks_identities_not_just_counts(case):
+    snapshots = [{
+        "snapshot_date": "2013-04-18", "symbol": f"S{i}",
+        "source_url": _source().source_url, "source_sha256": "a" * 64,
+    } for i in range(200)]
+    master = [{
+        "symbol": f"S{i}", "instrument_id": f"I{i}", "isin": f"ISIN{i}",
+        "valid_from": "2013-01-01", "valid_until": "2014-01-01",
+    } for i in range(200)]
+    intervals = [SimpleNamespace(
+        instrument_id=f"I{i}", symbol_at_entry=f"S{i}", company_name=f"Company {i}",
+        isin_at_entry=f"ISIN{i}", effective_from=date(2013, 1, 1), effective_until=None,
+        entry_event_hash=f"entry-{i}", exit_event_hash=None,
+    ) for i in range(200)]
+    if case == "wrong_member":
+        intervals[0].instrument_id = "WRONG"
+    elif case == "missing_identity":
+        master[0]["valid_from"] = "2014-01-01"
+    elif case == "alias":
+        intervals[0].symbol_at_entry = "OLD_SYMBOL"
+    elif case == "duplicate_identity":
+        master[0]["instrument_id"] = "I1"
+
+    summaries, differences = _replay_checkpoint_comparison(snapshots, intervals, master, [])
+
+    passed = case in {"match", "alias"}
+    assert summaries[0]["status"] == ("PASS" if passed else "BLOCKED")
+    assert summaries[0]["replay_count"] == summaries[0]["official_count"] == 200
+    assert summaries[0]["symbol_alias_match_count"] == (1 if case in {"alias", "duplicate_identity"} else 0)
+    if case == "wrong_member":
+        assert {row["difference_type"] for row in differences} == {
+            "MISSING_FROM_RECONSTRUCTION", "UNEXPECTED_IN_RECONSTRUCTION",
+        }
+        assert differences[-1]["entry_event_hash"] == "entry-0"
+    elif case == "missing_identity":
+        assert summaries[0]["unresolved_identity_count"] == 1
+        assert differences[0]["difference_type"] == "MISSING_DURABLE_IDENTITY"
+    elif case == "duplicate_identity":
+        assert summaries[0]["duplicate_identity_count"] == 1
+    else:
+        assert differences == []
+    monthly = _monthly_gap_rows(
+        [{"period": "2013-04", "snapshot_member_count": "200"}], snapshots, intervals, [], summaries,
+    )
+    assert monthly[0]["source_count_status"] == "PASS"
+    assert monthly[0]["status"] == ("PASS" if passed else "REPLAY_SNAPSHOT_MISMATCH")
+
+
+def test_blocker_ledger_classifies_actual_checkpoint_and_calendar_failures():
+    conflict = Conflict("calendar", None, "HIGH", "CALENDAR_NOT_CERTIFIED", "Calendar audit incomplete.")
+    report = ValidationReport(EvidenceStatus.BLOCKED, [
+        "replay_checkpoint:2013-04-18:missing=1,unexpected=1", "unresolved_conflict:calendar",
+    ], {}, "2026-09-17T00:00:00+00:00")
+    rows = _blocker_ledger(report, conflicts=[conflict], events=[], snapshots=[], coverage=[], sources=[])
+    assert [row["blocker_type"] for row in rows] == ["REPLAY_SNAPSHOT_MISMATCH", "CALENDAR_NOT_CERTIFIED"]
+    assert rows[0]["date"] == "2013-04-18"
 
 
 def test_checkpoint_groups_include_historical_dvr_with_normalized_symbol():
@@ -430,6 +492,13 @@ def test_anchor_replay_reverses_canonical_events_without_certifying_anchor():
     assert result["first_divergence"]["date"] == ""
     assert sum(row["sessions"] for row in result["distribution_rows"]) == 2
     assert all(row["eligible_for_replay"] is False for row in result["candidate_rows"])
+    unproven = next(row for row in result["candidate_rows"] if row["symbol"] == "S000")
+    assert unproven["instrument_id"] == ""
+    assert unproven["effective_date"] == ""
+    assert unproven["known_at"] == ""
+    reversed_without_source = next(row for row in result["candidate_rows"] if row["symbol"] == "S199")
+    assert reversed_without_source["source_url"] == ""
+    assert reversed_without_source["source_sha256"] == ""
 def test_official_rescheduling_is_hash_bound_and_narrowly_scoped(tmp_path, monkeypatch):
     from dataclasses import replace
     from datetime import date
