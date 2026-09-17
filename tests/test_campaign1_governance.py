@@ -4,6 +4,7 @@ import json
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 import numpy as np
 import pandas as pd
@@ -12,11 +13,12 @@ import pytest
 from experiments.statistical_tests import _aggregate_campaign_root_evidence, resolve_authoritative_dsr
 from experiments.trials import ExperimentFamilySpec, ResearchTrial, TrialStatus
 from storage.duckdb_manager import DuckDBManager
-from research import _validate_campaign_cli_contract, build_parser, materialize_campaign_1_configurations
+from research import _ensure_campaign_1_family, _validate_campaign_cli_contract, build_parser, materialize_campaign_1_configurations
 from data_platform.universe import PointInTimeConstituent, PointInTimeUniverseManager
 from trading_stack.datasets import filter_frame_by_pit
 from trading_stack.costs import DEFAULT_COST_SCHEDULES
 from trading_stack.economic import campaign_cost_policy_identity
+import run_pipeline
 from run_pipeline import _manifest_delisting_events, _manifest_events, _campaign_strategy_names
 
 
@@ -67,6 +69,69 @@ def test_campaign_materializer_has_exact_deterministic_root_identities() -> None
     assert len(first) == 74
     assert len({entry["root_trial_id"] for entry in first}) == 74
     assert all(entry["parameter_hash"] for entry in first)
+
+
+@pytest.fixture
+def expected_campaign_family() -> ExperimentFamilySpec:
+    db = Mock(spec=DuckDBManager)
+    db.get_experiment_family.return_value = None
+    _ensure_campaign_1_family(
+        db, universe_snapshot_id="TEST-PIT", benchmark_symbol="NIFTY200",
+        cost_model_version=CAMPAIGN_COST_IDENTITY,
+    )
+    return db.register_experiment_family.call_args.args[0]
+
+
+@pytest.mark.parametrize("field,value", [
+    (None, None),
+    ("cost_model_version", "different-costs"),
+    ("strategy_versions", ["9.9.9"]),
+    ("parameter_space", {"bollinger_pullback": {"window": [999]}}),
+    ("universe_snapshot_id", "OTHER-PIT"),
+    ("maximum_trials", 75),
+    ("hypothesis", "Different hypothesis"),
+    ("strategy_names", ["different_strategy"]),
+    ("timeframe", "5m"),
+    ("feature_versions", ["features-v2"]),
+    ("selection_metric", "sharpe"),
+    ("walk_forward_design", {"mode": "different"}),
+    ("source_revision", "different-baseline"),
+    ("regime_conditions", {"regime": "bull"}),
+    ("asset_cluster_conditions", {"sector": "IT"}),
+], ids=lambda value: "identical" if value is None else str(value))
+def test_existing_campaign_family_validates_complete_definition(
+    tmp_path: Path, expected_campaign_family: ExperimentFamilySpec,
+    field: str | None, value: object,
+) -> None:
+    existing = expected_campaign_family.model_copy(
+        deep=True, update={field: value} if field is not None else {},
+    )
+    assert existing.experiment_family_id == CAMPAIGN_FAMILY
+    if field not in {"maximum_trials", "universe_snapshot_id"}:
+        assert existing.maximum_trials == 74
+        assert existing.universe_snapshot_id == "TEST-PIT"
+    db = DuckDBManager(str(tmp_path / "immutable-campaign.duckdb"))
+    try:
+        db.register_experiment_family(existing)
+        before = db.get_experiment_family(CAMPAIGN_FAMILY)
+
+        def ensure() -> None:
+            _ensure_campaign_1_family(
+                db, universe_snapshot_id="TEST-PIT", benchmark_symbol="NIFTY200",
+                cost_model_version=CAMPAIGN_COST_IDENTITY,
+            )
+
+        if field is None:
+            ensure()
+            ensure()
+        else:
+            with pytest.raises(ValueError, match="material definition is immutable"):
+                ensure()
+        assert db.get_experiment_family(CAMPAIGN_FAMILY) == before
+        assert db.conn.execute("SELECT COUNT(*) FROM experiment_families").fetchone() == (1,)
+        assert db.conn.execute("SELECT COUNT(*) FROM research_trials_log").fetchone() == (0,)
+    finally:
+        db.close()
 
 
 def test_campaign_children_do_not_consume_root_budget(tmp_path: Path) -> None:
@@ -304,3 +369,31 @@ def test_campaign_cli_contract_rejects_runtime_overrides() -> None:
         args = parser.parse_args(base + option)
         with pytest.raises(ValueError, match="Campaign 1"):
             _validate_campaign_cli_contract(args, json.loads(args.costs))
+
+
+def test_campaign_risk_policy_hash_governance_reconciliation(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = {
+        "research": {
+            "live_trading": False,
+            "indian_delivery_costs": {"version": "test"},
+        }
+    }
+    # 1. Canonical baseline v2 hash (v1.1.0 from config/risk_policy.yaml)
+    monkeypatch.setattr(run_pipeline, "build_risk_engine", lambda cfg: Mock(
+        policy=Mock(model_dump=lambda: {})
+    ))
+    monkeypatch.setattr(run_pipeline, "economic_contract_hash", lambda d: run_pipeline.CAMPAIGN_CANONICAL_RISK_POLICY_HASH)
+    details, blockers = run_pipeline._baseline_preflight(config, mode="event-driven")
+    assert details.get("risk_policy_governance") == "CANONICAL_BASELINE_V2"
+    assert "CAMPAIGN_BASELINE_RISK_POLICY_HASH_MISMATCH" not in blockers
+
+    # 2. Historical baseline v1 hash
+    monkeypatch.setattr(run_pipeline, "economic_contract_hash", lambda d: run_pipeline.CAMPAIGN_FROZEN_RISK_POLICY_HASH)
+    details, blockers = run_pipeline._baseline_preflight(config, mode="event-driven")
+    assert details.get("risk_policy_governance") == "HISTORICAL_BASELINE_V1"
+    assert "CAMPAIGN_BASELINE_RISK_POLICY_HASH_MISMATCH" not in blockers
+
+    # 3. Arbitrary / tampered hash fails closed
+    monkeypatch.setattr(run_pipeline, "economic_contract_hash", lambda d: "unauthorized_hash_0000000000000000")
+    details, blockers = run_pipeline._baseline_preflight(config, mode="event-driven")
+    assert "CAMPAIGN_BASELINE_RISK_POLICY_HASH_MISMATCH" in blockers

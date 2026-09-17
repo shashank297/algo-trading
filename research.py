@@ -119,16 +119,8 @@ def _ensure_campaign_1_family(
     """Register or validate the immutable Campaign 1 trial family."""
 
     configurations = materialize_campaign_1_configurations()
-    existing = db.get_experiment_family(CAMPAIGN_1_ID)
-    if existing is not None:
-        if int(existing["maximum_trials"]) != CAMPAIGN_1_MAXIMUM_TRIALS:
-            raise ValueError("Campaign 1 experiment family trial budget mismatch.")
-        if str(existing.get("universe_snapshot_id", universe_snapshot_id)) != universe_snapshot_id:
-            raise ValueError("Campaign 1 experiment family universe mismatch.")
-        return
-
     strategy_names = sorted({item["strategy_name"] for item in configurations})
-    family = ExperimentFamilySpec(
+    expected_family = ExperimentFamilySpec(
         experiment_family_id=CAMPAIGN_1_ID,
         hypothesis="Campaign 1 authoritative event-driven Indian-equity screening",
         strategy_names=strategy_names,
@@ -147,7 +139,7 @@ def _ensure_campaign_1_family(
         source_revision="campaign-1-baseline",
         operator_notes=f"benchmark={benchmark_symbol or 'NIFTY200'}; authoritative event-driven only",
     )
-    db.register_experiment_family(family)
+    db.register_experiment_family(expected_family)
 
 
 def campaign_1_mass_is_complete(result: dict[str, Any], db: DuckDBManager | None = None) -> bool:

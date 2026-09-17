@@ -25,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--manifest", required=True, help="evidence_manifest.json")
     parser.add_argument("--database", default=str(PROJECT_ROOT / "market_data.duckdb"))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--validate-structure-only",
+        action="store_true",
+        help="Validate parquet schema and interval records without requiring import approval",
+    )
     return parser
 
 
@@ -43,6 +48,17 @@ def verify_manifest(manifest_path: str | Path, input_path: str | Path) -> dict[s
     if int(manifest.get("unresolved_conflict_count", 1)) != 0:
         raise ValueError("Manifest contains unresolved conflicts; import refused")
     return manifest
+
+
+def validate_structure(manifest_path: str | Path, input_path: str | Path) -> tuple[int, dict[str, Any]]:
+    """Validate parquet structure and hash without requiring approval/PASS flags."""
+    path = Path(manifest_path)
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    expected = manifest.get("artifact_hashes", {}).get(Path(input_path).name)
+    if expected and sha256_file(Path(input_path)) != expected:
+        raise ValueError("Canonical interval artifact hash mismatch; validation refused")
+    constituents = load_constituents(input_path)
+    return len(constituents), manifest
 
 
 def _optional_date(value: object) -> date | None:
@@ -85,6 +101,20 @@ def import_intervals(input_path: str | Path, manifest_path: str | Path, *, datab
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if args.validate_structure_only:
+        try:
+            count, manifest = validate_structure(args.manifest, args.input)
+            val_status = manifest.get("validation_status", "UNKNOWN")
+            readiness = manifest.get("campaign_readiness", "UNKNOWN")
+            approved = manifest.get("approved_for_import", False)
+            print(f"Structural validation: {count} intervals structurally valid (schema & types confirmed)")
+            print(f"Import governance: validation_status={val_status}, campaign_readiness={readiness}, approved_for_import={approved}")
+            print("Import boundary: REFUSED_AS_DESIGNED (approval not granted; independent QA NOT_ASSERTED)")
+            return 0
+        except Exception as exc:
+            print(f"Structural validation: FAILED ({exc})")
+            print("Import boundary: REFUSED_AS_DESIGNED (structural defects detected; approval NOT_GRANTED)")
+            return 1
     count = import_intervals(args.input, args.manifest, database=args.database, dry_run=args.dry_run)
     print(f"Validated {count} NIFTY-200 PIT intervals" + (" (dry-run; no database write)" if args.dry_run else ""))
     return 0

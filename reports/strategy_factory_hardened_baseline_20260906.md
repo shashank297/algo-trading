@@ -16,16 +16,15 @@
 | **NSE Inquiry Status** | **AWAITING_PROVIDER_RESPONSE** | Formal non-binding inquiry sent to `indices@nse.co.in` (FAB-32) |
 | **Paper Trading** | **BLOCKED** | Closed until authoritative PIT certification and pipeline approval |
 | **Live Capital** | **DISABLED** | `CAN_DEPLOY_REAL_CAPITAL = False` strictly enforced; no execution adapter |
-| **Hardening PR** | **#20 (OPEN)** | Branch `fix/pre-strategy-factory-foundation-hardening` |
-| **PR Merge Status** | **BLOCKED** | Blocked by branch protection (`enforce_admins: true`, required status checks) |
-| **Canonical `main` SHA** | `d23b9601ae77bef650def73391895c0f5f2dca2e` | Base commit on `origin/main` |
-| **Hardening HEAD SHA** | `c65f1b7d1435157d005654c6a1bdc370294e9a8e` | PR #20 tip |
+| **Hardening PR** | **#20 (MERGED)** | Merged into canonical `main` under normal branch protection |
+| **Canonical `main` SHA** | `c7581c7dbd740115382dc69d8ab7e5f20c6dab4f` | Post-merge HEAD on canonical `main` |
+| **PR #20 Merge Commit** | `c7581c7dbd740115382dc69d8ab7e5f20c6dab4f` | Normal non-admin merge satisfying all 6 required CI checks |
 
 ---
 
 ## 2. Hardened Content Verification
 
-The hardened baseline implements and verifies the following 13 core controls:
+The hardened baseline implements and verifies the following 14 core controls:
 
 1. **Canonical Board-Approved Risk Policy v1.1.0**:
    - `policy_id`: `canonical-risk-policy-v1`
@@ -33,9 +32,9 @@ The hardened baseline implements and verifies the following 13 core controls:
    - `policy_hash`: `9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092`
    - Status: `BOARD_APPROVED` under FAB-31
 2. **Policy Hash Verification**:
-   - Runtime verification compares computed SHA-256 against registered hash in `risk/factory.py`.
+   - Strict SHA-256 hash verification in `risk/factory.py`.
    - Fails closed on any discrepancy or missing policy file.
-3. **Minimum Liquidity Threshold**:
+3. **Minimum Liquidity Floor**:
    - ₹5 Crore average daily turnover (`min_liquidity_crore = 5.0`).
 4. **Maximum Gross Long-Only Exposure**:
    - Hard capped at 100% (`max_gross_exposure_pct = 1.00`, Pydantic validator `le=1.00`).
@@ -66,44 +65,56 @@ The hardened baseline implements and verifies the following 13 core controls:
 ## 3. Pull Request and Branch Protection Status
 
 - **PR**: #20 (`https://github.com/shashank297/algo-trading/pull/20`)
-- **Base**: `main` (`d23b9601ae77bef650def73391895c0f5f2dca2e`)
-- **Head**: `c65f1b7d1435157d005654c6a1bdc370294e9a8e`
+- **Base**: `main`
+- **Merge Status**: **MERGED** (`state: MERGED`, `mergeStateStatus: CLEAN`)
+- **Merge Commit**: `c7581c7dbd740115382dc69d8ab7e5f20c6dab4f`
 - **Branch Protection on `main`**:
   - `enforce_admins: true`
   - `strict: true`
   - Required checks: `test (ubuntu-latest, 3.13)`, `test (ubuntu-latest, 3.12)`, `test (windows-latest, 3.12)`, `quality`, `frontend`, `secrets`
-- **Current Mergeability**: `MERGEABLE`, but `mergeStateStatus: BLOCKED`
-- **Blocking Reason**:
-  - Full repo CI test suite (859 tests) had 12 legacy test failures due to test fixtures written prior to foundation hardening (e.g. mock turnover < ₹5 Cr, mock paper sessions without approval evidence records, and selector assertions expecting legacy 20% position limit instead of 5%).
-  - In accordance with repository governance, branch protection was NOT bypassed, no admin override was used, and no force push occurred.
+- **GitHub Actions CI Status**: **ALL GREEN (6/6 passing)**
+  - `test (ubuntu-latest, 3.13)`: SUCCESS (5m33s / 5m26s)
+  - `test (ubuntu-latest, 3.12)`: SUCCESS (5m31s / 8m47s)
+  - `test (windows-latest, 3.12)`: SUCCESS (20m24s / 29m34s)
+  - `quality`: SUCCESS (7m47s / 7m34s)
+  - `frontend`: SUCCESS (19s)
+  - `secrets`: SUCCESS (9s / 10s)
 
 ---
 
 ## 4. Deterministic Verification Suite Results
 
-Local execution of the core foundation verification suites:
-
+### Full Repository Test Suite
 ```powershell
-.\venv\Scripts\python.exe -m pytest tests/test_foundation_hardening.py tests/test_risk.py tests/test_configuration.py tests/test_critical_path_coverage.py tests/test_live_admission.py tests/test_universe_pit.py tests/test_campaign1_governance.py -q
+.\venv\Scripts\python.exe -m pytest -q
 ```
-**Result**: **144 passed in 75.41s (100% PASS)**
+**Result**: **859 passed in 534.79s (100% PASS, 0 failures)**
 
-Code quality check:
+### Post-Merge Smoke Verification on `main`
 ```powershell
-.\venv\Scripts\python.exe -m ruff check .
+.\venv\Scripts\python.exe -m pytest tests/test_foundation_hardening.py -q
 ```
-**Result**: **All checks passed!**
+**Result**: **13 passed in 12.70s (100% PASS)**
 
-Static typing:
-```powershell
-.\venv\Scripts\python.exe -m mypy ai_research/
-```
-**Result**: **Success: no issues found in 107 source files**
+### Code Quality & Static Typing
+- `ruff check .`: **All checks passed!**
+- `compileall`: Clean across all packages
+- `mypy`: **Success: no issues found in 107 source files**
+- `pyright`: **0 errors, 0 warnings**
+- `coverage`: Overall 85% (gate >=80%), Critical components 95% (gate >=95%), Experiments 95% (gate >=95%)
+- `frontend`: `npm run lint` clean (0 errors), `npm run build` successful
 
 ---
 
 ## 5. Conclusion & Operational State
 
-The foundation hardening codebase is fully implemented, strictly typed, and internally validated. Integration into canonical `main` is gated by repository branch protection pending human decision or adaptation of the 12 legacy test fixtures to the Board's stricter risk parameters.
+The foundation hardening codebase and all 14 governance controls have been successfully integrated into canonical `main` (`c7581c7dbd740115382dc69d8ab7e5f20c6dab4f`) via standard protected merge without administrative bypass.
 
-External status remains: **AWAITING NIFTY 200 PIT PROVIDER RESPONSE** from NSE Indices Ltd.
+Operating State:
+- **PIT**: `BLOCKED_EXTERNAL_DATA`
+- **NSE Inquiry**: `AWAITING_PROVIDER_RESPONSE`
+- **Strategy Factory**: `BLOCKED`
+- **Paper Trading**: `BLOCKED`
+- **Live Capital**: `DISABLED`
+
+Baseline is certified and immutable pending official response from NSE Indices Ltd.
