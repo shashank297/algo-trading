@@ -84,10 +84,39 @@ class ExternalApprovalVerifier:
         expected_stage: str = "PAPER_CANDIDATE",
         expected_foundation_cert_id: str | None = None,
         expected_risk_policy_hash: str | None = None,
+        expected_code_sha: str | None = None,
+        expected_evidence_hash: str | None = None,
+        expected_scope: str | None = None,
+        expected_subject_type: str | None = None,
         as_of_time: datetime | None = None,
     ) -> None:
         """Verify that external approval evidence is genuine, valid, matching, and active."""
         data = evidence.to_dict() if isinstance(evidence, ExternalApprovalEvidence) else dict(evidence)
+
+        # 0. Completeness and required fields check
+        required_fields = [
+            "approval_id",
+            "approval_type",
+            "subject_type",
+            "run_id",
+            "strategy_name",
+            "requested_stage",
+            "approved_stage",
+            "approved_by_type",
+            "approved_by_identifier",
+            "approved_at",
+            "expires_at",
+            "scope",
+            "status",
+            "foundation_certification_id",
+            "risk_policy_hash",
+            "code_sha",
+            "evidence_hash",
+        ]
+        for field in required_fields:
+            val = data.get(field)
+            if val is None or str(val).strip() == "":
+                raise PermissionError(f"Approval evidence missing or empty required field '{field}'")
 
         # 1. Authority validation
         approver_type = str(data.get("approved_by_type", "")).upper().strip()
@@ -105,7 +134,7 @@ class ExternalApprovalVerifier:
                 f"Approval cannot be issued by an automated agent or system identifier: '{identifier}'"
             )
 
-        # 2. Status validation
+        # 2. Status validation (must be ACTIVE, not REVOKED/PENDING/EXPIRED)
         status = str(data.get("status", "")).upper().strip()
         if status != ApprovalStatus.ACTIVE.value:
             raise PermissionError(f"Approval is not active (status: '{status}')")
@@ -120,13 +149,28 @@ class ExternalApprovalVerifier:
                 f"Approval strategy_name '{data.get('strategy_name')}' does not match expected '{expected_strategy_name}'"
             )
 
+        expected_stage_upper = expected_stage.upper().strip()
         approved_stage = str(data.get("approved_stage", "")).upper().strip()
-        if approved_stage not in {expected_stage.upper(), "PAPER_ACTIVE", "PAPER_CANDIDATE"}:
+        if approved_stage != expected_stage_upper:
             raise PermissionError(
                 f"Approved stage '{approved_stage}' does not authorize target stage '{expected_stage}'"
             )
 
-        # 4. Certification and Policy binding
+        if expected_subject_type:
+            subject_type = str(data.get("subject_type", "")).strip()
+            if subject_type != expected_subject_type:
+                raise PermissionError(
+                    f"Approval subject_type '{subject_type}' does not match expected '{expected_subject_type}'"
+                )
+
+        if expected_scope:
+            scope = str(data.get("scope", "")).strip()
+            if scope != expected_scope:
+                raise PermissionError(
+                    f"Approval scope '{scope}' does not match expected '{expected_scope}'"
+                )
+
+        # 4. Certification, Policy, Code, and Evidence binding
         if expected_foundation_cert_id:
             cert_id = str(data.get("foundation_certification_id", ""))
             if cert_id != expected_foundation_cert_id:
@@ -141,8 +185,39 @@ class ExternalApprovalVerifier:
                     f"Approval risk policy hash '{risk_hash}' does not match active '{expected_risk_policy_hash}'"
                 )
 
-        # 5. Expiration check
+        if expected_code_sha:
+            code_sha = str(data.get("code_sha", ""))
+            if code_sha != expected_code_sha:
+                raise PermissionError(
+                    f"Approval code_sha '{code_sha}' does not match expected '{expected_code_sha}'"
+                )
+
+        if expected_evidence_hash:
+            evidence_hash = str(data.get("evidence_hash", ""))
+            if evidence_hash != expected_evidence_hash:
+                raise PermissionError(
+                    f"Approval evidence_hash '{evidence_hash}' does not match expected '{expected_evidence_hash}'"
+                )
+
+        # 5. Temporal check: approved_at <= now < expires_at, and approved_at < expires_at
         now = as_of_time or datetime.now(timezone.utc)
+        if now.tzinfo is None:
+            now = now.replace(tzinfo=timezone.utc)
+
+        approved_at_raw = data.get("approved_at")
+        approved_at = (
+            approved_at_raw
+            if isinstance(approved_at_raw, datetime)
+            else pd.Timestamp(approved_at_raw).to_pydatetime()
+        )
+        if approved_at.tzinfo is None:
+            approved_at = approved_at.replace(tzinfo=timezone.utc)
+
+        if approved_at > now:
+            raise PermissionError(
+                f"Approval approved_at '{approved_at.isoformat()}' is in the future (current time: {now.isoformat()})"
+            )
+
         expires_at_raw = data.get("expires_at")
         expires_at = (
             expires_at_raw
@@ -151,8 +226,11 @@ class ExternalApprovalVerifier:
         )
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
-        if now.tzinfo is None:
-            now = now.replace(tzinfo=timezone.utc)
+
+        if expires_at <= approved_at:
+            raise PermissionError(
+                f"Approval expiry '{expires_at.isoformat()}' must be strictly after approval time '{approved_at.isoformat()}'"
+            )
 
         if now > expires_at:
             raise PermissionError(f"Approval expired at {expires_at.isoformat()} (current time: {now.isoformat()})")
