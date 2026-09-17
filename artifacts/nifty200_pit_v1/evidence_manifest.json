@@ -44,7 +44,7 @@
     "source_access_report.csv": "0ad21aa4acfd26956cfc4bdc7f618c187f5b3dc26cb2069f16817394f17f6fcc",
     "source_catalogue.parquet": "cef5ab7b25927ded2ca6bc6e58654f8bec83fde7f7d0a718345d2996949644e8",
     "unresolved_gaps.csv": "2c9dde6a6f233ccea524556dd5b92eb89e5de7522ef0e57dd200158043e19df9",
-    "validation_report.json": "8e2bc4fffb134334eef42a80298ac7e842bb823bf3fcf1ab0abc4d0b17319940"
+    "validation_report.json": "a401d152a9a705cd658ef21842ab51be4083b36887b44cc0711b4814b9e267d1"
   },
   "automated_validation": "AUTOMATED_VALIDATION_BLOCKED",
   "campaign_readiness": "BLOCKED",
@@ -52,12 +52,12 @@
     "campaign_from": "2012-01-02",
     "campaign_to": "2026-08-20"
   },
-  "generated_at": "2026-09-17T17:50:31.410413+00:00",
+  "generated_at": "2026-09-17T18:18:52.074650+00:00",
   "identity_map_hash": "3e52643736902de73574c8f85720297d3761b0821c6e16cb9c45f15e0e40f384",
   "independent_qa": "NOT_ASSERTED",
   "known_at_policy": "DATE_ONLY_CONSERVATIVE_NEXT_SESSION",
   "manifest_version": "NIFTY200_PIT_V1",
-  "parser_git_sha": "5234fb1c9da94ca7760246de074432bf918963a8",
+  "parser_git_sha": "27818f4b689c99796bba52ce820eca4effac369e",
   "source_hashes": [
     "8869bb7c4df67403131a494a8cc65509e80828f9438bc150b506cdbf55378046",
     "4942c0f021abcd6ed9702c343c2696ec44cfa8022c7e37448f8a78c075c4a16d",
@@ -635,7 +635,7 @@
   "stage_a_started": false,
   "unresolved_conflict_count": 125,
   "validation_report": {
-    "generated_at": "2026-09-17T17:50:24.835997+00:00",
+    "generated_at": "2026-09-17T18:18:45.198485+00:00",
     "metrics": {
       "anchor_candidate_member_count": 200,
       "anchor_difference_count": 108,
