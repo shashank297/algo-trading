@@ -44,8 +44,9 @@ Validation status: **BLOCKED**.
 - `SOURCE_DOWNLOAD_FAILURE`: 1 rows
 
 The case CSVs contain one row per current identity or announcement
-blocker, including the missing document, official URLs checked, and the
-exact condition needed to close it. The monthly governance report keeps
+blocker, plus an all-blocker evidence-gap CSV. Each row includes the
+missing document, official URLs checked, and exact closure condition.
+The monthly governance report keeps
 missing, malformed, wrong-table, methodology, and HTML-response cases
 separate. The paid fallback file is an audit record only; no paid source
 was purchased or used.

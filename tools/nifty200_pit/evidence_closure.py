@@ -85,18 +85,61 @@ def _metric(report: dict[str, Any], name: str, default: Any = 0) -> Any:
 
 def _case_row(row: dict[str, str], case_type: str) -> dict[str, str]:
     blocker_type = row.get("blocker_type", "")
-    if case_type == "identity":
+    if blocker_type in {
+        "MISSING_DURABLE_IDENTITY",
+        "HISTORICAL_SYMBOL_CHANGE",
+        "HISTORICAL_ISIN_CHANGE",
+        "DELISTED_SECURITY",
+        "MERGER_SUCCESSOR",
+        "AMBIGUOUS_COMPANY",
+    }:
         missing = (
             "An authoritative historical security-master or corporate-action "
             "document linking the dated symbol/company to the exact ISIN."
         )
-        closure = "reports/nifty200_pit_identity_blocker_cases.csv"
-    else:
+        closure = (
+            "reports/nifty200_pit_identity_blocker_cases.csv"
+            if case_type == "identity"
+            else "reports/nifty200_pit_evidence_gap_report.csv"
+        )
+    elif blocker_type in {
+        "MISSING_ANNOUNCEMENT_DATE",
+        "MISSING_EFFECTIVE_DATE",
+        "MISSING_EVENT_CAUSALITY",
+    }:
         missing = (
             "The official publication timestamp or dated announcement document "
             "for the event; effective date alone is not sufficient."
         )
-        closure = "reports/nifty200_pit_announcement_blocker_cases.csv"
+        closure = (
+            "reports/nifty200_pit_announcement_blocker_cases.csv"
+            if case_type == "announcement"
+            else "reports/nifty200_pit_evidence_gap_report.csv"
+        )
+    elif blocker_type == "MISSING_INITIAL_ANCHOR":
+        missing = (
+            "An authoritative CNX/NIFTY-200 membership list effective on or before "
+            "2012-01-02, or a complete first-party event chain that proves it."
+        )
+        closure = "reports/nifty200_pit_evidence_gap_report.csv"
+    elif blocker_type == "MONTHLY_SNAPSHOT_MISSING":
+        missing = (
+            "An official dated checkpoint for the affected month, or an official "
+            "methodology/exception document that explains the missing or non-200 result."
+        )
+        closure = "reports/nifty200_pit_evidence_gap_report.csv"
+    elif blocker_type == "SOURCE_DOWNLOAD_FAILURE":
+        missing = "Valid archive bytes or a verified Wayback copy of the official source."
+        closure = "reports/nifty200_pit_evidence_gap_report.csv"
+    elif blocker_type == "DUPLICATE_EVENT":
+        missing = (
+            "An official correction, withdrawal, or superseding notice proving whether "
+            "the duplicate event is stale or a distinct event."
+        )
+        closure = "reports/nifty200_pit_evidence_gap_report.csv"
+    else:
+        missing = "The authoritative first-party evidence required by the blocker root cause."
+        closure = "reports/nifty200_pit_evidence_gap_report.csv"
     return {
         "case_id": f"{case_type}-{row.get('blocker_id', '')[:16]}",
         "blocker_id": row.get("blocker_id", ""),
@@ -197,6 +240,11 @@ def generate(root: Path) -> dict[str, Any]:
     _write_csv(
         report_root / "nifty200_pit_announcement_blocker_cases.csv",
         [_case_row(row, "announcement") for row in announcement_rows],
+        CASE_COLUMNS,
+    )
+    _write_csv(
+        report_root / "nifty200_pit_evidence_gap_report.csv",
+        [_case_row(row, "gap") for row in ledger],
         CASE_COLUMNS,
     )
 
@@ -367,8 +415,9 @@ def generate(root: Path) -> dict[str, Any]:
         [
             "",
             "The case CSVs contain one row per current identity or announcement",
-            "blocker, including the missing document, official URLs checked, and the",
-            "exact condition needed to close it. The monthly governance report keeps",
+            "blocker, plus an all-blocker evidence-gap CSV. Each row includes the",
+            "missing document, official URLs checked, and exact closure condition.",
+            "The monthly governance report keeps",
             "missing, malformed, wrong-table, methodology, and HTML-response cases",
             "separate. The paid fallback file is an audit record only; no paid source",
             "was purchased or used.",

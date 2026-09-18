@@ -54,6 +54,13 @@ def test_evidence_closure_writes_case_files_without_promoting_blockers(tmp_path)
     )
     assert "MANUAL_REVIEW" in identity_text
     assert ",,ABC,ABC Ltd," in identity_text
+    gap_rows = list(csv.DictReader(
+        (report_root / "nifty200_pit_evidence_gap_report.csv").open(
+            encoding="utf-8", newline=""
+        )
+    ))
+    assert len(gap_rows) == 2
+    assert gap_rows[0]["missing_evidence"]
     assert (report_root / "nifty200_pit_monthly_checkpoint_governance_decision.md").exists()
     assert "DATA EVIDENCE BLOCKED" in (
         report_root / "nifty200_pit_evidence_closure_current.md"
