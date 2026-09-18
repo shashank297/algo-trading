@@ -82,7 +82,11 @@ class ExperimentFamilySpec(BaseModel):
 
     @property
     def definition_hash(self) -> str:
-        return canonical_hash(self.model_dump(mode="json", exclude={"created_at", "operator_notes"}))
+        # ``created_at`` is registration metadata, but every other declared
+        # field is part of the immutable family contract.  In particular,
+        # operator notes can carry the benchmark and evidence boundary used to
+        # create a governed campaign and therefore must not be silently ignored.
+        return canonical_hash(self.model_dump(mode="json", exclude={"created_at"}))
 
 
 class ResearchTrial(BaseModel):

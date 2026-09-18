@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import Any, Mapping
 
 from storage.duckdb_manager import DuckDBManager
 
@@ -49,24 +50,36 @@ class PromotionEngine:
         strategy_name: str,
         approval_evidence: Any = None,
         *,
+        expected_stage: str | None = None,
         expected_foundation_cert_id: str | None = None,
+        expected_risk_policy_id: str | None = None,
         expected_risk_policy_hash: str | None = None,
+        expected_code_sha: str | None = None,
+        expected_evidence_hash: str | None = None,
+        expected_scope: str | None = None,
+        expected_subject_type: str | None = None,
+        expected_promotion_review_id: str | None = None,
+        trusted_issuers: Mapping[str, Any] | None = None,
+        as_of_time: datetime | None = None,
     ) -> None:
         """Fail closed unless a human-approved promotion permits paper execution and valid external approval evidence is verified."""
 
         review = self.db.conn.execute(
-            """SELECT stage, decision, human_approved FROM promotion_reviews
+            """SELECT review_id, stage, decision, human_approved FROM promotion_reviews
                WHERE run_id = ? AND strategy_name = ?
                ORDER BY reviewed_at DESC LIMIT 1""",
             [run_id, strategy_name],
         ).fetchone()
         if review is None:
             raise PermissionError(f"No promotion review authorizes paper trading for run {run_id}.")
-        stage, decision, human_approved = str(review[0]), str(review[1]), bool(review[2])
+        review_id, stage, decision, human_approved = str(review[0]), str(review[1]), str(review[2]), bool(review[3])
         if stage not in {PromotionStage.PAPER_CANDIDATE.value, PromotionStage.PAPER_ACTIVE.value}:
             raise PermissionError(f"Run {run_id} is at stage {stage}, not a paper-authorized stage.")
         if decision != "PASS" or not human_approved:
             raise PermissionError(f"Run {run_id} does not have a passing human approval.")
+
+        if expected_stage is not None and stage.upper() != expected_stage.upper():
+            raise PermissionError(f"Review stage '{stage}' does not match expected stage '{expected_stage}'")
 
         from trading_stack.approval import ExternalApprovalVerifier
         if approval_evidence is None:
@@ -77,13 +90,118 @@ class PromotionEngine:
                 f"Run {run_id} lacks authoritative external human/board approval evidence in database."
             )
 
+        if expected_promotion_review_id is not None and review_id != expected_promotion_review_id:
+            raise PermissionError(
+                f"Review '{review_id}' does not match expected promotion review '{expected_promotion_review_id}'"
+            )
+
+        # Resolve authoritative context. A run's frame certification is not a
+        # foundation certification and must never be used as a substitute.
+        resolved_subject_type = expected_subject_type or "STRATEGY_RUN"
+        resolved_scope = expected_scope or "PAPER_TRADING"
+
+        # Resolve run details from database if not supplied
+        run_row = None
+        try:
+            run_row = self.db.conn.execute(
+                "SELECT data_hash, frame_certification_id FROM strategy_runs WHERE run_id = ?",
+                [run_id],
+            ).fetchone()
+        except Exception:
+            pass
+
+        resolved_evidence_hash = expected_evidence_hash
+        if resolved_evidence_hash is None and run_row is not None and run_row[0]:
+            resolved_evidence_hash = str(run_row[0])
+
+        active_cert_row = self.db.conn.execute(
+            """SELECT foundation_certification_id, code_sha, risk_policy_id, risk_policy_hash, status
+               FROM foundation_certifications
+               WHERE is_active = TRUE AND status = 'PASS'
+               ORDER BY recorded_at DESC LIMIT 1"""
+        ).fetchone()
+        if active_cert_row is None:
+            raise PermissionError("Paper authorization requires an active PASS foundation certification.")
+        resolved_foundation_cert_id = expected_foundation_cert_id
+        resolved_code_sha = expected_code_sha
+        active_cert_id, active_code_sha = str(active_cert_row[0]), str(active_cert_row[1] or "")
+        if resolved_foundation_cert_id is None:
+            resolved_foundation_cert_id = active_cert_id
+        elif resolved_foundation_cert_id != active_cert_id:
+            raise PermissionError(
+                f"Requested foundation certification '{resolved_foundation_cert_id}' is not the active certification '{active_cert_id}'"
+            )
+        if not active_code_sha:
+            raise PermissionError("Active foundation certification has no authoritative code identity.")
+        runtime_code_sha = os.environ.get("CODE_SHA", "").strip()
+        if not runtime_code_sha:
+            raise PermissionError("Paper authorization requires an explicit runtime CODE_SHA identity.")
+        if active_code_sha != runtime_code_sha:
+            raise PermissionError(
+                "Active foundation certification code identity does not match the runtime CODE_SHA."
+            )
+        if resolved_code_sha is None:
+            resolved_code_sha = runtime_code_sha
+        elif resolved_code_sha != runtime_code_sha:
+            raise PermissionError(
+                f"Approval code_sha '{resolved_code_sha}' is not the runtime code identity '{runtime_code_sha}'"
+            )
+        from risk.factory import load_canonical_risk_policy
+        active_risk_policy = load_canonical_risk_policy()
+        resolved_risk_policy_id = expected_risk_policy_id or active_risk_policy.policy_id
+        resolved_risk_policy_hash = expected_risk_policy_hash or active_risk_policy.policy_hash
+        if resolved_risk_policy_id != active_risk_policy.policy_id:
+            raise PermissionError(
+                f"Requested risk policy id '{resolved_risk_policy_id}' is not the canonical active policy '{active_risk_policy.policy_id}'"
+            )
+        if resolved_risk_policy_hash != active_risk_policy.policy_hash:
+            raise PermissionError(
+                f"Requested risk policy hash '{resolved_risk_policy_hash}' is not the canonical active policy hash"
+            )
+
+        # Fail closed if any required context field cannot be resolved
+        missing_context: list[str] = []
+        if not run_id:
+            missing_context.append("run_id")
+        if not strategy_name:
+            missing_context.append("strategy_name")
+        if not stage:
+            missing_context.append("stage")
+        if not resolved_foundation_cert_id:
+            missing_context.append("foundation_certification_id")
+        if not resolved_risk_policy_id:
+            missing_context.append("risk_policy_id")
+        if not resolved_risk_policy_hash:
+            missing_context.append("risk_policy_hash")
+        if not resolved_code_sha:
+            missing_context.append("code_sha")
+        if not resolved_evidence_hash:
+            missing_context.append("evidence_hash")
+        if not resolved_scope:
+            missing_context.append("scope")
+        if not resolved_subject_type:
+            missing_context.append("subject_type")
+
+        if missing_context:
+            raise PermissionError(
+                f"Paper authorization failed closed: unresolvable authoritative context {sorted(missing_context)} for run {run_id}"
+            )
+
         ExternalApprovalVerifier.verify_approval(
             approval_evidence,
             expected_run_id=run_id,
             expected_strategy_name=strategy_name,
             expected_stage=stage,
-            expected_foundation_cert_id=expected_foundation_cert_id,
-            expected_risk_policy_hash=expected_risk_policy_hash,
+            expected_foundation_cert_id=resolved_foundation_cert_id,
+            expected_risk_policy_id=resolved_risk_policy_id,
+            expected_risk_policy_hash=resolved_risk_policy_hash,
+            expected_code_sha=resolved_code_sha,
+            expected_evidence_hash=resolved_evidence_hash,
+            expected_scope=resolved_scope,
+            expected_subject_type=resolved_subject_type,
+            expected_promotion_review_id=review_id,
+            trusted_issuers=trusted_issuers,
+            as_of_time=as_of_time,
         )
 
     def review(

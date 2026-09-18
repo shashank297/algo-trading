@@ -15,13 +15,18 @@ MIGRATIONS_DIR = Path(__file__).parent
 class MigrationRunner:
     """Applies ordered SQL migration scripts to DuckDB fail-closed."""
 
-    def __init__(self, conn_or_path: str | duckdb.DuckDBPyConnection) -> None:
+    def __init__(
+        self,
+        conn_or_path: str | duckdb.DuckDBPyConnection,
+        migrations_dir: Path | None = None,
+    ) -> None:
         if isinstance(conn_or_path, str):
             self.conn = duckdb.connect(conn_or_path)
             self._owns_conn = True
         else:
             self.conn = conn_or_path
             self._owns_conn = False
+        self.migrations_dir = migrations_dir or MIGRATIONS_DIR
 
     def run_migrations(self) -> list[str]:
         """Discover and apply all unapplied migration scripts with checksum validation."""
@@ -35,7 +40,7 @@ class MigrationRunner:
             """)
             applied_rows = self.conn.execute("SELECT version, checksum FROM schema_migrations").fetchall()
             applied_map = {row[0]: row[1] for row in applied_rows}
-            sql_files = sorted(MIGRATIONS_DIR.glob("*.sql"))
+            sql_files = sorted(self.migrations_dir.glob("*.sql"))
             applied_now = []
 
             for sql_file in sql_files:
@@ -54,18 +59,24 @@ class MigrationRunner:
                     continue
 
                 logger.info("Applying migration {}", version)
+                self.conn.execute("BEGIN TRANSACTION;")
                 try:
                     self.conn.execute(sql_content)
                     self.conn.execute(
                         "INSERT INTO schema_migrations (version, applied_at, checksum) VALUES (?, ?, ?)",
                         [version, datetime.now(timezone.utc), checksum],
                     )
+                    self.conn.execute("COMMIT;")
                     try:
                         self.conn.execute("CHECKPOINT;")
                     except Exception:
                         pass
                     applied_now.append(version)
                 except Exception as exc:
+                    try:
+                        self.conn.execute("ROLLBACK;")
+                    except Exception:
+                        pass
                     logger.error("Failed to apply migration {}: {}", version, exc)
                     raise RuntimeError(f"Failed to apply migration {version}: {exc}") from exc
             return applied_now

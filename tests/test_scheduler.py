@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -34,7 +35,15 @@ class SchedulerTests(unittest.TestCase):
         }
         with patch("scheduler.load_runtime_config", return_value=config), patch(
             "scheduler.main", return_value=1,
-        ) as ingestion, patch("scheduler.advance_active_paper_sessions") as advance:
+        ) as ingestion, patch("scheduler.advance_active_paper_sessions") as advance, patch(
+            "scheduler.configured_nse_calendar",
+            return_value=SimpleNamespace(
+                is_trading_day=lambda _day: True,
+                session_bounds=lambda _day: SimpleNamespace(
+                    end=datetime.now(timezone.utc) - timedelta(minutes=11),
+                ),
+            ),
+        ):
             run_job()
         ingestion.assert_called_once_with([
             "--universe-snapshot", "TEST", "--benchmark", "NIFTY200",

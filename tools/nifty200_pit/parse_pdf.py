@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 from io import BytesIO
 import re
@@ -11,13 +12,24 @@ from tools.nifty200_pit.causality import derive_known_at
 from tools.nifty200_pit.models import Action, Observation, ReviewStatus
 
 INDEX_RE = re.compile(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", re.I)
-DATE_PATTERNS = (
-    re.compile(r"(?:effective\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", re.I),
-    re.compile(r"(?:effective\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2},?\s+\d{4})", re.I),
+_SUBINDEX_RE = re.compile(
+    r"\b(?:QUALITY|MOMENTUM|ALPHA|VALUE|LOW\s+VOLATILITY|ENHANCED\s+VALUE)\s*\d{1,3}\b",
+    re.I,
 )
-SYMBOL_RE = re.compile(r"\b[A-Z][A-Z0-9&.-]{1,19}\b")
-ROW_RE = re.compile(r"^\s*(\d{1,3})\s+(.+?)\s+([A-Z][A-Z0-9&.-]{1,19})\s*$")
+DATE_PATTERNS = (
+    re.compile(r"(?:(?:effect(?:ive)?)\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*(\d{1,2}[./-]\d{1,2}[./-]\d{2,4})", re.I),
+    re.compile(r"(?:(?:effect(?:ive)?)\s+(?:from|w\.e\.f\.)|w\.e\.f\.)\s*[:\-]?\s*([A-Za-z]+\s+\d{1,2}\s*,?\s+\d{4})", re.I),
+)
+SYMBOL_TOKEN = r"[A-Z0-9][A-Z0-9&.-]{1,19}"
+SYMBOL_RE = re.compile(rf"\b{SYMBOL_TOKEN}\b")
+ROW_RE = re.compile(
+    rf"^\s*(?:(\d{{1,3}})\s+)?(.+?)\s+({SYMBOL_TOKEN}(?:\s+[A-Z])?)\s*$"
+)
 PDF_DATE_RE = re.compile(r"ind_prs(\d{2})(\d{2})(\d{4})", re.I)
+INDEX_HEADING_RE = re.compile(
+    r"^\s*\(?(?:\d{1,3}|[A-Za-z])\)?[.)]\s+(?:NIFTY|CNX)\s*[- ]?200"
+    r"(?:\s+Index)?\s*:?\s*$", re.I,
+)
 
 
 def sha256_file(path: Path) -> str:
@@ -29,7 +41,7 @@ def extract_pdf_text(path: str | Path) -> str:
     return "\n".join(extract_pdf_pages(path))
 
 
-def extract_pdf_pages(source: str | Path | bytes | BytesIO) -> list[str]:
+def extract_pdf_pages(source: str | Path | bytes | BytesIO, *, layout: bool = False) -> list[str]:
     """Return native text page-by-page so evidence can retain source pages."""
     try:
         from pypdf import PdfReader
@@ -39,11 +51,14 @@ def extract_pdf_pages(source: str | Path | bytes | BytesIO) -> list[str]:
         reader = PdfReader(BytesIO(source) if isinstance(source, bytes) else source)
     else:
         reader = PdfReader(str(source))
+    if layout:
+        return [page.extract_text(extraction_mode="layout") or "" for page in reader.pages]
     return [page.extract_text() or "" for page in reader.pages]
 
 
 def _parse_date(value: str) -> date | None:
     value = value.replace(".", "/")
+    value = re.sub(r"\s+,", ",", value)
     for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d-%m-%Y", "%d-%m-%y", "%B %d, %Y", "%B %d %Y"):
         from datetime import datetime
 
@@ -55,6 +70,17 @@ def _parse_date(value: str) -> date | None:
 
 
 def find_effective_date(text: str) -> date | None:
+    # A rescheduling notice can quote the old effective date before stating
+    # the revised one (e.g. Reliance Capital, 2017-08-29).
+    reschedule = re.search(r"\breschedul(?:e|ed|ing)\b", text, re.I)
+    if reschedule:
+        correction_text = text[reschedule.end():]
+        for pattern in DATE_PATTERNS:
+            correction = pattern.search(correction_text)
+            if correction:
+                parsed = _parse_date(correction.group(1))
+                if parsed:
+                    return parsed
     for pattern in DATE_PATTERNS:
         match = pattern.search(text)
         if match:
@@ -91,18 +117,27 @@ def extract_nifty200_section(text: str, *, window: int = 80) -> str:
 
 
 def extract_nifty200_sections(text: str) -> list[tuple[int, str]]:
-    """Extract bounded numbered-index sections, avoiding neighboring indices."""
+    """Extract bounded numbered/lettered sections, avoiding neighboring indices."""
     lines = [" ".join(line.split()) for line in text.splitlines()]
-    starts = [index for index, line in enumerate(lines) if INDEX_RE.search(line)]
+    starts = [
+        index for index, line in enumerate(lines)
+        if INDEX_HEADING_RE.search(line) or (INDEX_RE.search(line) and not _SUBINDEX_RE.search(line))
+    ]
     sections: list[tuple[int, str]] = []
     for start in starts:
         end = len(lines)
         for index in range(start + 1, len(lines)):
-            if re.match(r"^\d{1,3}\)\s+", lines[index]) and not INDEX_RE.search(lines[index]):
+            if re.match(r"^\s*\(?(?:\d{1,3}|[A-Za-z])\)?[.)]\s+", lines[index]):
                 end = index
                 break
-        sections.append((start, "\n".join(lines[max(0, start - 4):end])))
+        sections.append((start, "\n".join(lines[start:end])))
     return sections
+
+
+def is_nifty200_heading(line: str) -> bool:
+    """Compatibility predicate for page-boundary continuation parsing."""
+    normalized = " ".join(line.split())
+    return bool(INDEX_RE.search(normalized) and not _SUBINDEX_RE.search(normalized))
 
 
 def _action_for_line(line: str) -> Action | None:
@@ -111,6 +146,102 @@ def _action_for_line(line: str) -> Action | None:
     if re.search(r"\b(drop(?:ped)?|deletion|exclusion|excluded|removed)\b", line, re.I):
         return Action.DROP
     return None
+
+
+def _duplicate_table_rows(text: str, sections: list[tuple[int, str]]) -> list[tuple[Action, str, str]]:
+    """Recover symbols from a repeated PDF table with a company-only first pass.
+
+    Some older IISL PDFs contain the same change table twice because of native
+    PDF drawing order.  The first pass has serial number and company name only;
+    a later pass has the same company name followed by its symbol.
+    """
+    lines = [" ".join(line.split()) for line in text.splitlines()]
+    recovered: list[tuple[Action, str, str]] = []
+    for _, section_text in sections:
+        current_action: Action | None = None
+        for line in section_text.splitlines():
+            action = _action_for_line(line)
+            if action is not None and not ROW_RE.match(line):
+                current_action = action
+                continue
+            if current_action is None:
+                continue
+            match = re.match(r"^\d{1,3}\s+(.+?)\s*$", line)
+            if match is None or re.search(r"\b(?:Sr\.?|No\.?|Company Name|Symbol)\b", line, re.I):
+                continue
+            company_name = match.group(1).strip()
+            name_tokens = re.findall(r"[A-Za-z0-9&.-]+", company_name)
+            if not name_tokens:
+                continue
+            normalized_name = [token.casefold() for token in name_tokens]
+            for candidate_index, candidate in enumerate(lines):
+                tokens = re.findall(r"[A-Za-z0-9&.-]+", candidate)
+                if len(tokens) < len(normalized_name) + 1:
+                    continue
+                if [token.casefold() for token in tokens[:len(normalized_name)]] != normalized_name:
+                    continue
+                symbol = tokens[-1]
+                if not re.fullmatch(r"[A-Z][A-Z0-9&.-]{1,19}", symbol):
+                    continue
+                company_match = re.search(r"\s+[A-Z][A-Z0-9&.-]{1,19}\s*$", candidate)
+                if company_match is None:
+                    continue
+                recovered_company_name = candidate[:company_match.start()].strip()
+                symbol_action = current_action
+                for index in range(candidate_index - 1, -1, -1):
+                    preceding_action = _action_for_line(lines[index])
+                    if preceding_action is not None:
+                        symbol_action = preceding_action
+                        break
+                if symbol_action is None:
+                    continue
+                recovered.append((symbol_action, recovered_company_name, symbol))
+                break
+    return recovered
+
+
+def _parse_narrative_nifty200_change(
+    text: str,
+    *,
+    source_url: str,
+    source_sha256: str,
+    announcement_date: date | None,
+    effective_date: date | None,
+    source_page: int | None,
+    source_tier: str,
+    extractor_version: str,
+    holidays: set[date] | None,
+) -> list[Observation]:
+    """Parse a first-party single-security change described outside a table."""
+    if not re.search(r"Nifty\s*[- ]?200", text, re.I):
+        return []
+    match = re.search(
+        r"\b(Exclusion|Inclusion)\s+of\s+(.+?)\s*\(Symbol:\s*"
+        r"([A-Z][A-Z0-9&.-]{1,19})\)",
+        text,
+        re.I | re.S,
+    )
+    if not match:
+        return []
+    action_name, company_name, symbol = match.groups()
+    action = Action.DROP if action_name.casefold() == "exclusion" else Action.ADD
+    known_at = basis = review_reason = None
+    if announcement_date is not None:
+        known_at, basis, review_reason = derive_known_at(
+            announcement_date, effective_date=effective_date, holidays=holidays,
+        )
+    confidence = "PROVISIONAL" if announcement_date and known_at and effective_date else "MANUAL_REVIEW"
+    review_status = ReviewStatus.UNRESOLVED if confidence == "PROVISIONAL" else ReviewStatus.MANUAL_REVIEW
+    return [Observation(
+        source_index_name="NIFTY 200", symbol=symbol,
+        company_name=" ".join(company_name.split()).strip(" :-"),
+        announcement_date=announcement_date, known_at=known_at, known_at_basis=basis,
+        effective_date=effective_date, action=action, reason=review_reason or "INDEX_CHANGE",
+        source_url=source_url, source_sha256=source_sha256, source_page=source_page,
+        source_tier=source_tier, extraction_method="PDF_TEXT_NARRATIVE",
+        extractor_version=extractor_version, confidence=confidence,
+        review_status=review_status, raw_text=match.group(0),
+    )]
 
 
 def parse_nifty200_text(
@@ -132,9 +263,78 @@ def parse_nifty200_text(
     """
     if not INDEX_RE.search(text):
         return []
+    # A release can assign different dates to lettered groups of indices.
+    # For example, the 2015-03-18 notice uses March 24 in section A and
+    # March 27 for CNX 200 in section B. Never borrow the first group's date.
+    dated_groups = list(re.finditer(
+        r"^[ \t]*[A-Z]\.\s+(?:Replacements|Changes)\s+effective[^\n]*",
+        text, re.I | re.M,
+    ))
+    if dated_groups:
+        grouped_rows: list[Observation] = []
+        for position, heading in enumerate(dated_groups):
+            end = dated_groups[position + 1].start() if position + 1 < len(dated_groups) else len(text)
+            block = text[heading.end():end]
+            group_date = find_effective_date(re.sub(
+                r"\beffective\s+(?!from\b)", "effective from ", heading.group(), flags=re.I,
+            ))
+            grouped_rows.extend(parse_nifty200_text(
+                block, source_url=source_url, source_sha256=source_sha256,
+                announcement_date=announcement_date, effective_date=group_date,
+                source_page=source_page, source_tier=source_tier,
+                extractor_version=extractor_version, holidays=holidays,
+            ))
+        return grouped_rows
     effective = effective_date if effective_date is not None else find_effective_date(text)
+    # Some corrections use a multi-index grid rather than separate included /
+    # excluded tables. Native drawing order puts the index before its rows.
+    # Revoked assertions are not new ADD/DROP events; dispositions are handled
+    # separately against the original, source-bound announcement.
+    if effective and re.search(r"Index\s+Name\s+Security\s+Name\s+Symbol\s+Remarks", text, re.I):
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        starts = [i for i, line in enumerate(lines) if re.fullmatch(
+            r"\d+\s+(?:NIFTY|CNX)\s*[- ]?200", line, re.I,
+        )]
+        grid_rows: list[Observation] = []
+        for start in starts:
+            end = next((i for i in range(start + 1, len(lines)) if re.match(
+                r"\d+\s+(?:NIFTY|CNX)\b", lines[i], re.I,
+            )), len(lines))
+            block = "\n".join(lines[start:end])
+            pending: list[str] = []
+            for line in lines[start + 1:end]:
+                match = re.fullmatch(r"(.+?)\s+([A-Z][A-Z0-9&.-]{1,19})\s+(Inclusion|Exclusion)( revoked)?", line)
+                if not match:
+                    if line:
+                        pending.append(line)
+                    continue
+                company, symbol, action, revoked = match.groups()
+                company = " ".join([*pending, company])
+                pending = []
+                if revoked:
+                    continue
+                normalized = ("1) Nifty 200\nThe following company is being "
+                              + ("included" if action == "Inclusion" else "excluded")
+                              + f":\n1 {company} {symbol}")
+                parsed = parse_nifty200_text(
+                    normalized, source_url=source_url, source_sha256=source_sha256,
+                    announcement_date=announcement_date, effective_date=effective,
+                    source_page=source_page, source_tier=source_tier,
+                    extractor_version=extractor_version, holidays=holidays,
+                )
+                grid_rows.extend(replace(row, extraction_method="PDF_TEXT_INDEX_GRID", raw_text=block) for row in parsed)
+        if starts:
+            return grid_rows
+    narrative_rows = _parse_narrative_nifty200_change(
+        text, source_url=source_url, source_sha256=source_sha256,
+        announcement_date=announcement_date, effective_date=effective,
+        source_page=source_page, source_tier=source_tier,
+        extractor_version=extractor_version, holidays=holidays,
+    )
+    if narrative_rows:
+        return narrative_rows
     sections = extract_nifty200_sections(text)
-    section = "\n---SECTION---\n".join(value for _, value in sections)
+    section = "\n---SECTION---\n".join(value for _, value in sections) or extract_nifty200_section(text)
     if not section or effective is None:
         return [Observation(source_url=source_url, source_sha256=source_sha256, announcement_date=announcement_date,
                             effective_date=effective, extraction_method="PDF_TEXT", extractor_version=extractor_version,
@@ -148,16 +348,40 @@ def parse_nifty200_text(
     rows: list[Observation] = []
     for section_start, section_text in sections:
         current_action: Action | None = None
+        pending_name: list[str] = []
         for line_offset, line in enumerate(section_text.splitlines()):
             action_heading = _action_for_line(line)
             if action_heading is not None and not ROW_RE.match(line):
                 current_action = action_heading
+                pending_name = []
                 continue
             row_match = ROW_RE.match(line)
-            if current_action is None or row_match is None:
+            if current_action is None:
                 continue
-            _, company_name, symbol = row_match.groups()
+            if row_match is None:
+                # Native PDF drawing order can put the serial number and
+                # company prefix on separate lines before the symbol row.
+                if re.match(r"^\d{1,3}(?:\s|$)", line):
+                    pending_name = [line]
+                elif pending_name and line and not re.search(r"\b(?:Sr\.|Symbol|Company Name)\b", line):
+                    pending_name.append(line)
+                else:
+                    pending_name = []
+                continue
+            serial, company_name, symbol = row_match.groups()
             raw_text = line
+            if pending_name and serial is None:
+                raw_text = "\n".join([*pending_name, line])
+                prefix = re.sub(r"^\d{1,3}\s*", "", " ".join(pending_name))
+                company_name = f"{prefix} {company_name}".strip()
+            pending_name = []
+            # Native PDF extraction occasionally inserts a space inside a
+            # one-character suffix (for example ``ORCHIDCHE M``).  This is a
+            # layout artefact, not a distinct exchange symbol.
+            symbol = re.sub(r"\s+", "", symbol)
+            if symbol == "DVR" and re.search(r"Tata Motors\s+Ltd\.?\s*\(DVR\)", text, re.I):
+                symbol = "TATAMTRDVR"
+                company_name = "Tata Motors Limited"
             confidence = "PROVISIONAL" if announcement and known_at and effective else "MANUAL_REVIEW"
             review = ReviewStatus.UNRESOLVED if confidence == "PROVISIONAL" else ReviewStatus.MANUAL_REVIEW
             reason = "INDEX_CHANGE" if confidence == "PROVISIONAL" else "missing_explicit_publication_date"
@@ -170,6 +394,20 @@ def parse_nifty200_text(
                 confidence=confidence, review_status=review, raw_text=raw_text,
             ))
     if not rows:
+        for action, company_name, symbol in _duplicate_table_rows(text, sections):
+            confidence = "PROVISIONAL" if announcement and known_at and effective else "MANUAL_REVIEW"
+            review = ReviewStatus.UNRESOLVED if confidence == "PROVISIONAL" else ReviewStatus.MANUAL_REVIEW
+            reason = "INDEX_CHANGE" if confidence == "PROVISIONAL" else "missing_explicit_publication_date"
+            rows.append(Observation(
+                source_index_name=source_index_name, symbol=symbol, company_name=company_name,
+                announcement_date=announcement, known_at=known_at, known_at_basis=basis,
+                effective_date=effective, action=action, reason=reason,
+                source_url=source_url, source_sha256=source_sha256, source_page=source_page,
+                source_tier=source_tier, extraction_method="PDF_TEXT_DUPLICATE_TABLE",
+                extractor_version=extractor_version, confidence=confidence, review_status=review,
+                raw_text=f"{company_name} {symbol}",
+            ))
+    if not rows:
         # Keep support for compact text releases used by the existing parser
         # contract; table rows above remain the preferred extraction path.
         for line in section.splitlines():
@@ -179,8 +417,14 @@ def parse_nifty200_text(
             symbol_match = re.search(r"\(([A-Z][A-Z0-9&.-]{1,19})\)", line)
             if not symbol_match:
                 continue
+            symbol = symbol_match.group(1)
+            company_name = None
+            if symbol == "DVR" and re.search(r"Tata Motors\s+Ltd\.?\s*\(DVR\)", text, re.I):
+                symbol = "TATAMTRDVR"
+                company_name = "Tata Motors Limited"
             rows.append(Observation(
-                source_index_name=source_index_name, symbol=symbol_match.group(1),
+                source_index_name=source_index_name, symbol=symbol,
+                company_name=company_name,
                 announcement_date=announcement, known_at=known_at, known_at_basis=basis,
                 effective_date=effective, action=action, reason=review_reason or "INDEX_CHANGE",
                 source_url=source_url, source_sha256=source_sha256, source_page=source_page,

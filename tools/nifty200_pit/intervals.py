@@ -10,6 +10,14 @@ from typing import Iterable
 from tools.nifty200_pit.models import Action, CanonicalEvent, Conflict, ConstituentInterval
 
 
+_INVALID_INSTRUMENT_IDS = frozenset({"", "NAN", "NONE", "NULL", "UNKNOWN", "UNRESOLVED"})
+
+
+def _has_durable_identity(instrument_id: object) -> bool:
+    value = str(instrument_id or "").strip()
+    return value.upper() not in _INVALID_INSTRUMENT_IDS
+
+
 @dataclass(frozen=True, slots=True)
 class IntervalBuildResult:
     intervals: list[ConstituentInterval]
@@ -32,13 +40,27 @@ def build_intervals(
     dataset_version: str = "NIFTY200_PIT_V1",
 ) -> IntervalBuildResult:
     """Replay events and fail closed on duplicate adds/removal of absent members."""
-    ordered = sorted((event for event in events if event.effective_date <= horizon_end),
-                     key=lambda event: (event.effective_date, event.event_hash))
+    candidates = [event for event in events if event.effective_date <= horizon_end]
+    ordered = sorted(candidates, key=lambda event: (event.effective_date, event.event_hash))
     active: dict[str, ConstituentInterval] = {}
     closed: list[ConstituentInterval] = []
     conflicts: list[Conflict] = []
+    same_day: dict[tuple[str, date], list[CanonicalEvent]] = {}
+    for event in ordered:
+        if _has_durable_identity(event.instrument_id):
+            same_day.setdefault((event.instrument_id, event.effective_date), []).append(event)
+    ambiguous_same_day = {
+        key for key, rows in same_day.items()
+        if len(rows) > 1
+    }
     for event in ordered:
         if event.effective_date < horizon_start:
+            continue
+        if not _has_durable_identity(event.instrument_id):
+            conflicts.append(_conflict(event, "MISSING_DURABLE_IDENTITY", "Cannot construct a membership interval without a durable instrument identity."))
+            continue
+        if (event.instrument_id, event.effective_date) in ambiguous_same_day:
+            conflicts.append(_conflict(event, "SAME_DAY_EVENT_COLLISION", "Multiple membership assertions for one instrument on one effective date require manual ordering evidence."))
             continue
         if event.action in (Action.ADD, Action.INITIAL_MEMBER):
             if event.instrument_id in active:
@@ -56,6 +78,10 @@ def build_intervals(
             prior = active.pop(event.instrument_id, None)
             if prior is None:
                 conflicts.append(_conflict(event, "REMOVAL_OF_ABSENT_MEMBER", "Cannot remove an inactive instrument."))
+                continue
+            if event.effective_date <= prior.effective_from:
+                conflicts.append(_conflict(event, "NON_POSITIVE_INTERVAL", "A DROP cannot close an interval on or before its ADD date."))
+                active[event.instrument_id] = prior
                 continue
             closed.append(ConstituentInterval(
                 interval_id=prior.interval_id, index_id=prior.index_id, instrument_id=prior.instrument_id,

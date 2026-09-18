@@ -8,6 +8,8 @@ from enum import Enum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from data_platform.contracts import PriceAdjustment
+
 
 class ClaimKind(str, Enum):
     FACT = "FACT"
@@ -50,6 +52,7 @@ class ResearchGoal(BaseModel):
     goal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     symbol: str
     timeframe: str
+    adjustment: PriceAdjustment = PriceAdjustment.UNADJUSTED
     strategy_name: str = "trend_following"
     parameters: dict[str, object] = Field(default_factory=dict)
     max_cost_usd: float = Field(default=1.0, gt=0)

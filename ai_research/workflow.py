@@ -146,34 +146,31 @@ class ResearchWorkflow:
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
                 approved_notional=0.0, reasons=["MISSING_OR_INACTIVE_AUTHORITATIVE_RISK_STATE"], policy=self.risk_engine.policy,
             )
-        price_row = self.db.conn.execute(
-            "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
-            [goal.symbol, row[4]],
-        ).fetchone()
-        if not price_row or float(price_row[0]) <= 0:
+        market_rows = self._authoritative_market_rows(
+            {goal.symbol}, goal.timeframe.lower(), goal.adjustment.value, row[4], minimum_rows=21,
+        )
+        if market_rows is None or not market_rows.get(goal.symbol):
             return RiskDecision(
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
                 approved_notional=0.0, reasons=["MISSING_AUTHORITATIVE_MARK_PRICE"], policy=self.risk_engine.policy,
             )
-        price = float(price_row[0])
+        bars = market_rows[goal.symbol]
+        price = float(bars[-1][2])
         equity = float(row[0]) + float(row[1]) * price
-        closes = self.db.conn.execute(
-            "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 21",
-            [goal.symbol, row[4]],
-        ).fetchall()
-        if len(closes) < 21:
+        if len(bars) < 21:
             return RiskDecision(
                 symbol=goal.symbol, action=RiskAction.REJECT, requested_notional=starting_capital * 0.05,
                 approved_notional=0.0, reasons=["INSUFFICIENT_AUTHORITATIVE_VAR_HISTORY"], policy=self.risk_engine.policy,
             )
-        prices = [float(value[0]) for value in reversed(closes)]
+        prices = [float(value[2]) for value in bars[-21:]]
         returns = [(prices[index] / prices[index - 1]) - 1.0 for index in range(1, len(prices))]
         mean = sum(returns) / len(returns)
         volatility = (sum((value - mean) ** 2 for value in returns) / len(returns)) ** 0.5
-        turnover = self.db.conn.execute(
-            "SELECT COALESCE(SUM(ABS(quantity * price)), 0) FROM strategy_fills WHERE run_id = ? AND CAST(timestamp AS DATE) = CAST(? AS DATE)",
-            [goal.paper_session_id, row[4]],
-        ).fetchone()
+        turnover = sum(
+            abs(float(volume) * float(close))
+            for _, timestamp, close, volume, _ in bars
+            if str(timestamp)[:10] == str(row[4])[:10]
+        )
         return self.risk_engine.evaluate(TradeProposal(
             symbol=goal.symbol, requested_notional=equity * 0.05, capital=equity,
             current_position_notional=float(row[1]) * price,
@@ -181,7 +178,7 @@ class ResearchWorkflow:
             daily_pnl=equity - float(row[3] or equity),
             current_drawdown=max((float(row[2] or equity) - equity) / max(float(row[2] or equity), 1e-12), 0.0),
             current_sector_exposure=abs(float(row[1]) * price), open_position_count=int(abs(float(row[1])) > 0),
-            daily_turnover_crore=float(turnover[0] or 0.0) / 10_000_000.0 if turnover else 0.0,
+            daily_turnover_crore=turnover / 10_000_000.0,
             estimated_portfolio_var_pct=1.65 * volatility,
         ))
 
@@ -200,7 +197,7 @@ class ResearchWorkflow:
             [session_id],
         ).fetchall()
         symbols = {goal.symbol, *(str(row[0]) for row in holdings)}
-        marks = self._authoritative_marks(symbols, session[3])
+        marks = self._authoritative_marks(symbols, goal.timeframe.lower(), goal.adjustment.value, session[3])
         if marks is None:
             return self._reject_authoritative(goal, starting_capital, "MISSING_AUTHORITATIVE_PORTFOLIO_MARK_PRICE")
         sectors = self._authoritative_sectors(symbols, str(session[5]))
@@ -215,14 +212,22 @@ class ResearchWorkflow:
         equity = float(session[0]) + sum(quantity * marks[symbol] for symbol, quantity in quantities.items())
         if equity <= 0:
             return self._reject_authoritative(goal, starting_capital, "NON_POSITIVE_AUTHORITATIVE_PORTFOLIO_EQUITY")
-        volatility = self._portfolio_volatility(quantities, marks, session[3])
+        volatility = self._portfolio_volatility(
+            quantities, marks, goal.timeframe.lower(), goal.adjustment.value, session[3],
+        )
         if volatility is None:
             return self._reject_authoritative(goal, starting_capital, "INSUFFICIENT_AUTHORITATIVE_PORTFOLIO_VAR_HISTORY")
-        turnover = self.db.conn.execute(
-            """SELECT COALESCE(SUM(ABS(quantity * price)), 0) FROM strategy_fills
-               WHERE run_id = ? AND CAST(timestamp AS DATE) = CAST(? AS DATE)""",
-            [session_id, session[3]],
-        ).fetchone()
+        portfolio_rows = self._authoritative_market_rows(
+            symbols, goal.timeframe.lower(), goal.adjustment.value, session[3], minimum_rows=1,
+        )
+        if portfolio_rows is None:
+            return self._reject_authoritative(goal, starting_capital, "MISSING_AUTHORITATIVE_LIQUIDITY_DATA")
+        turnover = sum(
+            abs(float(volume) * float(close))
+            for rows in portfolio_rows.values()
+            for _, timestamp, close, volume, _ in rows
+            if str(timestamp)[:10] == str(session[3])[:10]
+        )
         peak = float(session[1] or equity)
         if self.risk_engine is None:
             return self._reject_authoritative(goal, equity, "MISSING_AUTHORITATIVE_RISK_ENGINE")
@@ -236,7 +241,7 @@ class ResearchWorkflow:
             current_drawdown=max((peak - equity) / max(peak, 1e-12), 0.0),
             current_sector_exposure=sector_exposure,
             open_position_count=len(quantities),
-            daily_turnover_crore=float(turnover[0] or 0.0) / 10_000_000.0 if turnover is not None else 0.0,
+            daily_turnover_crore=turnover / 10_000_000.0,
             estimated_portfolio_var_pct=1.65 * volatility,
         ))
 
@@ -255,17 +260,80 @@ class ResearchWorkflow:
             approved_notional=0.0, reasons=[reason], policy=policy,
         )
 
-    def _authoritative_marks(self, symbols: set[str], as_of: Any) -> dict[str, float] | None:
-        marks: dict[str, float] = {}
-        for symbol in symbols:
-            row = self.db.conn.execute(
-                "SELECT close FROM historical_candles WHERE symbol = ? AND timestamp <= ? ORDER BY timestamp DESC LIMIT 1",
-                [symbol, as_of],
-            ).fetchone()
-            if not row or float(row[0]) <= 0:
+    def _authoritative_market_rows(
+        self,
+        symbols: set[str],
+        timeframe: str,
+        adjustment: str,
+        as_of: Any,
+        *,
+        minimum_rows: int,
+    ) -> dict[str, list[tuple[Any, ...]]] | None:
+        """Return only certified, hash-bound, available bars at the decision time."""
+        if not symbols or not timeframe or not adjustment:
+            return None
+        decision_time = as_of.isoformat() if isinstance(as_of, datetime) else str(as_of)
+        result: dict[str, list[tuple[Any, ...]]] = {}
+        for symbol in sorted(symbols):
+            try:
+                candidates = self.db.conn.execute(
+                    """SELECT DISTINCT hc.dataset_id, md.raw_hash, md.transformation_hash
+                       FROM historical_candles hc
+                       INNER JOIN market_datasets md ON md.dataset_id = hc.dataset_id
+                       INNER JOIN market_dataset_availability mda ON mda.dataset_id = md.dataset_id
+                       WHERE hc.symbol = ? AND hc.timeframe = ? AND hc.adjustment = ?
+                         AND md.status = 'VERIFIED'
+                         AND md.lifecycle_status = 'CANONICAL_PROMOTED'
+                         AND COALESCE(md.raw_hash, '') <> ''
+                         AND mda.available_at <= ?""",
+                    [symbol, timeframe, adjustment, decision_time],
+                ).fetchall()
+                valid_dataset_ids: list[str] = []
+                for dataset_id, raw_hash, transformation_hash in candidates:
+                    content_hashes = [str(value) for value in (transformation_hash, raw_hash) if value]
+                    if any(
+                        self.db._has_authoritative_dq_certification(dataset_id, content_hash, decision_time)[0]
+                        for content_hash in content_hashes
+                    ):
+                        valid_dataset_ids.append(str(dataset_id))
+                if not valid_dataset_ids:
+                    return None
+                rows = self.db.conn.execute(
+                    """SELECT hc.symbol, hc.timestamp, hc.close, hc.volume, hc.dataset_id
+                       FROM historical_candles hc
+                       INNER JOIN historical_candle_availability hca
+                         ON hca.dataset_id = hc.dataset_id
+                        AND hca.symbol = hc.symbol
+                        AND hca.exchange = hc.exchange
+                        AND hca.timeframe = hc.timeframe
+                        AND hca.timestamp = hc.timestamp
+                       WHERE hc.symbol = ? AND hc.timeframe = ? AND hc.adjustment = ?
+                         AND hc.dataset_id IN (SELECT UNNEST(?))
+                         AND hc.timestamp <= ? AND hca.available_at <= ?
+                       ORDER BY hc.timestamp ASC""",
+                    [symbol, timeframe, adjustment, valid_dataset_ids, decision_time, decision_time],
+                ).fetchall()
+            except Exception:
+                # Risk admission must fail closed when the required evidence
+                # schema is absent or malformed.
                 return None
-            marks[symbol] = float(row[0])
-        return marks
+            if len(rows) < minimum_rows:
+                return None
+            timestamps = [row[1] for row in rows]
+            if len(timestamps) != len(set(timestamps)):
+                return None
+            if any(float(row[2]) <= 0 or float(row[3]) < 0 for row in rows):
+                return None
+            result[symbol] = list(rows)
+        return result
+
+    def _authoritative_marks(
+        self, symbols: set[str], timeframe: str, adjustment: str, as_of: Any,
+    ) -> dict[str, float] | None:
+        rows = self._authoritative_market_rows(symbols, timeframe, adjustment, as_of, minimum_rows=1)
+        if rows is None:
+            return None
+        return {symbol: float(values[-1][2]) for symbol, values in rows.items()}
 
     def _authoritative_sectors(self, symbols: set[str], snapshot_id: str) -> dict[str, str] | None:
         rows = self.db.conn.execute(
@@ -276,28 +344,30 @@ class ResearchWorkflow:
         return sectors if symbols.issubset(sectors) else None
 
     def _portfolio_volatility(
-        self, quantities: dict[str, float], marks: dict[str, float], as_of: Any,
+        self, quantities: dict[str, float], marks: dict[str, float], timeframe: str, adjustment: str, as_of: Any,
     ) -> float | None:
         active = {symbol: quantity for symbol, quantity in quantities.items() if quantity != 0}
         if not active:
             return None
-        rows = self.db.conn.execute(
-            """SELECT symbol, timestamp, close FROM historical_candles
-               WHERE symbol IN (SELECT UNNEST(?)) AND timestamp <= ? ORDER BY timestamp DESC""",
-            [list(active), as_of],
-        ).fetchall()
-        series: dict[str, list[float]] = {symbol: [] for symbol in active}
-        for symbol, _, close in rows:
-            values = series[str(symbol)]
-            if len(values) < 21:
-                values.append(float(close))
-        if any(len(values) < 21 for values in series.values()):
+        market_rows = self._authoritative_market_rows(set(active), timeframe, adjustment, as_of, minimum_rows=21)
+        if market_rows is None:
+            return None
+        price_by_symbol = {
+            symbol: {row[1]: float(row[2]) for row in rows}
+            for symbol, rows in market_rows.items()
+        }
+        common_timestamps = set.intersection(*(set(values) for values in price_by_symbol.values()))
+        timestamps = sorted(common_timestamps)[-21:]
+        if len(timestamps) < 21:
             return None
         weights_total = sum(abs(quantity * marks[symbol]) for symbol, quantity in active.items())
         returns = [0.0] * 20
         for symbol, quantity in active.items():
-            prices = list(reversed(series[symbol]))
-            weight = abs(quantity * marks[symbol]) / weights_total
+            # Rows are already chronological.  Do not reverse them: doing so
+            # changes the return path and can alter volatility.  Signed
+            # exposure preserves the direction of long and short holdings.
+            prices = [price_by_symbol[symbol][timestamp] for timestamp in timestamps]
+            weight = (quantity * marks[symbol]) / weights_total
             for index in range(1, 21):
                 returns[index - 1] += weight * ((prices[index] / prices[index - 1]) - 1.0)
         mean = sum(returns) / len(returns)

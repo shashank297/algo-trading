@@ -1300,49 +1300,36 @@ def test_p0_3_pipeline_paper_session_forwarding(tmp_path):
         VALUES ('rev-1', 'approved-run-1', 'cross_sectional_momentum', 'PAPER_ACTIVE', 'PASS', true, 1.0, '[]', CURRENT_TIMESTAMP);
     """)
 
-    from trading_stack.approval import ExternalApprovalVerifier, ExternalApprovalEvidence, ApprovalAuthorityType, ApprovalStatus
-    from datetime import timedelta
-    now_app = datetime.now(timezone.utc)
-    ExternalApprovalVerifier.record_approval(db.conn, ExternalApprovalEvidence(
-        approval_id="app-approved-run-1",
-        approval_type="PROMOTION_TO_PAPER",
-        subject_type="RUN",
-        run_id="approved-run-1",
-        strategy_name="cross_sectional_momentum",
-        requested_stage="PAPER_ACTIVE",
-        approved_stage="PAPER_ACTIVE",
-        approved_by_type=ApprovalAuthorityType.HUMAN,
-        approved_by_identifier="test_reviewer",
-        approved_at=now_app - timedelta(hours=1),
-        expires_at=now_app + timedelta(days=7),
-        scope="PAPER_SESSION",
-        status=ApprovalStatus.ACTIVE,
-        foundation_certification_id="test_cert",
-        risk_policy_id="canonical-risk-policy-v1",
-        risk_policy_hash="9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
-        code_sha="0" * 40,
-        evidence_hash="0" * 64,
-    ))
+    from tests.approval_test_utils import TEST_TRUSTED_ISSUERS, seed_signed_paper_approval
+    from unittest.mock import patch
+    with patch("trading_stack.approval.load_trusted_issuers", return_value=TEST_TRUSTED_ISSUERS):
+        seed_signed_paper_approval(
+            db,
+            run_id="approved-run-1",
+            strategy_name="cross_sectional_momentum",
+            review_id="rev-1",
+        )
 
-    obs = OpeningTickObservation(
-        symbol="RELIANCE",
-        exchange="NSE",
-        token="2885",
-        price=105.0,
-        exchange_timestamp=datetime(2026, 1, 10, 9, 15, tzinfo=timezone.utc),
-        received_at_utc=datetime(2026, 1, 10, 9, 15, 1, tzinfo=timezone.utc),
-    )
+        obs = OpeningTickObservation(
+            symbol="RELIANCE",
+            exchange="NSE",
+            token="2885",
+            price=105.0,
+            exchange_timestamp=datetime(2026, 1, 10, 9, 15, tzinfo=timezone.utc),
+            received_at_utc=datetime(2026, 1, 10, 9, 15, 1, tzinfo=timezone.utc),
+        )
 
-    pipeline = StrategyPipeline(db, require_authoritative_certification=False)
-    out = pipeline.run_paper_session(
-        strategy_name="cross_sectional_momentum",
-        approved_run_id="approved-run-1",
-        symbol="RELIANCE",
-        timeframe="1d",
-        universe=["RELIANCE"],
-        benchmark_symbol="RELIANCE",
-        execution_mode="TRUE_NEXT_OPEN",
-        opening_observations={"RELIANCE": obs},
-    )
+        pipeline = StrategyPipeline(db, require_authoritative_certification=False)
+        with patch.dict("os.environ", {"CODE_SHA": "0" * 40}):
+            out = pipeline.run_paper_session(
+                strategy_name="cross_sectional_momentum",
+                approved_run_id="approved-run-1",
+                symbol="RELIANCE",
+                timeframe="1d",
+                universe=["RELIANCE"],
+                benchmark_symbol="RELIANCE",
+                execution_mode="TRUE_NEXT_OPEN",
+                opening_observations={"RELIANCE": obs},
+            )
     assert "forward_portfolio_result" in out
 

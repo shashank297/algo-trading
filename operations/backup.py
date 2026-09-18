@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,19 +24,39 @@ class DatabaseBackupService:
             raise FileNotFoundError(f"Database not found: {source}")
         if source == target:
             raise ValueError("Backup destination must differ from the source database.")
+        if target.exists() or self.manifest_path(target).exists():
+            raise FileExistsError(f"Backup destination already exists: {target}")
+        wal_path = Path(str(source) + ".wal")
+        if wal_path.exists():
+            raise RuntimeError(
+                f"Refusing backup while an active DuckDB WAL exists: {wal_path}. Quiesce all writers first."
+            )
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + ".partial")
-        if temporary.exists():
-            temporary.unlink()
-        connection = duckdb.connect(str(source))
+        lock_path = Path(str(source) + ".backup.lock")
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.partial")
         try:
-            connection.execute("CHECKPOINT")
-            source_counts = self._critical_counts(connection)
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise RuntimeError(f"Database backup is already in progress: {lock_path}") from exc
+        try:
+            connection = duckdb.connect(str(source))
+            try:
+                connection.execute("CHECKPOINT")
+                source_counts = self._critical_counts(connection)
+            finally:
+                connection.close()
+            if wal_path.exists():
+                raise RuntimeError(f"DuckDB WAL appeared during backup preparation: {wal_path}")
+            shutil.copy2(source, temporary)
+            if wal_path.exists():
+                raise RuntimeError(f"DuckDB WAL appeared during backup copy: {wal_path}")
+            copied = self.verify(temporary, expected_counts=source_counts)
+            os.replace(temporary, target)
         finally:
-            connection.close()
-        shutil.copy2(source, temporary)
-        copied = self.verify(temporary, expected_counts=source_counts)
-        os.replace(temporary, target)
+            if temporary.exists():
+                temporary.unlink()
+            os.close(lock_fd)
+            lock_path.unlink(missing_ok=True)
         manifest = {
             "format_version": 1,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -62,20 +83,34 @@ class DatabaseBackupService:
         manifest = self._load_manifest(source)
         if target.exists() and not overwrite:
             raise FileExistsError(f"Restore destination already exists: {target}")
+        target_wal = Path(str(target) + ".wal")
+        if target_wal.exists():
+            raise RuntimeError(f"Refusing restore while destination WAL exists: {target}.wal")
         if self._sha256(source) != manifest["sha256"]:
             raise ValueError("Backup hash does not match its manifest.")
         verified = self.verify(source, expected_counts=manifest["critical_counts"])
         target.parent.mkdir(parents=True, exist_ok=True)
-        temporary = target.with_suffix(target.suffix + ".restore-partial")
-        if temporary.exists():
-            temporary.unlink()
-        shutil.copy2(source, temporary)
+        lock_path = Path(str(target) + ".restore.lock")
+        temporary = target.with_name(f"{target.name}.{uuid.uuid4().hex}.restore-partial")
         try:
+            lock_fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise RuntimeError(f"Database restore is already in progress: {lock_path}") from exc
+        try:
+            if target_wal.exists():
+                raise RuntimeError(f"Refusing restore while destination WAL exists: {target}.wal")
+            if target.exists() and not overwrite:
+                raise FileExistsError(f"Restore destination already exists: {target}")
+            shutil.copy2(source, temporary)
             self.verify(temporary, expected_counts=manifest["critical_counts"])
+            if target_wal.exists():
+                raise RuntimeError(f"Refusing restore while destination WAL exists: {target}.wal")
             os.replace(temporary, target)
         finally:
             if temporary.exists():
                 temporary.unlink()
+            os.close(lock_fd)
+            lock_path.unlink(missing_ok=True)
         return {"destination": str(target), **verified}
 
     def verify(

@@ -7,7 +7,7 @@ import logging
 import sys
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -25,6 +25,7 @@ from utils.timezone import IST
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+_last_ingestion_session_date: object | None = None
 
 
 class InterceptHandler(logging.Handler):
@@ -153,6 +154,23 @@ def run_job() -> None:
     operation_logger.info("Scheduled ingestion starting at {}", datetime.now(IST))
     try:
         config = load_runtime_config()
+        session_calendar = configured_nse_calendar(config)
+        now = datetime.now(IST)
+        today = now.date()
+        if not session_calendar.is_trading_day(today):
+            operation_logger.info("NSE is closed on {}; scheduled ingestion is skipped.", today)
+            return
+        session_close = session_calendar.session_bounds(today).end
+        if now < session_close + timedelta(minutes=10):
+            operation_logger.info(
+                "NSE session for {} is not yet closed plus the settlement delay; scheduled ingestion is skipped.",
+                today,
+            )
+            return
+        global _last_ingestion_session_date
+        if _last_ingestion_session_date == today:
+            operation_logger.info("Ingestion for NSE session {} already completed; scheduled run is skipped.", today)
+            return
         operations = config.get("operations", {})
         arguments: list[str] = []
         snapshot = operations.get("ingestion_universe_snapshot")
@@ -164,6 +182,7 @@ def run_job() -> None:
         if exit_code != 0:
             operation_logger.error("Scheduled ingestion finished with exit code {}; paper sessions were not advanced.", exit_code)
             return
+        _last_ingestion_session_date = today
         operation_logger.info("Scheduled ingestion completed successfully.")
         if bool(operations.get("paper_after_ingestion", False)):
             results = advance_active_paper_sessions(config)
@@ -230,7 +249,10 @@ def start_scheduler() -> None:
         config["logging"]["path"] = str((PROJECT_ROOT / logging_path).resolve())
     LoggerSetup.setup(config, component="scheduler", command="scheduler-service")
     scheduler = BackgroundScheduler(timezone=IST)
-    trigger = CronTrigger(day_of_week="mon-fri", hour=16, minute=0, timezone=IST)
+    # Run an hourly guard; run_job consults the configured authoritative
+    # exchange calendar and the actual session close, including special
+    # sessions, before opening a writer.
+    trigger = CronTrigger(day_of_week="mon-sun", hour="0-23", minute=15, timezone=IST)
     scheduler.add_job(
         func=run_job,
         trigger=trigger,

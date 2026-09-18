@@ -30,7 +30,10 @@ CAMPAIGN_ID = "campaign-1-2d653914799e"
 CAMPAIGN_BENCHMARK = "NIFTY200"
 CAMPAIGN_ECONOMIC_SEMANTICS_VERSION = "current_mark_to_market_equity_v1/floor_whole_share_v1"
 CAMPAIGN_FROZEN_RESEARCH_CONFIG_HASH = "ec50bff064bed0d2b4ff59a97961467d2225a4e3511ac8155f8555b8f66a1357"
-CAMPAIGN_FROZEN_RISK_POLICY_HASH = "8330bb013ffd1d22acb2c60d715066a43b239cd35b382e772c4a7d47c7d72a3c"
+# Documented Risk Policy Governance Lineage (see docs/research_campaign_1_baseline_v2.md):
+# The active campaign must use the hash declared by the canonical YAML policy.
+# Historical hashes are retained only in reports, never accepted for execution.
+CAMPAIGN_CANONICAL_RISK_POLICY_HASH = "9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092"
 CAMPAIGN_FROZEN_COST_POLICY_IDENTITY = "52e6a43699be4daee483c7503742b033235b0e47d918782ce74cf811aae8e79f"
 CAMPAIGN_FROZEN_STRATEGY_LIBRARY_HASH = "ef5e1492b81c4e76f4f1e9c6fae4d54de4597b8eabb1af223fc4eee8174742d8"
 REQUIRED_RESEARCH_TABLES = frozenset({
@@ -620,9 +623,14 @@ def _baseline_preflight(config: dict[str, Any], *, mode: str) -> tuple[dict[str,
     except Exception as exc:
         details["cost_error"] = str(exc)
         blockers.append("INDIAN_COST_POLICY_NOT_READY")
+    risk_hash = details.get("risk_policy_hash")
+    if risk_hash == CAMPAIGN_CANONICAL_RISK_POLICY_HASH:
+        details["risk_policy_governance"] = "CANONICAL_BASELINE_V2"
+    else:
+        blockers.append("CAMPAIGN_BASELINE_RISK_POLICY_HASH_MISMATCH")
+
     frozen_values = {
         "research_config_hash": CAMPAIGN_FROZEN_RESEARCH_CONFIG_HASH,
-        "risk_policy_hash": CAMPAIGN_FROZEN_RISK_POLICY_HASH,
         "cost_policy_identity": CAMPAIGN_FROZEN_COST_POLICY_IDENTITY,
         "strategy_library_hash": CAMPAIGN_FROZEN_STRATEGY_LIBRARY_HASH,
         "feature_version": "features-v1",

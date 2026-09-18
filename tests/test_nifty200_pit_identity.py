@@ -22,6 +22,21 @@ def test_fuzzy_identity_never_auto_certifies():
     assert result.confidence == "MANUAL_REVIEW"
 
 
+def test_exact_period_valid_company_name_can_resolve_missing_symbol():
+    result = resolve_observation(
+        _observation(symbol=None, company_name="Central Bank of India", effective_date=date(2014, 3, 28)),
+        [{
+            "instrument_id": "NSE-ISIN:INE483A01010", "isin": "INE483A01010",
+            "company_name": "Central Bank of India", "valid_from": "1995-01-01",
+        }],
+    )
+
+    assert result.instrument_id == "NSE-ISIN:INE483A01010"
+    assert result.isin == "INE483A01010"
+    assert result.method == "PERIOD_VALID_COMPANY_NAME"
+    assert result.confidence == "CERTIFIED"
+
+
 def test_merger_successor_is_not_implicitly_merged():
     result = resolve_observation(_observation(symbol="HDFC", company_name="HDFC Ltd"), [{"instrument_id": "BANK", "symbol": "HDFCBANK", "company_name": "HDFC Bank"}])
     assert result.instrument_id is None

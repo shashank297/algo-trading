@@ -1735,7 +1735,7 @@ class DuckDBManager:
         }
         self._replace_rows("research_tasks", [row])
 
-    def update_research_task(self, task_id: str, **changes: Any) -> None:
+    def update_research_task(self, task_id: str, *, preserve_cancelled: bool = False, **changes: Any) -> None:
         """Update a task state without exposing arbitrary SQL to agents."""
 
         allowed = {
@@ -1748,9 +1748,10 @@ class DuckDBManager:
         if not changes:
             return
         assignments = ", ".join(f"{column} = ?" for column in changes)
+        where = "WHERE task_id = ? AND state <> 'CANCELLED'" if preserve_cancelled else "WHERE task_id = ?"
         with self._write_lock:
             self.conn.execute(
-                f"UPDATE research_tasks SET {assignments} WHERE task_id = ?",
+                f"UPDATE research_tasks SET {assignments} {where}",
                 [*changes.values(), task_id],
             )
 

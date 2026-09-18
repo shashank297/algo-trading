@@ -1,21 +1,29 @@
 from datetime import date
+import hashlib
 from types import SimpleNamespace
 
 from tools.nifty200_pit.build_public_dataset import (
     _annual_coverage,
     _blocker_ledger,
     _coverage,
+    _expected_member_count,
     _csv_snapshot_rows,
     _monthly_gap_rows,
+    _monthly_source_issue,
     _snapshot_date,
     parse_challenger_events,
+    parse_archived_index_constituent_snapshot,
     _checkpoint_forensics,
     _historical_master_rows,
     _identity_aliases,
     _anchor_replay_forensics,
+    parse_official_identity_change_candidates,
+    _raw_unresolved_observations,
+    parse_press_releases,
 )
-from tools.nifty200_pit.models import Conflict, EvidenceStatus, SourceRecord, ValidationReport
+from tools.nifty200_pit.models import Conflict, EvidenceStatus, Observation, SourceRecord, ValidationReport, stable_observation_id
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
+from tools.nifty200_pit.instrument_resolver import resolve_observation, resolve_observations, validate_alias_intervals
 
 
 def _source() -> SourceRecord:
@@ -54,6 +62,45 @@ def test_pdf_snapshot_parser_does_not_promote_sector_continuation_to_symbol(monk
     assert [row["symbol"] for row in rows] == ["SUNTV", "SYNGENE"]
 
 
+def test_press_parser_carries_cnx200_table_rows_across_page_boundary(monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _path: [
+        "The changes become effective from April 1, 2013.\n"
+        "(4) CNX 200 Index\nThe following companies are being included:\n"
+        "7 First Ltd. FIRST\n8 Second Ltd. SECOND",
+        "9 Ninth Ltd. NINTH\n10 Tenth Ltd. TENTH\n11 Eleventh Ltd. ELEVENTH\n"
+        "(5) CNX 500 Index\nThe following companies are being included:",
+    ])
+    source = SourceRecord(
+        "https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf",
+        "fixture.pdf", "a" * 64, "2026-09-18T00:00:00Z",
+    )
+
+    rows = parse_press_releases([source])
+
+    assert [row.symbol for row in rows] == ["FIRST", "SECOND", "NINTH", "TENTH", "ELEVENTH"]
+
+
+def test_press_parser_rejects_unrelated_next_index_rows(monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _path: [
+        "The changes become effective from April 1, 2013.\n"
+        "(4) CNX 200 Index\nThe following companies are being included:\n"
+        "1 First Ltd. FIRST\n2 Second Ltd. SECOND",
+        "1 Unrelated Ltd. UNRELATED\n(5) CNX 500 Index\nThe following companies are being included:",
+    ])
+    source = SourceRecord(
+        "https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf",
+        "fixture.pdf", "a" * 64, "2026-09-18T00:00:00Z",
+    )
+
+    rows = parse_press_releases([source])
+
+    assert [row.symbol for row in rows] == ["FIRST", "SECOND"]
+
+
 def test_coverage_is_blocked_for_missing_or_non_200_months():
     rows = _coverage([
         {"snapshot_date": "2013-04-18", "symbol": f"S{i}"} for i in range(200)
@@ -64,6 +111,31 @@ def test_coverage_is_blocked_for_missing_or_non_200_months():
     assert may["status"] == "BLOCKED"
 
 
+def test_official_tata_dvr_policy_accepts_201_member_checkpoint():
+    sources = [
+        SourceRecord(
+            "https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf",
+            "unused-2016.pdf",
+            "db2e4802e43b68fcbfbbf2cb03cb59c6d5f9ebf086ab6687d5a15daa45c2525f",
+            "2026-09-18T00:00:00Z",
+        ),
+        SourceRecord(
+            "https://www.niftyindices.com/Press_Release/ind_prs10062020.pdf",
+            "unused-2020.pdf",
+            "ea83ae30ff9e8d80892e143ebd8f16fedd04c974e77d673539bb663a9f9de49e",
+            "2026-09-18T00:00:00Z",
+        ),
+    ]
+
+    expected, basis, source_urls, source_shas = _expected_member_count(date(2016, 4, 29), sources)
+
+    assert expected == 201
+    assert "Tata Motors DVR" in basis
+    assert "ind_prs22022016_2.pdf" in source_urls
+    assert "ind_prs10062020.pdf" in source_urls
+    assert source_shas.count(";") == 1
+
+
 def test_annual_coverage_aggregates_monthly_status_without_certifying_gaps():
     rows = _annual_coverage([
         {"period": "2012-01", "status": "BLOCKED"},
@@ -71,6 +143,7 @@ def test_annual_coverage_aggregates_monthly_status_without_certifying_gaps():
     ])
     assert rows == [{
         "year": "2012", "months_expected": "2", "months_with_200_members": "1",
+        "months_with_expected_members": "1",
         "status": "BLOCKED", "qa_note": "year contains missing or non-200 checkpoints",
     }]
 
@@ -93,8 +166,21 @@ def test_monthly_gap_analysis_distinguishes_missing_and_non_200_sources():
     rows = _monthly_gap_rows(coverage, snapshots, [], [source])
 
     assert rows[0]["status"] == "A_NO_SNAPSHOT_EVIDENCE"
-    assert rows[1]["status"] == "B_SNAPSHOT_NON_200"
+    assert rows[1]["status"] == "B_SNAPSHOT_NON_EXPECTED_COUNT"
     assert rows[1]["official_snapshot_found"] == "TRUE"
+
+
+def test_monthly_source_issue_classifies_cached_html_as_download_failure(tmp_path):
+    path = tmp_path / "indices_dataMay2012.zip"
+    payload = b"<!doctype html><title>Error 404</title>"
+    path.write_bytes(payload)
+    source = SourceRecord(
+        source_url="https://www.niftyindices.com/Indices_-_Market_Capitalisation_and_Weightage/indices_dataMay2012.zip",
+        local_path=str(path), source_sha256=hashlib.sha256(payload).hexdigest(),
+        retrieved_at="2026-09-06T00:00:00+00:00",
+    )
+
+    assert _monthly_source_issue(source)[0] == "E_HTML_RESPONSE_NOT_ARCHIVE"
 
 
 def test_blocker_ledger_keeps_validation_reasons_typed():
@@ -123,17 +209,61 @@ def test_blocker_ledger_classifies_reconciliation_conflicts():
     conflicts = [
         Conflict("missing-anchor", date(2012, 1, 2), "CRITICAL", "REMOVAL_OF_ABSENT_MEMBER", "drop had no active predecessor"),
         Conflict("duplicate", date(2015, 1, 2), "HIGH", "DUPLICATE_ADD", "duplicate add"),
+        Conflict("same-day", date(2016, 4, 1), "CRITICAL", "SAME_DAY_EVENT_COLLISION", "same-day ordering required"),
     ]
     report = ValidationReport(
         EvidenceStatus.BLOCKED,
-        ["unresolved_conflict:missing-anchor", "unresolved_conflict:duplicate"],
+        [
+            "unresolved_conflict:missing-anchor", "unresolved_conflict:duplicate",
+            "unresolved_conflict:same-day",
+        ],
         {},
         "2026-09-11T00:00:00+00:00",
     )
 
     rows = _blocker_ledger(report, conflicts=conflicts, events=[], snapshots=[], coverage=[], sources=[])
 
-    assert [row["blocker_type"] for row in rows] == ["MISSING_INITIAL_ANCHOR", "DUPLICATE_EVENT"]
+    assert [row["blocker_type"] for row in rows] == [
+        "MISSING_INITIAL_ANCHOR", "DUPLICATE_EVENT", "CONFLICTING_OFFICIAL_EVENTS",
+    ]
+
+
+def test_blocker_ledger_carries_observation_identity_context():
+    observation = Observation(
+        observation_id="obs-1",
+        symbol="OLDCO",
+        company_name="Old Company",
+        instrument_id=None,
+        effective_date=date(2012, 1, 2),
+        source_url="https://example.test/oldco",
+    )
+    conflict = Conflict(
+        "unresolved",
+        date(2012, 1, 2),
+        "HIGH",
+        "UNRESOLVED_OBSERVATION",
+        "identity missing",
+        observation_ids=["obs-1"],
+    )
+    report = ValidationReport(
+        EvidenceStatus.BLOCKED,
+        ["unresolved_conflict:unresolved"],
+        {},
+        "2026-09-11T00:00:00+00:00",
+    )
+
+    rows = _blocker_ledger(
+        report,
+        conflicts=[conflict],
+        events=[],
+        observations=[observation],
+        snapshots=[],
+        coverage=[],
+        sources=[],
+    )
+
+    assert rows[0]["symbol"] == "OLDCO"
+    assert rows[0]["company"] == "Old Company"
 
 
 def test_challenger_events_are_filtered_to_nifty_200_and_remain_unresolved(monkeypatch):
@@ -262,3 +392,128 @@ def test_anchor_replay_reverses_canonical_events_without_certifying_anchor():
     assert result["first_divergence"]["date"] == ""
     assert sum(row["sessions"] for row in result["distribution_rows"]) == 2
     assert all(row["eligible_for_replay"] is False for row in result["candidate_rows"])
+
+
+def test_resolved_observations_get_stable_raw_evidence_ids():
+    observation = Observation(
+        symbol="ABC", company_name="ABC Ltd", action="ADD",
+        announcement_date=date(2024, 1, 1), effective_date=date(2024, 1, 2),
+        source_url="https://nse.example/event.pdf", source_sha256="a" * 64,
+    )
+    master = [{
+        "instrument_id": "NSE-ISIN:INEABC", "isin": "INEABC", "symbol": "ABC",
+        "company_name": "ABC Ltd", "valid_from": "2020-01-01", "valid_until": None,
+    }]
+
+    first = resolve_observations([observation], master)[0]
+    second = resolve_observations([observation], master)[0]
+    changed = resolve_observations([Observation(
+        symbol=observation.symbol, company_name=observation.company_name, action=observation.action,
+        announcement_date=observation.announcement_date, effective_date=observation.effective_date,
+        source_url=observation.source_url, source_sha256="b" * 64,
+    )], master)[0]
+
+    assert first.observation_id
+    assert first.observation_id == second.observation_id
+    assert changed.observation_id != first.observation_id
+
+
+def test_raw_unresolved_report_uses_post_resolution_identity_state():
+    raw = Observation(
+        symbol="ABC", company_name="ABC Ltd", action="ADD",
+        announcement_date=date(2024, 1, 1), effective_date=date(2024, 1, 2),
+        source_url="https://nse.example/event.pdf", source_sha256="a" * 64,
+    )
+    raw_id = stable_observation_id(raw)
+    resolved = Observation(**(raw.to_dict() | {
+        "observation_id": raw_id,
+        "instrument_id": "NSE-ISIN:INE000A01000",
+        "isin": "INE000A01000",
+    }))
+    assert _raw_unresolved_observations([raw], [resolved], []) == []
+
+    unresolved = Observation(**(raw.to_dict() | {"observation_id": raw_id}))
+    rows = _raw_unresolved_observations([raw], [unresolved], [])
+    assert len(rows) == 1
+    assert rows[0]["resolution_status"] == "UNRESOLVED_AFTER_ID_RESOLUTION"
+
+
+def test_certified_alias_interval_validation_rejects_overlap_and_inversion():
+    rows = [
+        {"alias_id": "a", "instrument_id": "SEC-1", "alias_symbol": "ABC",
+         "valid_from": "2020-01-01", "valid_until": "2022-01-01",
+         "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+        {"alias_id": "b", "instrument_id": "SEC-1", "alias_symbol": "ABC",
+         "valid_from": "2021-01-01", "valid_until": None,
+         "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+        {"alias_id": "c", "instrument_id": "SEC-2", "alias_symbol": "XYZ",
+         "valid_from": "2023-01-01", "valid_until": "2022-01-01",
+         "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+    ]
+
+    errors = validate_alias_intervals(rows)
+
+    assert any(error.startswith("alias_interval_overlap:") for error in errors)
+    assert "invalid_alias_period:c" in errors
+
+
+def test_manual_alias_candidate_is_not_used_as_certified_identity():
+    observation = Observation(symbol="OLD", effective_date=date(2020, 1, 2))
+    resolution = resolve_observation(
+        observation,
+        [],
+        aliases=[{
+            "instrument_id": "SEC-1", "alias_symbol": "OLD", "valid_from": "2010-01-01",
+            "valid_until": None, "confidence": "MANUAL_REVIEW", "resolution_status": "MANUAL_REVIEW",
+        }],
+    )
+
+    assert resolution.instrument_id is None
+    assert resolution.confidence == "UNRESOLVED"
+
+
+def test_official_identity_change_tables_remain_manual_without_historical_isin(tmp_path):
+    symbol_path = tmp_path / "symbolchange.csv"
+    symbol_path.write_text("Old Name,OLD,NEW,30-OCT-2019\n", encoding="utf-8")
+    name_path = tmp_path / "namechange.csv"
+    name_path.write_text(
+        "NCH_SYMBOL,NCH_PREV_NAME,NCH_NEW_NAME,NCH_DT\nNEW,Old Name,New Name,30-OCT-2019\n",
+        encoding="utf-8",
+    )
+    records = [
+        SourceRecord("https://nsearchives.nseindia.com/content/equities/symbolchange.csv", str(symbol_path), "a" * 64, "2026-09-18T00:00:00Z"),
+        SourceRecord("https://nsearchives.nseindia.com/content/equities/namechange.csv", str(name_path), "b" * 64, "2026-09-18T00:00:00Z"),
+    ]
+    master = [{
+        "instrument_id": "NSE-ISIN:INE1", "isin": "INE1", "symbol": "NEW",
+        "company_name": "New Name", "valid_from": "2020-01-01", "valid_until": None,
+    }]
+
+    rows = parse_official_identity_change_candidates(records, master)
+
+    assert {row["identity_event_type"] for row in rows} == {
+        "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_CANDIDATE",
+    }
+    assert all(row["confidence"] == "MANUAL_REVIEW" for row in rows)
+
+
+def test_archived_index_constituent_parser_requires_dated_official_identity(tmp_path):
+    path = tmp_path / "cnx200.csv"
+    path.write_text(
+        "Company Name,Industry,Symbol,Series,ISIN Code\n"
+        "Example Ltd.,Industry,EXAMPLE,EQ,INE123A01010\n"
+        "Example DVR,Industry,EXAMPLE-DVR,DR,IN0000000000\n",
+        encoding="utf-8",
+    )
+    source = SourceRecord(
+        source_url="https://web.archive.org/web/20140122091713id_/http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv",
+        local_path=str(path), source_sha256="a" * 64, retrieved_at="2014-01-13T00:00:00Z",
+        document_date="2014-01-13", source_tier="A2",
+    )
+
+    rows = parse_archived_index_constituent_snapshot(source)
+
+    assert len(rows) == 1
+    assert rows[0]["instrument_id"] == "NSE-ISIN:INE123A01010"
+    assert rows[0]["valid_from"] == "2014-01-13"
+    assert rows[0]["identity_event_type"] == "ARCHIVED_OFFICIAL_INDEX_CONSTITUENT_SNAPSHOT"

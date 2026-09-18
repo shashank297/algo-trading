@@ -6,6 +6,7 @@ import csv
 from datetime import datetime, timezone
 import io
 import json
+import argparse
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -14,6 +15,10 @@ from tools.nifty200_pit.models import SourceRecord
 from tools.nifty200_pit.source_catalogue import SourceCatalogue
 
 SECURITIES_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+IDENTITY_CHANGE_URLS = {
+    "symbol_change": "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+    "company_name_change": "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+}
 REQUIRED_COLUMNS = {
     "SYMBOL", "NAME OF COMPANY", "DATE OF LISTING", "ISIN NUMBER",
 }
@@ -31,6 +36,19 @@ def _validate_csv(data: bytes) -> None:
     missing = REQUIRED_COLUMNS - columns
     if missing:
         raise ValueError(f"NSE securities master is missing columns: {sorted(missing)}")
+
+
+def _validate_delimited_csv(data: bytes) -> None:
+    """Reject HTML/error pages while accepting official auxiliary CSV schemas."""
+    sample = data[:512].lstrip().lower()
+    if sample.startswith((b"<html", b"<!doctype", b"access denied")):
+        raise ValueError("NSE identity-change response is HTML or an access-denied page")
+    try:
+        header = next(csv.reader(io.StringIO(data.decode("utf-8-sig"))))
+    except (UnicodeDecodeError, StopIteration, csv.Error) as exc:
+        raise ValueError("NSE identity-change response is not valid CSV") from exc
+    if not any(column.strip() for column in header):
+        raise ValueError("NSE identity-change response has an empty header")
 
 
 def _append_record(path: Path, record: SourceRecord) -> None:
@@ -77,9 +95,48 @@ def harvest(root: str | Path = ".", *, timeout: int = 30) -> SourceRecord:
     return record
 
 
+def harvest_identity_change_sources(root: str | Path = ".", *, timeout: int = 30) -> list[SourceRecord]:
+    """Harvest free official NSE symbol/name-change tables without replacing the catalogue."""
+    root = Path(root).resolve()
+    catalogue_root = root / "data/raw/nifty200_pit_public_sources"
+    catalogue = SourceCatalogue(catalogue_root)
+    records: list[SourceRecord] = []
+    for source_url in IDENTITY_CHANGE_URLS.values():
+        request = Request(source_url, headers={"User-Agent": "nifty200-pit-evidence-harvester/1.0"})
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                data = response.read()
+                status = getattr(response, "status", None)
+                headers = response.headers
+        except (HTTPError, URLError, TimeoutError) as exc:
+            raise RuntimeError(f"Unable to retrieve official NSE identity-change source: {source_url}: {exc}") from exc
+        if status is not None and not 200 <= status < 300:
+            raise RuntimeError(f"Official NSE identity-change source returned HTTP {status}: {source_url}")
+        _validate_delimited_csv(data)
+        record = catalogue.add_bytes(
+            data,
+            source_url=source_url,
+            extension=".csv",
+            content_type=headers.get("Content-Type", "text/csv"),
+            http_status=status,
+            etag=headers.get("ETag"),
+            last_modified=headers.get("Last-Modified"),
+            retrieved_at=datetime.now(timezone.utc).isoformat(),
+            source_tier="A1",
+        )
+        _append_record(catalogue_root / "source_catalogue.json", record)
+        records.append(record)
+    return records
+
+
 def main() -> int:
-    record = harvest()
-    print(json.dumps(record.to_dict(), indent=2))
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--include-identity-changes", action="store_true")
+    args = parser.parse_args()
+    records = [harvest()]
+    if args.include_identity_changes:
+        records.extend(harvest_identity_change_sources())
+    print(json.dumps([record.to_dict() for record in records], indent=2))
     return 0
 
 
