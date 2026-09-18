@@ -20,6 +20,9 @@ from tools.nifty200_pit.build_public_dataset import (
     parse_official_identity_change_candidates,
     _raw_unresolved_observations,
     parse_press_releases,
+    _exclude_withdrawn_challenger_assertions,
+    _suppress_redundant_workbook_observations,
+    _enrich_bhavcopy_company_names,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, Observation, SourceRecord, ValidationReport, stable_observation_id
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -495,6 +498,64 @@ def test_official_identity_change_tables_remain_manual_without_historical_isin(t
         "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_CANDIDATE",
     }
     assert all(row["confidence"] == "MANUAL_REVIEW" for row in rows)
+
+
+def test_superseded_official_assertion_is_audited_but_not_reconciled():
+    observation = Observation(
+        observation_id="old-event", symbol="ABC", action="ADD",
+        effective_date=date(2024, 1, 2), source_tier="A1",
+        source_url="https://nse.example/old.pdf", source_sha256="a" * 64,
+    )
+    retained, audit = _exclude_withdrawn_challenger_assertions(
+        [observation], [{
+            "observation_id": "old-event", "symbol": "ABC", "action": "ADD",
+            "withdrawn_effective_date": "2024-01-02", "disposition": "SUPERSEDED",
+            "resolution_source": "https://nse.example/correction.pdf",
+            "resolution_source_sha256": "b" * 64,
+        }],
+    )
+
+    assert retained == []
+    assert audit[0]["disposition"] == "OFFICIAL_SUPERSEDED"
+
+
+def test_workbook_assertion_is_suppressed_by_exact_release_name_normalization():
+    workbook = Observation(
+        source_url="https://nse.example/IndexInclExcl.xls", source_sha256="a" * 64,
+        extraction_method="OFFICIAL_XLS", source_tier="A1", index_id="NIFTY_200",
+        company_name="Example Corporation Limited", effective_date=date(2024, 1, 2),
+        action="ADD",
+    )
+    release = Observation(
+        source_url="https://niftyindices.example/release.pdf", source_sha256="b" * 64,
+        extraction_method="PDF_TEXT", source_tier="A1", index_id="NIFTY_200",
+        company_name="Example Corp Ltd", symbol="EXAMPLE", instrument_id="NSE-ISIN:INE000A01000",
+        effective_date=date(2024, 1, 2), action="ADD", confidence="CERTIFIED",
+        review_status="ACCEPTED",
+    )
+
+    assert _suppress_redundant_workbook_observations([workbook, release]) == [release]
+
+
+def test_bhavcopy_company_name_join_requires_exact_symbol_and_isin():
+    rows = _enrich_bhavcopy_company_names(
+        [{"symbol": "ABC", "isin": "INE1", "snapshot_date": "2016-04-01", "company_name": None}],
+        [{"symbol": "ABC", "isin": "INE1", "snapshot_date": "2017-01-01", "company_name": "ABC Limited",
+          "source_url": "https://nse.example/master.csv", "source_sha256": "a" * 64}],
+    )
+
+    assert rows[0]["company_name"] == "ABC Limited"
+    assert rows[0]["company_name_resolution_basis"] == "EXACT_SYMBOL_ISIN_CROSS_SOURCE"
+
+
+def test_bhavcopy_company_name_join_can_use_exact_isin_after_symbol_change():
+    rows = _enrich_bhavcopy_company_names(
+        [{"symbol": "ADANIGAS", "isin": "INE1", "snapshot_date": "2020-06-26", "company_name": None}],
+        [{"symbol": "ATGL", "isin": "INE1", "snapshot_date": "2021-01-01", "company_name": "Adani Gas Limited",
+          "source_url": "https://nse.example/master.csv", "source_sha256": "a" * 64}],
+    )
+
+    assert rows[0]["company_name"] == "Adani Gas Limited"
 
 
 def test_archived_index_constituent_parser_requires_dated_official_identity(tmp_path):

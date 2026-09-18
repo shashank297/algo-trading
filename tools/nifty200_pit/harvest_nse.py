@@ -33,16 +33,22 @@ def harvest_urls(
     session: requests.Session | None = None,
     timeout: tuple[float, float] = (10, 90),
 ) -> list:
-    catalogue = SourceCatalogue(Path(root) / "data" / "raw" / "nifty200_pit_public_sources")
+    catalogue_root = Path(root) / "data" / "raw" / "nifty200_pit_public_sources"
+    catalogue = SourceCatalogue.from_json(catalogue_root)
     client = session or requests.Session()
     client.headers.setdefault("User-Agent", "Nifty200PITResearch/1.0 (provenance-preserving)")
     for url in urls:
         response = client.get(url, timeout=timeout)
         response.raise_for_status()
-        catalogue.add_bytes(response.content, source_url=url, extension=_extension(url, response.headers.get("content-type", "")),
-                            content_type=response.headers.get("content-type", ""), http_status=response.status_code,
-                            etag=response.headers.get("etag"), last_modified=response.headers.get("last-modified"),
-                            retrieved_at=datetime.now(timezone.utc).isoformat())
+        record = catalogue.add_bytes(response.content, source_url=url, extension=_extension(url, response.headers.get("content-type", "")),
+                                     content_type=response.headers.get("content-type", ""), http_status=response.status_code,
+                                     etag=response.headers.get("etag"), last_modified=response.headers.get("last-modified"),
+                                     retrieved_at=datetime.now(timezone.utc).isoformat())
+        key = (record.source_url, record.source_sha256)
+        catalogue.records = [
+            existing for existing in catalogue.records
+            if (existing.source_url, existing.source_sha256) != key or existing is record
+        ]
     catalogue.save()
     return catalogue.records
 

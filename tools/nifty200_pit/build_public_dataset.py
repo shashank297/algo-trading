@@ -475,10 +475,15 @@ def _exclude_withdrawn_challenger_assertions(
     observations: list[Observation], dispositions: list[dict[str, Any]],
     sources: list[SourceRecord] | None = None,
 ) -> tuple[list[Observation], list[dict[str, Any]]]:
-    """Audit B1 repetitions of withdrawn schedules without promoting their tier."""
+    """Exclude superseded assertions from reconciliation while retaining their audit trail."""
     withdrawn = {
         (row["withdrawn_effective_date"], row["symbol"], row["action"]): row
         for row in dispositions if row["disposition"] == "SUPERSEDED"
+    }
+    superseded_official = {
+        row["observation_id"]: row
+        for row in dispositions
+        if row["disposition"] == "SUPERSEDED" and row.get("observation_id")
     }
     scope_hash = "e3ad170876e6278ad7a1e99cc924ba610c3f8be4ef0dc85cd2c146e2152ca4ea"
     scope_source = next((source for source in sources or []
@@ -498,6 +503,16 @@ def _exclude_withdrawn_challenger_assertions(
     retained: list[Observation] = []
     audit: list[dict[str, Any]] = []
     for row in observations:
+        official_disposition = superseded_official.get(row.observation_id)
+        if official_disposition is not None and row.source_tier in {"A1", "A2"}:
+            audit.append({
+                **official_disposition,
+                "original_source_url": row.source_url,
+                "original_source_sha256": row.source_sha256,
+                "disposition": "OFFICIAL_SUPERSEDED",
+                "notes": "Superseded first-party assertion retained in raw observations; independently parsed replacement governs reconciliation.",
+            })
+            continue
         evidence = withdrawn.get((
             row.effective_date.isoformat() if row.effective_date else "", row.symbol, str(row.action),
         ))
@@ -619,7 +634,11 @@ def _apply_documented_isin_continuity(
 
 
 def _company_key(value: object) -> str:
-    return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+    value = str(value or "").upper()
+    value = re.sub(r"\bCORPORATION\b", "CORP", value)
+    value = re.sub(r"\bLIMITED\b", "LTD", value)
+    value = re.sub(r"\bCOMPANY\b", "CO", value)
+    return re.sub(r"[^A-Z0-9]", "", value)
 
 
 def _suppress_redundant_workbook_observations(observations: list[Observation]) -> list[Observation]:
@@ -811,6 +830,66 @@ def parse_bhavcopy_identities(
                     "has_explicit_historical_interval": True,
                 })
     return rows
+
+
+def _enrich_bhavcopy_company_names(
+    bhavcopy_rows: list[dict[str, Any]], reference_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join dated NSE symbol/ISIN rows to an exact official company assertion."""
+    references: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    references_by_isin: dict[str, list[dict[str, Any]]] = {}
+    for row in reference_rows:
+        symbol = str(row.get("symbol") or "").casefold()
+        isin = str(row.get("isin") or "").casefold()
+        company = str(row.get("company_name") or "").strip()
+        if not symbol or not isin or not company:
+            continue
+        references.setdefault((symbol, isin), []).append(row)
+        references_by_isin.setdefault(isin, []).append(row)
+
+    enriched: list[dict[str, Any]] = []
+    for row in bhavcopy_rows:
+        if row.get("company_name"):
+            enriched.append(dict(row))
+            continue
+        key = (str(row.get("symbol") or "").casefold(), str(row.get("isin") or "").casefold())
+        when = _parse_day(row.get("snapshot_date"))
+        candidates = references.get(key, []) or references_by_isin.get(key[1], [])
+        dated_candidates = [
+            (candidate, candidate_day)
+            for candidate in candidates
+            if (candidate_day := _parse_day(
+                candidate.get("snapshot_date") or candidate.get("valid_from")
+            )) is not None
+        ]
+        ranked = [
+            candidate
+            for candidate, _candidate_day in sorted(
+                dated_candidates,
+                key=lambda item: (
+                    abs((item[1] - when).days) if when else 0,
+                    str(item[0].get("snapshot_date") or item[0].get("valid_from") or ""),
+                ),
+            )
+        ]
+        if ranked:
+            nearest_day = _parse_day(ranked[0].get("snapshot_date") or ranked[0].get("valid_from"))
+            nearest = [candidate for candidate in ranked if (
+                _parse_day(candidate.get("snapshot_date") or candidate.get("valid_from")) == nearest_day
+            )]
+            names = {str(candidate.get("company_name") or "").strip() for candidate in nearest}
+            names.discard("")
+            if len(names) == 1:
+                reference = nearest[0]
+                enriched.append(row | {
+                    "company_name": names.pop(),
+                    "company_name_source_url": reference.get("source_url", ""),
+                    "company_name_source_sha256": reference.get("source_sha256", ""),
+                    "company_name_resolution_basis": "EXACT_SYMBOL_ISIN_CROSS_SOURCE",
+                })
+                continue
+        enriched.append(dict(row))
+    return enriched
 
 
 def parse_official_identity_change_candidates(
@@ -2178,7 +2257,8 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
             ("/content/historical/EQUITIES/" in source.source_url and source.source_url.endswith("bhav.csv.zip"))
             or "/content/cm/" in source.source_url
         ):
-            instrument_rows.extend(parse_bhavcopy_identities(source, identity_keys=required_identity_keys))
+            instrument_rows.extend(parse_bhavcopy_identities(source))
+    instrument_rows = _enrich_bhavcopy_company_names(instrument_rows, current_instrument_master + historical_instrument_master)
     instrument_master: list[dict[str, Any]] = []
     seen_identity_rows: set[tuple[str, str, str]] = set()
     for row in instrument_rows:

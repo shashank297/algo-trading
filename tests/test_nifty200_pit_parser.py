@@ -82,3 +82,17 @@ def test_parser_accepts_symbols_that_start_with_digits():
     )
 
     assert [(row.action, row.symbol) for row in rows] == [(Action.ADD, "360ONE")]
+
+
+def test_parser_rejects_neighboring_index_heading_as_security_row():
+    rows = parse_nifty200_text(
+        "The changes become effective from 30/09/2024.\n"
+        "12) Nifty 200\nThe following companies are being excluded:\n"
+        "1 Nifty MidSmall IT\n2 Example Industries Ltd. EXAMPLE\n",
+        source_url="https://example.test/Press_Release/ind_prs25092024.pdf",
+        source_sha256="e" * 64,
+        announcement_date=date(2024, 9, 25),
+        effective_date=date(2024, 9, 30),
+    )
+
+    assert [row.symbol for row in rows] == ["EXAMPLE"]

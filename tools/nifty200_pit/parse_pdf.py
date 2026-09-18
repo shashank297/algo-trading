@@ -393,6 +393,10 @@ def parse_nifty200_text(
                 source_tier=source_tier, extraction_method="PDF_TEXT", extractor_version=extractor_version,
                 confidence=confidence, review_status=review, raw_text=raw_text,
             ))
+    rows = [
+        row for row in rows
+        if not re.match(r"^\s*(?:NIFTY|CNX)\b", str(row.company_name or ""), re.I)
+    ]
     if not rows:
         for action, company_name, symbol in _duplicate_table_rows(text, sections):
             confidence = "PROVISIONAL" if announcement and known_at and effective else "MANUAL_REVIEW"
