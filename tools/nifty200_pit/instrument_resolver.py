@@ -147,7 +147,17 @@ def _valid_on(row: dict[str, Any], when: date | None) -> bool:
         return True
     snapshot = _date(row.get("snapshot_date") or row.get("observed_snapshot_date"))
     effective_start: date | None = start
-    if snapshot is not None and not row.get("has_explicit_historical_interval"):
+    # A current NSE security master is a current observation, but its exact
+    # listing date still provides a valid lower bound for the same symbol/ISIN.
+    # Do not replace that bound with the retrieval date: doing so makes a
+    # currently listed security unusable for an earlier event in the same
+    # instrument's listed lifetime.  Archived snapshots without an explicit
+    # interval remain bounded by their observation date.
+    if (
+        snapshot is not None
+        and not row.get("has_explicit_historical_interval")
+        and str(row.get("validity_basis") or "") != "CURRENT_SNAPSHOT_ONLY"
+    ):
         effective_start = snapshot if (start is None or start < snapshot) else start
     return (effective_start is None or when >= effective_start) and (end is None or when < end)
 

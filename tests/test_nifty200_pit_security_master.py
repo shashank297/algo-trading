@@ -33,6 +33,24 @@ def test_security_master_does_not_resolve_before_listing():
     assert result.confidence == "UNRESOLVED"
 
 
+def test_current_security_master_uses_listing_date_not_retrieval_date():
+    result = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2026, 3, 30)),
+        [{
+            "instrument_id": "NSE-ISIN:INE123",
+            "isin": "INE123",
+            "symbol": "ABC",
+            "valid_from": "2024-01-01",
+            "snapshot_date": "2026-09-09",
+            "observed_snapshot_date": "2026-09-09",
+            "validity_basis": "CURRENT_SNAPSHOT_ONLY",
+            "has_explicit_historical_interval": False,
+        }],
+    )
+    assert result.instrument_id == "NSE-ISIN:INE123"
+    assert result.confidence == "CERTIFIED"
+
+
 def test_harvester_stores_and_deduplicates_content_addressed_source(tmp_path, monkeypatch):
     payload = (
         b"SYMBOL,NAME OF COMPANY,DATE OF LISTING,ISIN NUMBER\n"

@@ -34,7 +34,10 @@ def test_evidence_closure_writes_case_files_without_promoting_blockers(tmp_path)
     _write_csv(artifact_root / "blocker_ledger.csv", rows)
     _write_csv(
         report_root / "nifty200_pit_monthly_gap_analysis.csv",
-        [{"status": "A_NO_SNAPSHOT_EVIDENCE", "source_issue": "A_NO_SNAPSHOT_EVIDENCE"}],
+        [
+            {"status": "A_NO_SNAPSHOT_EVIDENCE", "source_issue": "A_NO_SNAPSHOT_EVIDENCE"},
+            {"status": "E_SOURCE_PRESENT_ZERO_ROWS", "source_issue": "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER"},
+        ],
     )
     (artifact_root / "validation_report.json").write_text(
         json.dumps({
@@ -62,6 +65,33 @@ def test_evidence_closure_writes_case_files_without_promoting_blockers(tmp_path)
     assert len(gap_rows) == 2
     assert gap_rows[0]["missing_evidence"]
     assert (report_root / "nifty200_pit_monthly_checkpoint_governance_decision.md").exists()
+    assert "official archive has no NIFTY-200 member file" in (
+        report_root / "nifty200_pit_checkpoint_governance_recommendation.md"
+    ).read_text(encoding="utf-8")
     assert "DATA EVIDENCE BLOCKED" in (
         report_root / "nifty200_pit_evidence_closure_current.md"
     ).read_text(encoding="utf-8")
+    residual_identity = list(csv.DictReader(
+        (report_root / "nifty200_pit_residual_identity_cases.csv").open(
+            encoding="utf-8", newline=""
+        )
+    ))
+    assert residual_identity[0]["final_status"] == "UNRESOLVED"
+    assert set(residual_identity[0]) >= {
+        "event_id", "resolved_instrument_id", "source_document", "source_sha256"
+    }
+    residual_announcement = list(csv.DictReader(
+        (report_root / "nifty200_pit_residual_announcement_cases.csv").open(
+            encoding="utf-8", newline=""
+        )
+    ))
+    assert residual_announcement[0]["final_status"] == "UNRESOLVED"
+    assert (report_root / "nifty200_pit_residual_evidence_closure.md").exists()
+    assert (report_root / "nifty200_pit_anchor_reconstruction_current.md").exists()
+    assert (report_root / "nifty200_pit_checkpoint_governance_recommendation.md").exists()
+    paid_rows = list(csv.DictReader(
+        (report_root / "nifty200_pit_paid_fallback_cases.csv").open(
+            encoding="utf-8", newline=""
+        )
+    ))
+    assert paid_rows[0]["minimum paid evidence needed"]

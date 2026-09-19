@@ -1,0 +1,1 @@
+case_id,event_id,effective_date,action,raw_company,raw_symbol,existing_instrument_id,existing_isin,final_status,resolved_symbol,resolved_isin,resolved_instrument_id,valid_from,valid_until,source_url,source_document,source_sha256,source_tier,resolution_type,notes

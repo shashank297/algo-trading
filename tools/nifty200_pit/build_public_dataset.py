@@ -261,8 +261,9 @@ _NIFTY200_INDEX_HEADING_RE = re.compile(
     re.I,
 )
 _TABLE_ROW_NUMBER_RE = re.compile(r"^\s*(\d{1,3})\s+.+\s+[A-Z0-9][A-Z0-9&.-]{1,19}\s*$")
+_TABLE_ROW_START_RE = re.compile(r"^\s*(\d{1,3})(?:\s+|$)")
 _ACTION_HEADING_RE = re.compile(
-    r"^\s*The following (?:companies|company) (?:are|is) being (?:excluded|included):?\s*$",
+    r"^\s*The following (?:companies|company|scrips|scrip) (?:are|is) being (?:excluded|included):?\s*$",
     re.I | re.M,
 )
 _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES = {
@@ -317,9 +318,25 @@ def _numbered_continuation_prefix(page_text: str, expected_first_row: int) -> st
             if segments[-1]:
                 segments.append([])
             continue
-        match = _TABLE_ROW_NUMBER_RE.match(line)
+        # Native PDF extraction preserves printed page numbers as standalone
+        # numeric lines. They are not table row numbers and must not break a
+        # continuation that starts with the next numbered security.
+        if re.fullmatch(r"\s*\d{1,3}\s*", line) and not any(segments):
+            continue
+        # A wrapped company name can put the symbol on a later line (for
+        # example row ``6`` followed by ``Corporation Ltd. IRCTC``).  The
+        # continuation gate only needs row numbering; full row extraction is
+        # still performed by the NIFTY-200 parser.
+        match = _TABLE_ROW_START_RE.match(line)
         if match is not None:
-            segments[-1].append(int(match.group(1)))
+            row_number = int(match.group(1))
+            # Some official releases finish the exclusion table on one page
+            # and start the inclusion table on the next without repeating the
+            # action heading.  Treat the reset to row 1 as a new table only
+            # after a genuine continuation row has been observed.
+            if segments[-1] and row_number == 1 and segments[-1][0] != 1:
+                segments.append([])
+            segments[-1].append(row_number)
     segments = [segment for segment in segments if segment]
     if not segments:
         return None
@@ -333,7 +350,14 @@ def _numbered_continuation_prefix(page_text: str, expected_first_row: int) -> st
     for segment in segments:
         if segment is not first_segment and segment[0] != 1:
             return None
-        if any(current != previous + 1 for previous, current in zip(segment, segment[1:])):
+        if segment[0] == 1 and _ACTION_HEADING_RE.search(prefix) is not None:
+            # A few official PDFs contain a valid table whose printed row
+            # numbers are out of order (for example 1,2,3,5,4,6...).  The
+            # continuation gate must verify a complete numbered table without
+            # requiring the PDF text layer to preserve visual row order.
+            if sorted(set(segment)) != list(range(1, max(segment) + 1)):
+                return None
+        elif any(current != previous + 1 for previous, current in zip(segment, segment[1:])):
             return None
     return prefix
 
@@ -380,6 +404,7 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
             matching_pages = [
                 page_number for page_number, page_text in enumerate(pages, start=1)
                 if row.symbol in page_text
+                or row.symbol in re.sub(r"\s+", "", page_text)
             ]
             matched_page: int | None = next((item for item in matching_pages if item in allowed_pages), None)
             if matched_page is not None:
@@ -655,6 +680,22 @@ def _suppress_redundant_workbook_observations(observations: list[Observation]) -
         and observation.confidence == "CERTIFIED"
         and observation.instrument_id and observation.symbol and observation.effective_date
     }
+    certified_release_identity_keys = {
+        (
+            observation.index_id,
+            observation.effective_date,
+            action_value(observation),
+            observation.instrument_id,
+            observation.isin,
+            observation.symbol.casefold(),
+        )
+        for observation in observations
+        if observation.extraction_method != "OFFICIAL_XLS"
+        and observation.source_tier in {"A1", "A2"}
+        and observation.review_status == "ACCEPTED"
+        and observation.confidence == "CERTIFIED"
+        and observation.instrument_id and observation.symbol and observation.effective_date
+    }
     variants = [
         (date(2013, 4, 1), "DROP", "Great Eastern Shipping Co. Ltd.", "The Great Eastern Shipping Co. Ltd.",
          "747ada17f17537dd854ff497062e263dd32b84598eb74e36795e230c95afff69"),
@@ -676,6 +717,15 @@ def _suppress_redundant_workbook_observations(observations: list[Observation]) -
         if not (observation.extraction_method == "OFFICIAL_XLS" and (
             (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
             in certified_release_keys or (
+                (
+                    observation.index_id,
+                    observation.effective_date,
+                    action_value(observation),
+                    observation.instrument_id,
+                    observation.isin,
+                    observation.symbol.casefold() if observation.symbol else "",
+                ) in certified_release_identity_keys
+            ) or (
                 observation.source_sha256 == workbook_hash and observation.source_tier == "A1"
                 and (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
                 in variant_keys
@@ -901,10 +951,24 @@ def parse_official_identity_change_candidates(
     carry historical ISINs. They are therefore retained as candidates and never
     promoted into the resolver's certified alias set automatically.
     """
-    master_by_symbol = {
-        str(row.get("symbol") or "").strip().casefold(): row
-        for row in master if row.get("instrument_id")
-    }
+    master_by_symbol: dict[str, dict[str, Any]] = {}
+    for row in master:
+        if not row.get("instrument_id"):
+            continue
+        symbol_key = str(row.get("symbol") or "").strip().casefold()
+        current = master_by_symbol.get(symbol_key)
+        if current is None:
+            master_by_symbol[symbol_key] = row
+            continue
+        current_is_official_master = current.get("source_url") == SECURITIES_MASTER_URL
+        row_is_official_master = row.get("source_url") == SECURITIES_MASTER_URL
+        current_snapshot = str(current.get("snapshot_date") or current.get("valid_from") or "")
+        row_snapshot = str(row.get("snapshot_date") or row.get("valid_from") or "")
+        if (
+            (row_is_official_master and not current_is_official_master)
+            or (row_is_official_master == current_is_official_master and row_snapshot > current_snapshot)
+        ):
+            master_by_symbol[symbol_key] = row
     result: list[dict[str, Any]] = []
     for source in records:
         if source.source_url not in {SYMBOL_CHANGE_URL, NAME_CHANGE_URL}:
@@ -921,6 +985,8 @@ def parse_official_identity_change_candidates(
                         continue
                     result.append({
                         **candidate,
+                        "identity_master_source_url": candidate.get("source_url", ""),
+                        "identity_master_source_sha256": candidate.get("source_sha256", ""),
                         "symbol": old_symbol,
                         "valid_from": None,
                         "valid_until": changed.isoformat() if changed else None,
@@ -945,6 +1011,8 @@ def parse_official_identity_change_candidates(
                         continue
                     result.append({
                         **candidate,
+                        "identity_master_source_url": candidate.get("source_url", ""),
+                        "identity_master_source_sha256": candidate.get("source_sha256", ""),
                         "symbol": symbol,
                         "company_name": previous_name,
                         "valid_from": None,
@@ -966,6 +1034,39 @@ def parse_official_identity_change_candidates(
         )
         unique[key] = row
     return sorted(unique.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
+
+
+def _certified_official_name_change_rows(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Create exact historical name rows from an official NSE name-change link.
+
+    The NSE name-change table binds the prior company name to the current
+    exchange symbol and date. Certification is limited to rows that already
+    carry an exact current NSE ISIN and a bounded change date; no fuzzy name
+    matching or predecessor/successor inference is performed.
+    """
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        if candidate.get("identity_event_type") != "OFFICIAL_NAME_CHANGE_CANDIDATE":
+            continue
+        if not all(candidate.get(field) for field in ("instrument_id", "isin", "symbol", "company_name", "valid_until", "identity_master_source_url", "identity_master_source_sha256")):
+            continue
+        row = dict(candidate)
+        row.update({
+            "valid_from": row.get("listing_date"),
+            "has_explicit_historical_interval": True,
+            "identity_event_type": "OFFICIAL_NAME_CHANGE_CERTIFIED",
+            "confidence": "CERTIFIED",
+            "review_status": "ACCEPTED",
+            "identity_resolution_basis": (
+                "exact official NSE namechange.csv relationship plus exact current "
+                "EQUITY_L.csv symbol/ISIN"
+            ),
+        })
+        key = (str(row["instrument_id"]), str(row["company_name"]).casefold(), str(row["valid_until"]))
+        rows[key] = row
+    return sorted(rows.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
 
 
 def parse_challenger_events(source: SourceRecord) -> list[Observation]:
@@ -2284,6 +2385,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         ):
             row["valid_until"] = current["valid_from"]
     identity_change_candidates = parse_official_identity_change_candidates(sources, instrument_master)
+    instrument_master.extend(_certified_official_name_change_rows(identity_change_candidates))
     aliases = _identity_aliases(snapshots, instrument_master)
     observations = resolve_observations(observations, instrument_master, aliases=aliases)
     observations, instrument_master, aliases, identity_continuity_audit = _apply_documented_isin_continuity(
