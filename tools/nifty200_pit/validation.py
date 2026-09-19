@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import re
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 from tools.nifty200_pit.intervals import active_intervals
 from tools.nifty200_pit.models import CanonicalEvent, Conflict, ConstituentInterval, EvidenceStatus, SourceRecord, ValidationReport
@@ -54,6 +54,8 @@ def validate_campaign(
     campaign_to: date = date(2026, 8, 31),
     trading_days: Iterable[date] | None = None,
     required_member_count: int = 200,
+    expected_member_counts: Mapping[Any, int] | None = None,
+    initial_anchor_established: bool = True,
     conflicts: Iterable[Conflict] = (),
     source_hash_errors: Iterable[str] = (),
     anchor_differences: Iterable[str] = (),
@@ -64,16 +66,27 @@ def validate_campaign(
     reasons: list[str] = []
     days = list(trading_days) if trading_days is not None else _days(campaign_from, campaign_to)
     counts: dict[str, int] = {}
+    expected_counts: dict[str, int] = {}
+
+    def expected_count(as_of: date) -> int:
+        if not expected_member_counts:
+            return required_member_count
+        return int(expected_member_counts.get(as_of, expected_member_counts.get(as_of.isoformat(), required_member_count)))
+
     for as_of in days:
         active = active_intervals(rows, as_of)
         unique = {row.instrument_id for row in active}
         counts[as_of.isoformat()] = len(unique)
-        if len(unique) != required_member_count:
+        expected = expected_count(as_of)
+        expected_counts[as_of.isoformat()] = expected
+        if initial_anchor_established and len(unique) != expected:
             reasons.append(f"member_count:{as_of.isoformat()}:{len(unique)}")
         if len(active) != len(unique):
             reasons.append(f"duplicate_active_instrument:{as_of.isoformat()}")
     reasons.extend(_overlap_errors(rows))
     reasons.extend(str(error) for error in source_hash_errors)
+    if not initial_anchor_established:
+        reasons.append("initial_anchor_not_established")
     reasons.extend(str(error) for error in anchor_differences)
     for event in event_rows:
         if not event.instrument_id:
@@ -93,7 +106,11 @@ def validate_campaign(
     deduped = list(dict.fromkeys(reasons))
     metrics = {
         "campaign_from": campaign_from.isoformat(), "campaign_to": campaign_to.isoformat(),
-        "trading_days_checked": len(days), "count_check_failures": sum(count != required_member_count for count in counts.values()),
+        "trading_days_checked": len(days), "count_check_failures": sum(
+            initial_anchor_established and counts[day] != expected_counts[day] for day in counts
+        ),
+        "count_validation_evaluable": initial_anchor_established,
+        "expected_member_counts": expected_counts,
         "interval_count": len(rows), "event_count": len(event_rows), "conflict_count": len(conflict_rows),
         "high_critical_conflicts": sum(conflict.severity in {"HIGH", "CRITICAL"} for conflict in conflict_rows),
         "source_hash_errors": len(source_hash_errors), "anchor_difference_count": len(anchor_differences),

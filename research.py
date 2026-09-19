@@ -119,14 +119,6 @@ def _ensure_campaign_1_family(
     """Register or validate the immutable Campaign 1 trial family."""
 
     configurations = materialize_campaign_1_configurations()
-    existing = db.get_experiment_family(CAMPAIGN_1_ID)
-    if existing is not None:
-        if int(existing["maximum_trials"]) != CAMPAIGN_1_MAXIMUM_TRIALS:
-            raise ValueError("Campaign 1 experiment family trial budget mismatch.")
-        if str(existing.get("universe_snapshot_id", universe_snapshot_id)) != universe_snapshot_id:
-            raise ValueError("Campaign 1 experiment family universe mismatch.")
-        return
-
     strategy_names = sorted({item["strategy_name"] for item in configurations})
     family = ExperimentFamilySpec(
         experiment_family_id=CAMPAIGN_1_ID,
@@ -147,6 +139,11 @@ def _ensure_campaign_1_family(
         source_revision="campaign-1-baseline",
         operator_notes=f"benchmark={benchmark_symbol or 'NIFTY200'}; authoritative event-driven only",
     )
+    # ``register_experiment_family`` compares the complete immutable
+    # definition hash against any persisted family.  Always invoke it for an
+    # existing Campaign 1 family; checking only the trial budget and universe
+    # would allow drift in strategies, costs, features, parameters, walk-forward
+    # design, or operator-bound evidence notes.
     db.register_experiment_family(family)
 
 

@@ -5,13 +5,13 @@ from __future__ import annotations
 import tempfile
 import threading
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 import pandas as pd
 
 from ai_research import FakeLLMClient, OpenAIResearchClient, ResearchGoal, ResearchWorkflow
-from trading_stack.approval import ExternalApprovalVerifier, ExternalApprovalEvidence, ApprovalAuthorityType, ApprovalStatus
 from data_platform import BarRequest, DataPlatform, DatasetSnapshot, DuckDBCacheProvider, Instrument, PriceAdjustment, ProviderRegistry
 from data_platform.providers import ProviderUnavailable
 from data_platform.providers import OpenBBHttpProvider
@@ -21,6 +21,7 @@ from risk import RiskEngine, RiskPolicy, TradeProposal
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.backtest import VectorizedBacktester
 from trading_stack.features import FeatureFactory
+from tests.approval_test_utils import TEST_TRUSTED_ISSUERS, seed_signed_paper_approval
 from trading_stack.pipeline import StrategyPipeline
 from trading_stack.strategies import StrategyRegistry
 from trading_stack.validation import time_split, walk_forward_windows
@@ -54,7 +55,7 @@ class FailingProvider:
     name = "failing"
 
     def fetch_bars(self, request: BarRequest) -> DatasetSnapshot:
-        raise RuntimeError("provider unavailable")
+        raise ProviderUnavailable("provider unavailable", category="TRANSIENT")
 
 
 class FakeResponse:
@@ -72,6 +73,7 @@ class FakeSession:
     def get(self, url: str, params: dict[str, object], timeout: int) -> FakeResponse:
         return FakeResponse(
             {
+                "adjustment_basis": "UNADJUSTED",
                 "results": [
                     {
                         "date": "2026-08-10T09:15:00Z",
@@ -114,7 +116,7 @@ class ResearchPlatformTests(unittest.TestCase):
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM market_datasets WHERE provider_name = 'static'").fetchone()[0], 1)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM raw_bar_observations").fetchone()[0], len(self.frame))
         statuses = self.db.conn.execute("SELECT status FROM provider_attempts ORDER BY started_at").fetchall()
-        self.assertEqual([row[0] for row in statuses], ["FAILED", "SUCCEEDED"])
+        self.assertEqual([row[0] for row in statuses], ["FAILED_TRANSIENT", "SUCCEEDED"])
         alias = self.db.conn.execute("SELECT provider_symbol FROM instrument_aliases").fetchone()[0]
         self.assertEqual(alias, "NIFTY")
 
@@ -253,6 +255,41 @@ class ResearchPlatformTests(unittest.TestCase):
         finally:
             release.set()
 
+    def test_task_cancellation_cannot_be_overwritten_by_late_worker(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        errors: list[BaseException] = []
+        orchestrator = TaskOrchestrator(self.db)
+
+        def late_worker() -> dict[str, bool]:
+            entered.set()
+            release.wait(timeout=2.0)
+            return {"late": True}
+
+        def run() -> None:
+            try:
+                orchestrator.run_task(
+                    goal_id="goal-cancel-race", task_name="cancel-race",
+                    executor=late_worker, task_id="cancel-race",
+                )
+            except BaseException as exc:
+                errors.append(exc)
+
+        thread = threading.Thread(target=run)
+        thread.start()
+        self.assertTrue(entered.wait(timeout=1.0))
+        orchestrator.cancel_task("cancel-race")
+        release.set()
+        thread.join(timeout=2.0)
+
+        self.assertFalse(thread.is_alive())
+        self.assertTrue(errors)
+        self.assertEqual(type(errors[0]).__name__, "TaskCancellation")
+        self.assertEqual(
+            self.db.conn.execute("SELECT state FROM research_tasks WHERE task_id = 'cancel-race'").fetchone()[0],
+            TaskState.CANCELLED.value,
+        )
+
     def test_real_agent_gateway_fails_closed_without_pricing(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "pricing must be configured"):
             ResearchWorkflow(self.db, OpenAIResearchClient(client=object())).run(
@@ -282,33 +319,20 @@ class ResearchPlatformTests(unittest.TestCase):
             "score": 1.0, "reasons_json": "[]", "human_approved": True,
             "reviewed_at": datetime.now(timezone.utc),
         }])
-        now_app = datetime.now(timezone.utc)
-        ExternalApprovalVerifier.record_approval(self.db.conn, ExternalApprovalEvidence(
-            approval_id="app-approved-run-res",
-            approval_type="PROMOTION_TO_PAPER",
-            subject_type="RUN",
-            run_id="approved-run",
-            strategy_name="trend_following",
-            requested_stage="PAPER_ACTIVE",
-            approved_stage="PAPER_ACTIVE",
-            approved_by_type=ApprovalAuthorityType.HUMAN,
-            approved_by_identifier="test_reviewer",
-            approved_at=now_app - timedelta(hours=1),
-            expires_at=now_app + timedelta(days=7),
-            scope="PAPER_SESSION",
-            status=ApprovalStatus.ACTIVE,
-            foundation_certification_id="test_cert",
-            risk_policy_id="canonical-risk-policy-v1",
-            risk_policy_hash="9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
-            code_sha="0" * 40,
-            evidence_hash="0" * 64,
-        ))
-        outcome = StrategyPipeline(self.db, require_authoritative_certification=False).run_paper_session(
-            strategy_name="trend_following",
-            approved_run_id="approved-run",
-            symbol="NIFTY",
-            timeframe="1d",
-        )
+        with patch("trading_stack.approval.load_trusted_issuers", return_value=TEST_TRUSTED_ISSUERS):
+            with patch.dict("os.environ", {"CODE_SHA": "0" * 40}):
+                seed_signed_paper_approval(
+                    self.db,
+                    run_id="approved-run",
+                    strategy_name="trend_following",
+                    review_id="paper-approval",
+                )
+                outcome = StrategyPipeline(self.db, require_authoritative_certification=False).run_paper_session(
+                    strategy_name="trend_following",
+                    approved_run_id="approved-run",
+                    symbol="NIFTY",
+                    timeframe="1d",
+                )
 
         self.assertIn("paper_summary", outcome)
         self.assertEqual(outcome["forward_result"].status, "BOOTSTRAPPED")
@@ -316,6 +340,27 @@ class ResearchPlatformTests(unittest.TestCase):
         self.assertEqual(len(outcome["forward_result"].fills), 0)
         self.assertEqual(outcome["paper_summary"]["filled_orders"], 0)
         self.assertEqual(self.db.conn.execute("SELECT COUNT(*) FROM paper_reconciliation").fetchone()[0], 1)
+
+    def test_paper_session_rejects_candidate_stage_approval(self) -> None:
+        self.db._replace_rows("promotion_reviews", [{
+            "review_id": "candidate-approval", "strategy_name": "trend_following",
+            "run_id": "candidate-run", "stage": "PAPER_CANDIDATE", "decision": "PASS",
+            "score": 1.0, "reasons_json": "[]", "human_approved": True,
+            "reviewed_at": datetime.now(timezone.utc),
+        }])
+        with patch("trading_stack.approval.load_trusted_issuers", return_value=TEST_TRUSTED_ISSUERS):
+            seed_signed_paper_approval(
+                self.db,
+                run_id="candidate-run",
+                strategy_name="trend_following",
+                review_id="candidate-approval",
+                stage="PAPER_CANDIDATE",
+            )
+            with self.assertRaisesRegex(PermissionError, "does not match expected stage"):
+                StrategyPipeline(self.db, require_authoritative_certification=False).run_paper_session(
+                    strategy_name="trend_following", approved_run_id="candidate-run",
+                    symbol="NIFTY", timeframe="1d",
+                )
 
     def _request(self) -> BarRequest:
         return BarRequest(

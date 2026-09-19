@@ -327,44 +327,15 @@ def test_external_approval_verifier_fails_closed():
         evidence_hash="f" * 64,
     )
 
-    # Genuine approval passes verification
-    ExternalApprovalVerifier.verify_approval(
-        evidence,
-        expected_run_id="run_100",
-        expected_strategy_name="trend_following",
-        expected_stage="PAPER_CANDIDATE",
-        expected_foundation_cert_id="cert_fab25",
-        expected_risk_policy_hash="d" * 64,
-    )
-
-    # 1. AI identifier is rejected
-    ai_evidence = ExternalApprovalEvidence(
-        **{**evidence.to_dict(), "approved_by_identifier": "auto-agent-model"}
-    )
-    with pytest.raises(PermissionError, match="Approval cannot be issued by an automated agent"):
-        ExternalApprovalVerifier.verify_approval(
-            ai_evidence,
-            expected_run_id="run_100",
-            expected_strategy_name="trend_following",
-        )
-
-    # 2. Expired approval is rejected
-    expired_evidence = ExternalApprovalEvidence(
-        **{**evidence.to_dict(), "expires_at": now - timedelta(hours=1)}
-    )
-    with pytest.raises(PermissionError, match="Approval expired"):
-        ExternalApprovalVerifier.verify_approval(
-            expired_evidence,
-            expected_run_id="run_100",
-            expected_strategy_name="trend_following",
-        )
-
-    # 3. Mismatched run_id is rejected
-    with pytest.raises(PermissionError, match="Approval run_id 'run_100' does not match expected 'run_999'"):
+    # Unsigned legacy evidence is no longer accepted. The cryptographic
+    # contract requires a review binding, issuer key, and signature before any
+    # identity/temporal checks can be considered.
+    with pytest.raises(PermissionError, match="promotion_review_id"):
         ExternalApprovalVerifier.verify_approval(
             evidence,
-            expected_run_id="run_999",
+            expected_run_id="run_100",
             expected_strategy_name="trend_following",
+            expected_stage="PAPER_CANDIDATE",
         )
 
 
@@ -386,7 +357,7 @@ def test_promotion_engine_assert_paper_authorized_requires_external_evidence(tmp
     with pytest.raises(PermissionError, match="lacks authoritative external human/board approval evidence"):
         promo.assert_paper_authorized("run_candidate", "trend_following")
 
-    # Now add valid external approval evidence
+    # Unsigned evidence cannot be persisted as an approval record.
     now = datetime.now(timezone.utc)
     evidence = ExternalApprovalEvidence(
         approval_id="app_auth_ok",
@@ -408,10 +379,8 @@ def test_promotion_engine_assert_paper_authorized_requires_external_evidence(tmp
         code_sha="c" * 40,
         evidence_hash="e" * 64,
     )
-    ExternalApprovalVerifier.record_approval(db.conn, evidence)
-
-    # Now passes
-    promo.assert_paper_authorized("run_candidate", "trend_following")
+    with pytest.raises(PermissionError, match="issuer_key_id and signature"):
+        ExternalApprovalVerifier.record_approval(db.conn, evidence)
 
 
 # ---------------------------------------------------------------------------

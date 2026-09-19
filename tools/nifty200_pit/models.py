@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime
+import hashlib
+import json
 from enum import StrEnum
 from typing import Any
 
@@ -31,6 +33,17 @@ class ReviewStatus(StrEnum):
     SUPERSEDED = "SUPERSEDED"
     MANUAL_REVIEW = "MANUAL_REVIEW"
     UNRESOLVED = "UNRESOLVED"
+
+
+class LineageRelation(StrEnum):
+    """Explicit relationship between retained raw evidence assertions."""
+
+    CORROBORATED = "CORROBORATED"
+    REDUNDANT = "REDUNDANT"
+    SUPERSEDES = "SUPERSEDES"
+    SUPERSEDED_BY = "SUPERSEDED_BY"
+    UNRESOLVED = "UNRESOLVED"
+    CONFLICTS_WITH = "CONFLICTS_WITH"
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +106,20 @@ class Observation:
             if value[key] is not None and hasattr(value[key], "value"):
                 value[key] = value[key].value
         return value
+
+
+def stable_observation_id(observation: Observation) -> str:
+    """Return an evidence-derived ID that does not depend on resolution output.
+
+    The resolver may add an instrument ID, ISIN, confidence, or review status.
+    Those derived fields must not change the identity of the raw source
+    assertion, so the generated ID is computed with only the explicit
+    observation payload and an empty observation ID.
+    """
+    payload = observation.to_dict()
+    payload["observation_id"] = ""
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,6 +201,28 @@ class Conflict:
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["date"] = self.date.isoformat() if self.date else None
+        return value
+
+
+@dataclass(frozen=True, slots=True)
+class ObservationLineage:
+    """A durable, auditable link between retained source assertions."""
+
+    observation_id: str
+    related_observation_id: str | None
+    relationship_type: LineageRelation | str
+    relation_basis: str
+    source_url: str = ""
+    source_sha256: str = ""
+    source_tier: str = ""
+    review_status: ReviewStatus | str = ReviewStatus.UNRESOLVED
+    notes: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        for key in ("relationship_type", "review_status"):
+            if hasattr(value[key], "value"):
+                value[key] = value[key].value
         return value
 
 

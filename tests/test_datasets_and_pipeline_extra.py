@@ -57,3 +57,9 @@ def test_sector_mapping_and_validation(tmp_path):
     db.conn.execute("INSERT INTO index_constituents_pit (universe_name, instrument_id, symbol, token, exchange, effective_from, effective_until, known_from, weight, inclusion_reason, exclusion_reason) VALUES ('NIFTY50', 'inst_1', 'RELIANCE', '2885', 'NSE', '2026-01-01', NULL, '2026-01-01', 0.10, 'initial', NULL);")
     h_pit = builder._pit_evidence_hash("NIFTY50")
     assert isinstance(h_pit, str) and len(h_pit) == 64
+    db.conn.execute(
+        """INSERT INTO instrument_alias_history
+           (alias_id, instrument_id, alias_symbol, valid_from, valid_until, confidence, resolution_status)
+           VALUES ('alias-1', 'inst_1', 'OLDREL', '2020-01-01', NULL, 'CERTIFIED', 'ACCEPTED')"""
+    )
+    assert builder._pit_evidence_hash("NIFTY50") != h_pit

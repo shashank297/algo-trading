@@ -13,6 +13,9 @@ config/config.yaml
 *.db
 *.sqlite
 *.sqlite3
+*.parquet
+artifacts/
+scratch/
 
 # DATA & LOGS — Large files, runtime logs, machine-specific
 data/

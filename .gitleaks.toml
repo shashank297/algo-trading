@@ -1,0 +1,19 @@
+# Gitleaks configuration for algo-trading repository
+# https://github.com/gitleaks/gitleaks#configuration
+
+title = "algo-trading gitleaks config"
+
+[extend]
+# Extend the default gitleaks ruleset
+useDefault = true
+
+[allowlist]
+description = "Allow only explicitly labelled SHA-256 integrity fields"
+
+# Do not allowlist whole generated directories: those files can still contain
+# credentials or other accidental secrets.  The PIT package uses labelled
+# digests for source and artifact lineage; only a digest on the same labelled
+# line is exempted from generic high-entropy detectors.
+regexes = [
+    '''(?i)(source_sha256|artifact_sha256|identity_map_hash|sha256|digest)[^\r\n]{0,120}[0-9a-f]{64}''',
+]

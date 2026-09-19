@@ -112,7 +112,9 @@ class TradeStats(BaseModel):
     base_investment_profit: float
     avg_profit_per_win: float
     avg_loss_per_loss: float
-    profit_factor: float
+    # Numeric for finite ratios; explicit strings keep zero-loss/no-trade
+    # states JSON-safe and distinguishable by clients.
+    profit_factor: float | str
     max_drawdown: float
 
 
@@ -120,6 +122,8 @@ class MonthlyReturn(BaseModel):
     year: int
     month: int
     return_pct: float
+    amount: float
+    return_basis: str
 
 
 class TradeLedgerEntry(BaseModel):
@@ -323,7 +327,12 @@ def get_analytics_stats(
         avg_loss     = _safe_float(row["avg_loss_per_loss"])
         total_wins   = _safe_float(row["total_win_pnl"])
         total_losses = _safe_float(row["total_loss_pnl"])
-        profit_factor = total_wins / total_losses if total_losses > 0 else 0.0
+        if total > 0 and total_losses == 0 and total_wins > 0:
+            profit_factor: float | str = "INFINITE"
+        elif total == 0:
+            profit_factor = "N/A"
+        else:
+            profit_factor = total_wins / total_losses if total_losses > 0 else "N/A"
 
         # Base investment profit
         if symbol or year:
@@ -348,12 +357,36 @@ def get_analytics_stats(
             net_return = _safe_float(df_ret["metric_value"].iloc[0]) if not df_ret.empty else 0.0
             base_investment_profit = net_return * start_cap
 
-        # Max drawdown from stored metrics
-        df_dd = conn.execute(
-            "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'max_drawdown'",
-            [run_id],
-        ).df()
-        max_drawdown = _safe_float(df_dd["metric_value"].iloc[0]) if not df_dd.empty else 0.0
+        if symbol or year:
+            # A filtered view cannot reuse the portfolio metric.  Rebuild its
+            # equity path from the filtered, chronologically realized trades.
+            df_path = conn.execute(
+                f"SELECT exit_timestamp, net_pnl FROM trade_round_trips WHERE {where} "
+                "ORDER BY exit_timestamp ASC",
+                params,
+            ).df()
+            df_cap = conn.execute(
+                "SELECT starting_capital FROM strategy_runs WHERE run_id = ?", [run_id]
+            ).df()
+            start_cap = (
+                _safe_float(df_cap["starting_capital"].iloc[0])
+                if not df_cap.empty and pd.notna(df_cap["starting_capital"].iloc[0])
+                else 100_000.0
+            )
+            equity = start_cap
+            peak = start_cap
+            max_drawdown = 0.0
+            for pnl in df_path.get("net_pnl", pd.Series(dtype=float)):
+                equity += _safe_float(pnl)
+                peak = max(peak, equity)
+                if peak > 0:
+                    max_drawdown = min(max_drawdown, equity / peak - 1.0)
+        else:
+            df_dd = conn.execute(
+                "SELECT metric_value FROM strategy_metrics WHERE run_id = ? AND metric_name = 'max_drawdown'",
+                [run_id],
+            ).df()
+            max_drawdown = _safe_float(df_dd["metric_value"].iloc[0]) if not df_dd.empty else 0.0
 
         return TradeStats(
             total_trades=total,
@@ -400,6 +433,8 @@ def get_analytics_monthly(run_id: str, symbol: Optional[str] = Query(None)):
                     year=int(row["year"]),
                     month=int(row["month"]),
                     return_pct=_safe_float(row["month_pnl"]) / starting_cap,
+                    amount=_safe_float(row["month_pnl"]),
+                    return_basis="SYMBOL_PNL_CONTRIBUTION",
                 )
                 for _, row in df.iterrows()
             ]
@@ -415,18 +450,31 @@ def get_analytics_monthly(run_id: str, symbol: Optional[str] = Query(None)):
             if df.empty:
                 return []
 
-            df["timestamp"] = pd.to_datetime(df["timestamp"])
+            run_cap_row = conn.execute(
+                "SELECT starting_capital FROM strategy_runs WHERE run_id = ?", [run_id]
+            ).fetchone()
+            starting_capital = (
+                _safe_float(run_cap_row[0])
+                if run_cap_row and run_cap_row[0] is not None and _safe_float(run_cap_row[0]) > 0
+                else 100_000.0
+            )
+            df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+            df = df.sort_values("timestamp", kind="stable").reset_index(drop=True)
             df["year"]  = df["timestamp"].dt.year
             df["month"] = df["timestamp"].dt.month
 
             monthly_returns = []
-            for (year, month), group in df.groupby(["year", "month"]):
-                first_equity = _safe_float(group.iloc[0]["equity"], default=1.0)
-                last_equity  = _safe_float(group.iloc[-1]["equity"], default=first_equity)
-                ret = (last_equity / first_equity - 1.0) if first_equity > 0 else 0.0
+            grouped = list(df.groupby(["year", "month"], sort=True))
+            previous_equity = starting_capital
+            for (year, month), group in grouped:
+                last_equity = _safe_float(group.iloc[-1]["equity"], default=previous_equity)
+                ret = (last_equity / previous_equity - 1.0) if previous_equity > 0 else 0.0
                 monthly_returns.append(MonthlyReturn(
-                    year=int(year), month=int(month), return_pct=_safe_float(ret)
+                    year=int(year), month=int(month), return_pct=_safe_float(ret),
+                    amount=_safe_float(last_equity - previous_equity),
+                    return_basis="PORTFOLIO_EQUITY_RETURN",
                 ))
+                previous_equity = last_equity
             return monthly_returns
     finally:
         conn.close()

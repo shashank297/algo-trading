@@ -17,6 +17,24 @@ from storage.duckdb_manager import DuckDBManager
 class ProviderUnavailable(RuntimeError):
     """Raised when one provider cannot satisfy a complete request."""
 
+    category = "UNAVAILABLE"
+
+    def __init__(self, message: str, *, category: str | None = None) -> None:
+        super().__init__(message)
+        self.category = (category or self.category).upper()
+
+
+# Only these categories describe a provider being temporarily unable to
+# satisfy an otherwise valid request.  Contract, authentication, integrity,
+# and response errors must reach the caller instead of being hidden by a
+# different provider.
+FALLBACK_CATEGORIES = frozenset({
+    "UNAVAILABLE",
+    "TRANSIENT",
+    "RATE_LIMIT",
+    "NOT_FOUND",
+})
+
 
 class MarketDataProvider(Protocol):
     """Interface that keeps strategy code independent of data vendors."""
@@ -40,10 +58,17 @@ class ProviderRegistry:
             started_at = datetime.now(timezone.utc)
             try:
                 snapshot = provider.fetch_bars(request)
-            except Exception as exc:
-                errors.append(f"{provider.name}: {exc}")
-                self._record_attempt(provider.name, request, "FAILED", started_at, str(exc))
+            except ProviderUnavailable as exc:
+                errors.append(f"{provider.name} [{exc.category}]: {exc}")
+                self._record_attempt(provider.name, request, f"FAILED_{exc.category}", started_at, str(exc))
+                if exc.category not in FALLBACK_CATEGORIES:
+                    raise
                 continue
+            except Exception as exc:
+                # A programming or contract error is not a provider outage and
+                # must not silently fall through to another data source.
+                self._record_attempt(provider.name, request, "FAILED_UNCLASSIFIED", started_at, str(exc))
+                raise
             self._record_attempt(provider.name, request, "SUCCEEDED", started_at, None)
             return snapshot
         raise ProviderUnavailable("No provider could satisfy the request: " + "; ".join(errors))
@@ -92,14 +117,16 @@ class DuckDBCacheProvider:
         }
         if adjustment_states and adjustment_states != {request.adjustment.value}:
             raise ProviderUnavailable(
-                f"DuckDB cache adjustment is {sorted(adjustment_states)}, requested {request.adjustment.value}."
+                f"DuckDB cache adjustment is {sorted(adjustment_states)}, requested {request.adjustment.value}.",
+                category="INTEGRITY",
             )
         minimum = frame["timestamp"].min()
         maximum = frame["timestamp"].max()
         boundary_tolerance = pd.Timedelta(days=7)
         if minimum > start + boundary_tolerance or maximum < end - boundary_tolerance:
             raise ProviderUnavailable(
-                f"DuckDB cache is incomplete for the requested range: {minimum} to {maximum}."
+                f"DuckDB cache is incomplete for the requested range: {minimum} to {maximum}.",
+                category="UNAVAILABLE",
             )
         return DatasetSnapshot.from_bars(
             instrument=Instrument(
@@ -127,10 +154,12 @@ class AngelOneProvider:
 
     def fetch_bars(self, request: BarRequest) -> DatasetSnapshot:
         if not request.token:
-            raise ProviderUnavailable("Angel One requests require an instrument token.")
+            raise ProviderUnavailable("Angel One requests require an instrument token.", category="INVALID_REQUEST")
         interval = self._intervals.get(request.timeframe.upper())
         if interval is None:
-            raise ProviderUnavailable(f"Angel One does not support timeframe {request.timeframe}.")
+            raise ProviderUnavailable(
+                f"Angel One does not support timeframe {request.timeframe}.", category="INVALID_REQUEST"
+            )
         try:
             bars = self.historical_client.fetch_candles(
                 request.symbol,
@@ -140,11 +169,17 @@ class AngelOneProvider:
                 request.start.date(),
                 request.end.date(),
             )
-        except Exception as exc:
-            raise ProviderUnavailable(str(exc)) from exc
+        except (TimeoutError, ConnectionError) as exc:
+            raise ProviderUnavailable(str(exc), category="TRANSIENT") from exc
+        except PermissionError as exc:
+            raise ProviderUnavailable(str(exc), category="AUTH") from exc
+        except (TypeError, ValueError, KeyError) as exc:
+            raise ProviderUnavailable(str(exc), category="INVALID_RESPONSE") from exc
         failed_chunks = list(bars.attrs.get("failed_chunks", []))
         if failed_chunks:
-            raise ProviderUnavailable("Angel One returned a partial request: " + "; ".join(failed_chunks))
+            raise ProviderUnavailable(
+                "Angel One returned a partial request: " + "; ".join(failed_chunks), category="INTEGRITY"
+            )
         return DatasetSnapshot.from_bars(
             instrument=Instrument(
                 canonical_symbol=request.symbol,
@@ -179,16 +214,47 @@ class OpenBBHttpProvider:
             "start_date": request.start.date().isoformat(),
             "end_date": request.end.date().isoformat(),
             "interval": request.timeframe,
+            "adjustment": request.adjustment.value,
         }
         try:
             response = self.session.get(url, params=params, timeout=self.timeout_seconds)
             response.raise_for_status()
             payload = response.json()
-        except Exception as exc:
-            raise ProviderUnavailable(f"OpenBB HTTP request failed: {exc}") from exc
+        except requests.HTTPError as exc:
+            status_code = getattr(exc.response, "status_code", None)
+            if status_code in {401, 403}:
+                category = "AUTH"
+            elif status_code == 404:
+                category = "NOT_FOUND"
+            elif status_code in {408, 425, 429} or (status_code is not None and status_code >= 500):
+                category = "RATE_LIMIT" if status_code == 429 else "TRANSIENT"
+            else:
+                category = "INVALID_RESPONSE"
+            raise ProviderUnavailable(f"OpenBB HTTP request failed: {exc}", category=category) from exc
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            raise ProviderUnavailable(f"OpenBB HTTP request failed: {exc}", category="TRANSIENT") from exc
+        except ValueError as exc:
+            raise ProviderUnavailable(f"OpenBB response was invalid: {exc}", category="INVALID_RESPONSE") from exc
         records = payload.get("results", payload.get("data", payload)) if isinstance(payload, dict) else payload
         if not isinstance(records, list):
-            raise ProviderUnavailable("OpenBB response did not contain a list of bars.")
+            raise ProviderUnavailable("OpenBB response did not contain a list of bars.", category="INVALID_RESPONSE")
+        response_adjustment = None
+        if isinstance(payload, dict):
+            for key in ("adjustment_basis", "adjustment", "price_adjustment"):
+                value = payload.get(key)
+                if value is not None:
+                    response_adjustment = str(value).strip().upper()
+                    break
+        if response_adjustment is None:
+            raise ProviderUnavailable(
+                "OpenBB response omitted an explicit price-adjustment basis; refusing to relabel the bars.",
+                category="INTEGRITY",
+            )
+        if response_adjustment != request.adjustment.value:
+            raise ProviderUnavailable(
+                f"OpenBB response adjustment is {response_adjustment}, requested {request.adjustment.value}.",
+                category="INTEGRITY",
+            )
         frame = pd.DataFrame(records).rename(columns={"date": "timestamp"})
         return DatasetSnapshot.from_bars(
             instrument=Instrument(
@@ -202,5 +268,5 @@ class OpenBBHttpProvider:
             bars=frame,
             adjustment=request.adjustment,
             timezone_name=request.timezone,
-            metadata={"endpoint": url, "params": params},
+            metadata={"endpoint": url, "params": params, "adjustment_basis": response_adjustment},
         )

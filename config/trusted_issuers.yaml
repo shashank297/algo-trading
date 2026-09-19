@@ -1,0 +1,12 @@
+# Trusted public verification keys for external governance approvals.
+# PRIVATE KEYS MUST NEVER BE STORED IN THIS REPOSITORY OR COMMITTED TO GIT.
+# This file stores only public keys used for Ed25519 asymmetric verification.
+
+issuers:
+  board-governance-primary:
+    issuer_name: "Investment & Risk Oversight Committee"
+    issuer_type: "BOARD"
+    public_key_ed25519_base64: "Z68M37YOam03RkxgsZMVSrA2/m/tbqtCIjd72M+JOeo="
+    status: "ACTIVE"
+    valid_from: "2026-01-01T00:00:00Z"
+    expires_at: "2028-01-01T00:00:00Z"

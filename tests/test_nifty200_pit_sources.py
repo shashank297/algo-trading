@@ -14,6 +14,23 @@ def test_source_catalogue_is_content_addressed_and_immutable(tmp_path):
     assert catalogue.verify() == []
 
 
+def test_source_catalogue_loads_existing_records_before_adding_targeted_evidence(tmp_path):
+    catalogue = SourceCatalogue(tmp_path)
+    catalogue.add_bytes(b"existing", source_url="https://nse.example/existing.pdf", extension=".pdf")
+    catalogue.save()
+
+    loaded = SourceCatalogue.from_json(tmp_path)
+    loaded.add_bytes(b"targeted", source_url="https://nse.example/targeted.pdf", extension=".pdf")
+    loaded.save()
+
+    persisted = SourceCatalogue.from_json(tmp_path)
+    assert {record.source_url for record in persisted.records} == {
+        "https://nse.example/existing.pdf",
+        "https://nse.example/targeted.pdf",
+    }
+    assert persisted.verify() == []
+
+
 def test_html_parser_keeps_generic_index_change_links():
     links = extract_links('<a href="/a.pdf">Index Changes</a><a href="/b.pdf">Other</a>', base_url="https://nse.example")
     assert ("Index Changes", "https://nse.example/a.pdf") in links

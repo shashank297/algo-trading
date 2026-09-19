@@ -1,11 +1,13 @@
 import math
+from pathlib import Path
 import pandas as pd
 import pytest
+import yaml
 
 from data_platform.contracts import OrderSide
 from risk.engine import RiskEngine
-from risk.factory import build_risk_engine, build_risk_policy
-from risk.models import RiskAction, RiskPolicy, TradeProposal
+from risk.factory import build_risk_engine, build_risk_policy, load_canonical_risk_policy
+from risk.models import CanonicalRiskPolicy, RiskAction, RiskDecision, RiskPolicy, TradeProposal
 
 
 
@@ -448,3 +450,100 @@ def test_turnover_liquidity_validator_allows_pure_reduction():
     approved_sell, reasons_sell = validator.evaluate(sell_proposal, policy)
     assert approved_sell == 50_000.0
     assert reasons_sell == []
+
+
+def test_canonical_risk_policy_loader_rejects_malformed_documents(tmp_path: Path):
+    """Canonical policy loading must reject malformed or incomplete documents."""
+
+    malformed = tmp_path / "malformed.yaml"
+    malformed.write_text("- not-a-mapping\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="Invalid risk policy file format"):
+        load_canonical_risk_policy(malformed)
+
+    limits_not_mapping = tmp_path / "limits-not-mapping.yaml"
+    limits_not_mapping.write_text("limits: []\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="limits.*mapping"):
+        load_canonical_risk_policy(limits_not_mapping)
+
+    canonical_path = Path("config/risk_policy.yaml")
+    canonical = yaml.safe_load(canonical_path.read_text(encoding="utf-8"))
+
+    missing_limit = tmp_path / "missing-limit.yaml"
+    missing_limit_payload = dict(canonical)
+    missing_limit_payload["limits"] = dict(canonical["limits"])
+    missing_limit_payload["limits"].pop("max_var_pct")
+    missing_limit.write_text(yaml.safe_dump(missing_limit_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing required fields"):
+        load_canonical_risk_policy(missing_limit)
+
+    missing_hash = tmp_path / "missing-hash.yaml"
+    missing_hash_payload = dict(canonical)
+    missing_hash_payload.pop("policy_hash", None)
+    missing_hash.write_text(yaml.safe_dump(missing_hash_payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="missing required 'policy_hash'"):
+        load_canonical_risk_policy(missing_hash)
+
+
+def test_risk_policy_factory_rejects_non_mapping_and_invalid_values():
+    with pytest.raises(ValueError, match="requires a research mapping"):
+        build_risk_policy({"research": []})
+
+    invalid_config = {"research": {"risk": {
+        "max_position_pct": -0.1,
+        "max_gross_exposure_pct": 0.20,
+        "max_daily_loss_pct": 0.03,
+        "max_drawdown_pct": 0.15,
+        "max_sector_exposure_pct": 0.40,
+        "max_open_positions": 20,
+        "max_var_pct": 0.02,
+        "min_liquidity_crore": 0.0,
+    }}}
+    with pytest.raises(ValueError, match="Invalid authoritative"):
+        build_risk_policy(invalid_config)
+
+
+def test_risk_models_cover_fail_closed_properties_and_storage_payload():
+    with pytest.raises(ValueError, match="min_liquidity_crore"):
+        CanonicalRiskPolicy(
+            policy_id="test",
+            policy_version="1",
+            effective_from="2026-01-01",
+            policy_hash="hash",
+            max_position_pct=0.05,
+            max_gross_exposure_pct=0.5,
+            max_daily_loss_pct=0.01,
+            max_drawdown_pct=0.1,
+            max_sector_exposure_pct=0.2,
+            max_open_positions=10,
+            max_var_pct=0.02,
+            min_liquidity_crore=0.0,
+        )
+
+    with pytest.raises(ValueError, match="requires a symbol"):
+        TradeProposal(symbol="   ", requested_notional=1.0, capital=100.0)
+
+    proposal = make_proposal(
+        order_side=OrderSide.SELL,
+        requested_notional=1500.0,
+        current_position_notional=1000.0,
+    )
+    assert proposal.signed_order_notional == -1500.0
+    assert proposal.resulting_position_notional == -500.0
+    assert proposal.net_exposure_reducing is True
+    assert proposal.is_risk_reducing is True
+    flat_proposal = make_proposal(current_position_notional=0.0)
+    assert flat_proposal.net_exposure_reducing is False
+    assert flat_proposal.is_risk_reducing is False
+
+    decision = RiskDecision(
+        symbol=proposal.symbol,
+        action=RiskAction.MODIFY,
+        requested_notional=1500.0,
+        approved_notional=1000.0,
+        reasons=["test"],
+        policy=RiskPolicy(),
+    )
+    payload = decision.storage_payload(run_id="run-1", experiment_id="exp-1")
+    assert payload["run_id"] == "run-1"
+    assert payload["experiment_id"] == "exp-1"
+    assert payload["decision"] == "MODIFY"

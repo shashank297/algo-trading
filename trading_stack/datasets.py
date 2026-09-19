@@ -33,7 +33,7 @@ REQUIRED_AUTHORITATIVE_DQ_CHECKS = {
 
 
 def pit_evidence_hash(db: DuckDBManager, universe_name: str) -> str:
-    """Hash the complete PIT evidence, including exact knowledge timestamps."""
+    """Hash PIT membership, causality, and accepted identity-alias evidence."""
     rows = db.conn.execute(
         """
         SELECT pit.universe_name, pit.instrument_id, pit.symbol, pit.token, pit.exchange,
@@ -49,14 +49,22 @@ def pit_evidence_hash(db: DuckDBManager, universe_name: str) -> str:
         """,
         [universe_name.upper()],
     ).fetchall()
-    normalized = [tuple(value.isoformat() if hasattr(value, "isoformat") else value for value in row) for row in rows]
+    normalized = [
+        ("PIT", *(value.isoformat() if hasattr(value, "isoformat") else value for value in row))
+        for row in rows
+    ]
+    normalized.extend(
+        ("ALIAS", *(value.isoformat() if hasattr(value, "isoformat") else value for value in row))
+        for row in _pit_alias_rows(db)
+    )
+    normalized.sort(key=lambda row: json.dumps(row, default=str, separators=(",", ":")))
     return hashlib.sha256(json.dumps(normalized, sort_keys=False, separators=(",", ":"), default=str).encode()).hexdigest()
 
 
 def _pit_rows(db: DuckDBManager, universe_name: str) -> list[tuple[Any, ...]]:
     return db.conn.execute(
         """
-        SELECT pit.symbol, pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at
+        SELECT pit.instrument_id, pit.symbol, pit.effective_from, pit.effective_until, pit.known_from, knowledge.known_at
         FROM index_constituents_pit pit
         LEFT JOIN index_constituent_knowledge knowledge
           ON REPLACE(UPPER(knowledge.universe_name), ' ', '') = REPLACE(UPPER(pit.universe_name), ' ', '')
@@ -67,6 +75,20 @@ def _pit_rows(db: DuckDBManager, universe_name: str) -> list[tuple[Any, ...]]:
         """,
         [universe_name.upper()],
     ).fetchall()
+
+
+def _pit_alias_rows(db: DuckDBManager, *, required: bool = False) -> list[tuple[Any, ...]]:
+    """Load certified, period-bounded aliases when the identity migration exists."""
+    try:
+        return db.conn.execute(
+            """SELECT instrument_id, alias_symbol, valid_from, valid_until
+               FROM instrument_alias_history
+               WHERE confidence = 'CERTIFIED' AND resolution_status = 'ACCEPTED'"""
+        ).fetchall()
+    except Exception as exc:
+        if required:
+            raise RuntimeError("Required instrument alias history is unavailable.") from exc
+        return []
 
 
 def _pit_eligibility_mask(
@@ -86,7 +108,7 @@ def _pit_eligibility_mask(
             raise RuntimeError(f"Missing point-in-time constituent history for universe '{universe_name}'.")
         return pd.Series(True, index=frame.index), None
 
-    pit_df = pd.DataFrame(rows, columns=["symbol", "effective_from", "effective_until", "known_from", "known_at"])
+    pit_df = pd.DataFrame(rows, columns=["instrument_id", "symbol", "effective_from", "effective_until", "known_from", "known_at"])
     pit_df["effective_from"] = pd.to_datetime(pit_df["effective_from"]).map(
         lambda value: value.date() if pd.notna(value) else None
     )
@@ -106,7 +128,7 @@ def _pit_eligibility_mask(
     ]
     if not invalid.empty:
         raise RuntimeError(f"Corrupt point-in-time intervals for '{universe_name}': effective_from >= effective_until.")
-    for _, group in pit_df.groupby("symbol", sort=False):
+    for _, group in pit_df.groupby("instrument_id", sort=False):
         previous_end = None
         for index, (effective_from, effective_until) in enumerate(
             group[["effective_from", "effective_until"]].itertuples(index=False)
@@ -120,9 +142,40 @@ def _pit_eligibility_mask(
     timestamps = pd.to_datetime(frame["timestamp"], utc=True)
     local_dates = timestamps.dt.tz_convert(timezone_name).dt.date
     symbols = frame["symbol"].astype(str).str.upper() if "symbol" in frame else pd.Series("", index=frame.index)
+    frame_instrument_ids = pd.Series(pd.NA, index=frame.index, dtype="string")
+    if "instrument_id" in frame:
+        raw_ids = frame["instrument_id"].astype("string").str.strip()
+        frame_instrument_ids = raw_ids.mask(raw_ids.str.upper().isin(["", "NAN", "NONE", "NULL", "UNKNOWN", "UNRESOLVED"]))
+
+    # Resolve provider symbols to durable identities only within their dated
+    # alias periods. Ambiguous aliases intentionally remain ineligible.
+    alias_rows = _pit_alias_rows(db, required=required)
+    alias_evidence = pd.Series(False, index=frame.index)
+    for alias_id, alias_symbol, valid_from, valid_until in alias_rows:
+        alias_symbol_upper = str(alias_symbol or "").upper()
+        if not alias_symbol_upper or not str(alias_id or "").strip():
+            continue
+        alias_start = pd.Timestamp(valid_from).date() if pd.notna(valid_from) else None
+        alias_end = pd.Timestamp(valid_until).date() if pd.notna(valid_until) else None
+        if alias_start is not None and alias_end is not None and alias_start >= alias_end:
+            raise RuntimeError(f"Corrupt instrument alias interval for '{alias_symbol_upper}'.")
+        candidate = symbols == alias_symbol_upper
+        if alias_start is not None:
+            candidate &= local_dates >= alias_start
+        if alias_end is not None:
+            candidate &= local_dates < alias_end
+        alias_evidence |= candidate
+        existing = frame_instrument_ids.loc[candidate]
+        frame_instrument_ids.loc[candidate & frame_instrument_ids.isna()] = str(alias_id).strip()
+        frame_instrument_ids.loc[candidate & frame_instrument_ids.notna() & (existing != str(alias_id).strip())] = pd.NA
+
     eligible = pd.Series(False, index=frame.index)
     for _, row in pit_df.iterrows():
-        mask = symbols == str(row["symbol"]).upper()
+        mask = frame_instrument_ids == str(row["instrument_id"])
+        # Symbol fallback is allowed only when there is no certified alias
+        # evidence for that symbol/date.  Conflicting aliases therefore remain
+        # ineligible instead of being admitted through the legacy symbol path.
+        mask |= frame_instrument_ids.isna() & ~alias_evidence & (symbols == str(row["symbol"]).upper())
         mask &= local_dates >= row["effective_from"]
         if pd.notna(row["effective_until"]):
             mask &= local_dates < row["effective_until"]

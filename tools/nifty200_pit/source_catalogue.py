@@ -32,6 +32,19 @@ class SourceCatalogue:
         self.raw_root = self.root / "raw"
         self.records: list[SourceRecord] = []
 
+    @classmethod
+    def from_json(cls, root: str | Path, path: str | Path | None = None) -> "SourceCatalogue":
+        """Load an existing catalogue while preserving its content-addressed files."""
+        catalogue = cls(root)
+        source = Path(path) if path else catalogue.root / "source_catalogue.json"
+        if not source.exists():
+            return catalogue
+        payload = json.loads(source.read_text(encoding="utf-8"))
+        if not isinstance(payload, list):
+            raise ValueError(f"Source catalogue must be a JSON list: {source}")
+        catalogue.records = [SourceRecord(**row) for row in payload]
+        return catalogue
+
     def add_bytes(
         self,
         data: bytes,

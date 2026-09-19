@@ -24,7 +24,7 @@ from trading_stack.datasets import filter_frame_by_pit
 from trading_stack.strategies import StrategyRegistry
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
-from trading_stack.promotion import PromotionEngine
+from trading_stack.promotion import PromotionEngine, PromotionStage
 from trading_stack.foundation_certification import (
     FoundationCertificationRegistry,
     require_realtime_paper_certification,
@@ -377,7 +377,11 @@ class StrategyPipeline:
 
         risk_engine = self._require_authoritative_risk()
 
-        PromotionEngine(self.db).assert_paper_authorized(approved_run_id, strategy_name)
+        PromotionEngine(self.db).assert_paper_authorized(
+            approved_run_id,
+            strategy_name,
+            expected_stage=PromotionStage.PAPER_ACTIVE.value,
+        )
         metadata = StrategyRegistry.metadata(strategy_name)
         if metadata.scope == StrategyScope.CROSS_SECTIONAL:
             if not universe:

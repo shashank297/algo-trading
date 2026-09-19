@@ -31,7 +31,7 @@ from trading_stack.pipeline import StrategyPipeline
 from trading_stack.paper import ForwardPaperSessionEngine
 from trading_stack.portfolio_paper import ForwardPortfolioPaperSessionEngine
 from trading_stack.features import FeatureFactory
-from trading_stack.approval import ExternalApprovalVerifier, ExternalApprovalEvidence, ApprovalAuthorityType, ApprovalStatus
+from tests.approval_test_utils import TEST_TRUSTED_ISSUERS, seed_signed_paper_approval
 from risk import RiskEngine, RiskPolicy
 from utils.timezone import IST
 
@@ -285,43 +285,35 @@ class MultiStrategyPlatformTests(unittest.TestCase):
                     "score": 1.0, "reasons_json": "[]", "human_approved": True,
                     "reviewed_at": datetime.now(timezone.utc),
                 }])
-                now_app = datetime.now(timezone.utc)
-                ExternalApprovalVerifier.record_approval(db.conn, ExternalApprovalEvidence(
-                    approval_id="app-approved-run",
-                    approval_type="PROMOTION_TO_PAPER",
-                    subject_type="RUN",
+                patcher = patch(
+                    "trading_stack.approval.load_trusted_issuers",
+                    return_value=TEST_TRUSTED_ISSUERS,
+                )
+                patcher.start()
+                self.addCleanup(patcher.stop)
+                seed_signed_paper_approval(
+                    db,
                     run_id="approved-run",
                     strategy_name="trend_following",
-                    requested_stage="PAPER_ACTIVE",
-                    approved_stage="PAPER_ACTIVE",
-                    approved_by_type=ApprovalAuthorityType.HUMAN,
-                    approved_by_identifier="test_reviewer",
-                    approved_at=now_app - timedelta(hours=1),
-                    expires_at=now_app + timedelta(days=7),
-                    scope="PAPER_SESSION",
-                    status=ApprovalStatus.ACTIVE,
-                    foundation_certification_id="test_cert",
-                    risk_policy_id="canonical-risk-policy-v1",
-                    risk_policy_hash="9839425d1c770c2b25744b110122c7b44cd3d7e4ee0e94dbb942dfa07f9d2092",
-                    code_sha="0" * 40,
-                    evidence_hash="0" * 64,
-                ))
+                    review_id="paper-approval",
+                )
                 pipeline = StrategyPipeline(db, require_authoritative_certification=False)
-                first = pipeline.run_paper_session(
-                    strategy_name="trend_following", approved_run_id="approved-run",
-                    symbol="TEST-EQ", timeframe="1d",
-                    as_of=datetime(2026, 8, 13, 16, 0, tzinfo=IST),
-                )["forward_result"]
-                next_bar = pd.DataFrame({
-                    "timestamp": [datetime(2026, 8, 14, tzinfo=IST)], "open": [160], "high": [161],
-                    "low": [159], "close": [160.5], "volume": [600_000],
-                })
-                db.upsert_candles(next_bar, "TEST-EQ", "1", "NSE", "1d")
-                second = pipeline.run_paper_session(
-                    strategy_name="trend_following", approved_run_id="approved-run",
-                    symbol="TEST-EQ", timeframe="1d",
-                    as_of=datetime(2026, 8, 14, 16, 0, tzinfo=IST),
-                )["forward_result"]
+                with patch.dict("os.environ", {"CODE_SHA": "0" * 40}):
+                    first = pipeline.run_paper_session(
+                        strategy_name="trend_following", approved_run_id="approved-run",
+                        symbol="TEST-EQ", timeframe="1d",
+                        as_of=datetime(2026, 8, 13, 16, 0, tzinfo=IST),
+                    )["forward_result"]
+                    next_bar = pd.DataFrame({
+                        "timestamp": [datetime(2026, 8, 14, tzinfo=IST)], "open": [160], "high": [161],
+                        "low": [159], "close": [160.5], "volume": [600_000],
+                    })
+                    db.upsert_candles(next_bar, "TEST-EQ", "1", "NSE", "1d")
+                    second = pipeline.run_paper_session(
+                        strategy_name="trend_following", approved_run_id="approved-run",
+                        symbol="TEST-EQ", timeframe="1d",
+                        as_of=datetime(2026, 8, 14, 16, 0, tzinfo=IST),
+                    )["forward_result"]
                 risk_count = db.conn.execute("SELECT COUNT(*) FROM risk_decisions").fetchone()[0]
             finally:
                 db.close()

@@ -26,3 +26,21 @@ def test_missing_membership_blocks_certification():
     report = validate_campaign(intervals, [_event(number) for number in range(199)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2), trading_days=[date(2012, 1, 2)])
     assert not report.passed
     assert any(reason.startswith("member_count") for reason in report.reasons)
+
+
+def test_count_validation_is_not_evaluable_without_initial_anchor():
+    intervals = build_intervals([_event(number) for number in range(1)]).intervals
+    report = validate_campaign(
+        intervals,
+        [_event(0)],
+        campaign_from=date(2012, 1, 2),
+        campaign_to=date(2012, 1, 2),
+        trading_days=[date(2012, 1, 2)],
+        initial_anchor_established=False,
+    )
+
+    assert not report.passed
+    assert "initial_anchor_not_established" in report.reasons
+    assert not any(reason.startswith("member_count:") for reason in report.reasons)
+    assert report.metrics["count_validation_evaluable"] is False
+    assert report.metrics["count_check_failures"] == 0

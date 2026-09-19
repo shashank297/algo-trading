@@ -10,31 +10,36 @@ from __future__ import annotations
 
 import csv
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
+import hashlib
+import io
 import json
 from pathlib import Path
 import re
 import subprocess
 import sys
 import zipfile
-from typing import Any
+from typing import Any, Mapping, TypedDict
 
 from tools.nifty200_pit.intervals import build_intervals
 from tools.nifty200_pit.intervals import active_intervals
 from tools.nifty200_pit.manifest import write_artifacts, write_table
-from tools.nifty200_pit.models import Action, Conflict, Observation, SourceRecord
+from tools.nifty200_pit.models import Action, Conflict, Observation, SourceRecord, stable_observation_id
 from tools.nifty200_pit.parse_pdf import (
     extract_pdf_pages,
     find_document_date,
     find_effective_date,
+    is_nifty200_heading,
     parse_nifty200_text,
 )
 from tools.nifty200_pit.reconciliation import reconcile_observations
-from tools.nifty200_pit.instrument_resolver import resolve_observations
+from tools.nifty200_pit.reconciliation import observation_hash
+from tools.nifty200_pit.instrument_resolver import resolve_observations, validate_alias_intervals
 from tools.nifty200_pit.source_catalogue import sha256_file
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
-from trading_stack.calendars import build_nse_calendar
+from trading_stack.calendars import SessionOverride, build_nse_calendar
+from tools.nifty200_pit.causality import next_trading_session_open
 
 CAMPAIGN_FROM = date(2012, 1, 2)
 CAMPAIGN_TO = date(2026, 8, 20)
@@ -45,12 +50,74 @@ CHALLENGER_EVENTS_PATH = Path(
     "deshpanda_nse_screener_reconstitution_events.parquet"
 )
 SECURITIES_MASTER_URL = "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+HISTORICAL_SECURITY_MASTER_URL = "http://nseindia.com/content/equities/EQUITY_L.csv"
+HISTORICAL_SECURITY_MASTER_2017_ARCHIVE_URL = (
+    "https://web.archive.org/web/20170704082238id_/"
+    "https://www.nseindia.com/content/equities/EQUITY_L.csv"
+)
+HISTORICAL_SECURITY_MASTER_2021_ARCHIVE_URL = (
+    "https://web.archive.org/web/20210516062344id_/"
+    "https://archives.nseindia.com/content/equities/EQUITY_L.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_2014_URL = (
+    "https://web.archive.org/web/20140122091713id_/"
+    "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL = (
+    "https://web.archive.org/web/20140709091522id_/"
+    "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_2015_URL = (
+    "https://web.archive.org/web/20150325063347id_/"
+    "http%3A%2F%2Fnseindia.com%2Fcontent%2Findices%2Find_cnx200list.csv"
+)
+HISTORICAL_INDEX_CONSTITUENT_URLS = {
+    HISTORICAL_INDEX_CONSTITUENT_2014_URL,
+    HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL,
+    HISTORICAL_INDEX_CONSTITUENT_2015_URL,
+}
+SYMBOL_CHANGE_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
+NAME_CHANGE_URL = "https://nsearchives.nseindia.com/content/equities/namechange.csv"
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
 MONTH_NAME = {name.lower(): number for number, name in enumerate(
     ("", "January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
 ) if name}
 CHECKPOINT_FORENSICS_FROM = date(2016, 4, 1)
 CHECKPOINT_FORENSICS_TO = date(2020, 5, 31)
+
+# The index name is nominally NIFTY 200, but the official NSE Indices
+# reconstitution notice explicitly documents 201 securities while Tata Motors
+# DVR was included.  The June 2020 notice documents its exclusion, so this
+# period must not be forced through a universal 200-member rule.
+class _CountPolicySource(TypedDict):
+    url: str
+    sha256: str
+
+
+class _CountPolicy(TypedDict):
+    start: date
+    end: date
+    expected_count: int
+    basis: str
+    sources: tuple[_CountPolicySource, ...]
+
+
+TATA_DVR_COUNT_POLICY: _CountPolicy = {
+    "start": date(2016, 4, 1),
+    "end": date(2020, 6, 26),
+    "expected_count": 201,
+    "basis": "Tata Motors DVR inclusion and later exclusion in official NSE Indices releases",
+    "sources": (
+        {
+            "url": "https://www.niftyindices.com/Press_Release/ind_prs22022016_2.pdf",
+            "sha256": "db2e4802e43b68fcbfbbf2cb03cb59c6d5f9ebf086ab6687d5a15daa45c2525f",
+        },
+        {
+            "url": "https://www.niftyindices.com/Press_Release/ind_prs10062020.pdf",
+            "sha256": "ea83ae30ff9e8d80892e143ebd8f16fedd04c974e77d673539bb663a9f9de49e",
+        },
+    ),
+}
 
 
 def _normalise_local_path(root: Path, value: str) -> Path:
@@ -144,7 +211,16 @@ def _parse_day(value: object) -> date | None:
             return value.date()
         except (TypeError, ValueError):
             pass
-    value = str(value).strip().replace(".", "/")
+    value = str(value).strip()
+    # Source retrieval timestamps are ISO-8601 strings.  Preserve their date
+    # rather than silently dropping the snapshot bound when they include a
+    # timezone or fractional seconds.
+    if "T" in value or value.endswith("Z"):
+        try:
+            return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+        except ValueError:
+            pass
+    value = value.replace(".", "/")
     for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%d-%b-%Y", "%d-%B-%Y", "%B %d, %Y", "%B %d %Y"):
         try:
             return datetime.strptime(value, fmt).date()
@@ -179,54 +255,717 @@ def parse_workbook_events(root: Path, source: SourceRecord) -> list[Observation]
     return rows
 
 
-def parse_press_releases(records: list[SourceRecord]) -> list[Observation]:
+_NUMBERED_INDEX_HEADING_RE = re.compile(r"^\s*(?:\([A-Za-z]?\d{1,3}\)|[A-Za-z]?\d{1,3}[.)]|\d{1,3}\s+).*\b(?:INDEX|NIFTY|CNX)\b", re.I)
+_NIFTY200_INDEX_HEADING_RE = re.compile(
+    r"^\s*(?:\([A-Za-z]?\d{1,3}\)|[A-Za-z]?\d{1,3}[.)]|\d{1,3}\s+).*\b(?:NIFTY|CNX)\s*[- ]?200\b",
+    re.I,
+)
+_TABLE_ROW_NUMBER_RE = re.compile(r"^\s*(\d{1,3})\s+.+\s+[A-Z0-9][A-Z0-9&.-]{1,19}\s*$")
+_ACTION_HEADING_RE = re.compile(
+    r"^\s*The following (?:companies|company) (?:are|is) being (?:excluded|included):?\s*$",
+    re.I | re.M,
+)
+_PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES = {
+    "https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf": date(2012, 4, 27),
+    "https://www.niftyindices.com/Press_Release/ind_prs16052012.pdf": date(2012, 5, 21),
+    "https://www.niftyindices.com/Press_Release/ind_prs16082012.pdf": date(2012, 9, 28),
+    "https://www.niftyindices.com/Press_Release/ind_prs15032013.pdf": date(2013, 3, 19),
+    "https://www.niftyindices.com/Press_Release/ind_prs13022013.pdf": date(2013, 4, 1),
+    "https://www.niftyindices.com/Press_Release/ind_prs11042013.pdf": date(2013, 4, 17),
+}
+
+
+def _nifty200_final_section_context(page_text: str) -> tuple[int, str] | None:
+    """Return the last NIFTY-200 table row when it ends the page.
+
+    A press-release table can continue onto the next PDF page.  Continuation
+    is safe only when the NIFTY-200 numbered section is the final index
+    section on the page and it contains a numbered table plus an action
+    heading.  This prevents unrelated index rows on the next page from being
+    attributed to NIFTY-200.
+    """
+    lines = page_text.splitlines()
+    numbered_headings = [
+        index for index, line in enumerate(lines) if _NUMBERED_INDEX_HEADING_RE.match(line)
+    ]
+    nifty200_headings = [index for index, line in enumerate(lines) if is_nifty200_heading(line)]
+    if not numbered_headings or not nifty200_headings or nifty200_headings[-1] != numbered_headings[-1]:
+        return None
+
+    section = "\n".join(lines[nifty200_headings[-1]:])
+    row_numbers = [
+        int(match.group(1))
+        for line in section.splitlines()
+        if (match := _TABLE_ROW_NUMBER_RE.match(line)) is not None
+    ]
+    if not row_numbers or not _ACTION_HEADING_RE.search(section):
+        return None
+    return row_numbers[-1], _ACTION_HEADING_RE.findall(section)[-1]
+
+
+def _numbered_continuation_prefix(page_text: str, expected_first_row: int) -> str | None:
+    """Return a next-page prefix only when its rows continue the prior table."""
+    lines = page_text.splitlines()
+    boundary = next(
+        (index for index, line in enumerate(lines) if _NUMBERED_INDEX_HEADING_RE.match(line)),
+        len(lines),
+    )
+    prefix = "\n".join(lines[:boundary])
+    segments: list[list[int]] = [[]]
+    for line in prefix.splitlines():
+        if _ACTION_HEADING_RE.match(line):
+            if segments[-1]:
+                segments.append([])
+            continue
+        match = _TABLE_ROW_NUMBER_RE.match(line)
+        if match is not None:
+            segments[-1].append(int(match.group(1)))
+    segments = [segment for segment in segments if segment]
+    if not segments:
+        return None
+    first_segment = segments[0]
+    numbering_continues = first_segment[0] == expected_first_row
+    numbering_restarts_for_new_action_table = (
+        first_segment[0] == 1 and _ACTION_HEADING_RE.search(prefix) is not None
+    )
+    if not numbering_continues and not numbering_restarts_for_new_action_table:
+        return None
+    for segment in segments:
+        if segment is not first_segment and segment[0] != 1:
+            return None
+        if any(current != previous + 1 for previous, current in zip(segment, segment[1:])):
+            return None
+    return prefix
+
+
+def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = None) -> list[Observation]:
     observations: list[Observation] = []
     for source in records:
         if not source.local_path.lower().endswith(".pdf") or not re.search(r"press[_-]release", source.source_url, re.I):
             continue
         pages = extract_pdf_pages(source.local_path)
-        document_effective = find_effective_date("\n".join(pages))
+        document_text = "\n".join(pages)
+        if not re.search(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", document_text, re.I):
+            continue
+        document_effective = find_effective_date(document_text) or _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES.get(source.source_url)
+        announcement = find_document_date(source.source_url, document_text)
+        parsed = parse_nifty200_text(
+            document_text, source_url=source.source_url, source_sha256=source.source_sha256,
+            announcement_date=announcement, source_page=None, source_tier=source.source_tier,
+            extractor_version="nifty200-pit-parser-v3", effective_date=document_effective,
+        )
+        if not any(row.symbol and row.action for row in parsed):
+            layout_text = "\n".join(extract_pdf_pages(source.local_path, layout=True))
+            parsed = parse_nifty200_text(
+                layout_text, source_url=source.source_url, source_sha256=source.source_sha256,
+                announcement_date=announcement, source_page=None, source_tier=source.source_tier,
+                extractor_version="nifty200-pit-parser-v4-layout", effective_date=document_effective,
+            )
+        allowed_pages: set[int] = set()
+        previous_context: tuple[int, str] | None = None
         for page_number, page_text in enumerate(pages, start=1):
-            if not re.search(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", page_text, re.I):
+            has_nifty200 = any(is_nifty200_heading(line) for line in page_text.splitlines())
+            if has_nifty200:
+                allowed_pages.add(page_number)
+                previous_context = _nifty200_final_section_context(page_text)
+                continue
+            if previous_context is not None:
+                last_row_number, _ = previous_context
+                if _numbered_continuation_prefix(page_text, last_row_number + 1) is not None:
+                    allowed_pages.add(page_number)
+                previous_context = None
+        for row in parsed:
+            if not row.symbol or not row.action:
+                continue
+            matching_pages = [
+                page_number for page_number, page_text in enumerate(pages, start=1)
+                if row.symbol in page_text
+            ]
+            matched_page: int | None = next((item for item in matching_pages if item in allowed_pages), None)
+            if matched_page is not None:
+                observations.append(replace(row, source_page=matched_page))
+        continue
+        document_effective = find_effective_date("\n".join(pages)) or _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES.get(source.source_url)
+        previous_nifty200_context: tuple[int, str] | None = None
+        for page_number, page_text in enumerate(pages, start=1):
+            has_nifty200 = any(is_nifty200_heading(line) for line in page_text.splitlines())
+            if not has_nifty200 and previous_nifty200_context is not None:
+                last_row_number, action_heading = previous_nifty200_context
+                prefix = _numbered_continuation_prefix(page_text, last_row_number + 1)
+                if prefix is not None:
+                    continuation = "CNX 200 Index\n" + action_heading + "\n" + prefix
+                    observations.extend(parse_nifty200_text(
+                        continuation, source_url=source.source_url, source_sha256=source.source_sha256,
+                        announcement_date=find_document_date(source.source_url, page_text),
+                        source_page=page_number, source_tier=source.source_tier,
+                        extractor_version="nifty200-pit-parser-v3", effective_date=document_effective,
+                    ))
+                previous_nifty200_context = None
+                continue
+            if not has_nifty200:
                 continue
             announcement = find_document_date(source.source_url, page_text)
             effective = find_effective_date(page_text) or document_effective
             observations.extend(parse_nifty200_text(
                 page_text, source_url=source.source_url, source_sha256=source.source_sha256,
-                announcement_date=announcement, source_page=page_number, source_tier="A1",
+                announcement_date=announcement, source_page=page_number, source_tier=source.source_tier,
                 extractor_version="nifty200-pit-parser-v3", effective_date=effective,
             ))
+            previous_nifty200_context = _nifty200_final_section_context(page_text)
     return observations
+
+
+def _apply_official_rescheduling(
+    observations: list[Observation], sources: list[SourceRecord],
+) -> tuple[list[Observation], list[dict[str, Any]]]:
+    """Preserve original assertions but exclude explicitly withdrawn schedules.
+
+    These narrow dispositions are tied to inspected, content-hashed notices.
+    They never create replacement events or infer a revised effective date.
+    """
+    rules = [
+        ("53d167e552b4737b060ab7893db9bd63548fdb3801f884ea4f4669ad0e4f3bc5",
+         "ind_prs07112013.pdf", date(2013, 11, 15), None, None),
+        ("2c901efcc5c3af6a8b9d353b2de9c91904bab4b40c8e68ef8540267366c46f20",
+         "ind_prs28082017.pdf", date(2017, 9, 29), {"RELCAPITAL", "MFSL"}, None),
+        ("1bef44dabdf594b9390b15329de1d9f38a8ab96af2abea243e99311b6d61587e",
+         "ind_prs28022024.pdf", date(2024, 3, 28), {"IREDA"}, Action.ADD),
+    ]
+    rules.extend(
+        ("55a9cd5f11b9036e274b397c1f43f607c632ccb31837339b7ac661de6037ea59",
+         filename, date(2020, 3, 27), None, None)
+        for filename in ("ind_prs18022020.pdf", "ind_prs12032020.pdf", "ind_prs19032020.pdf")
+    )
+    verified_sources = {
+        source.source_sha256: source for source in sources
+        if source.source_tier in {"A1", "A2"} and Path(source.local_path).is_file()
+        and sha256_file(Path(source.local_path)) == source.source_sha256
+    }
+    result: list[Observation] = []
+    audit: list[dict[str, Any]] = []
+    for row in observations:
+        updated = row
+        for notice_hash, original_file, original_date, symbols, action in rules:
+            notice = verified_sources.get(notice_hash)
+            if (notice is None or row.source_tier not in {"A1", "A2"}
+                    or row.index_id != "NIFTY_200" or row.effective_date != original_date
+                    or not row.source_url.endswith("/" + original_file)
+                    or (symbols is not None and row.symbol not in symbols)
+                    or (action is not None and row.action != action)):
+                continue
+            identifier = row.observation_id or observation_hash(row)
+            updated = replace(
+                row, observation_id=identifier, review_status="SUPERSEDED",
+                reason=f"OFFICIAL_SCHEDULE_WITHDRAWN:{notice.source_url}#{notice_hash}",
+            )
+            audit.append({
+                "observation_id": identifier, "symbol": row.symbol, "action": str(row.action),
+                "withdrawn_effective_date": original_date.isoformat(),
+                "original_source_url": row.source_url, "original_source_sha256": row.source_sha256,
+                "disposition": "SUPERSEDED", "resolution_source": notice.source_url,
+                "resolution_source_sha256": notice_hash,
+                "notes": "Original assertion preserved; replacement must be independently parsed from official evidence.",
+            })
+            break
+        result.append(updated)
+    return result, audit
+
+
+def _exclude_withdrawn_challenger_assertions(
+    observations: list[Observation], dispositions: list[dict[str, Any]],
+    sources: list[SourceRecord] | None = None,
+) -> tuple[list[Observation], list[dict[str, Any]]]:
+    """Exclude superseded assertions from reconciliation while retaining their audit trail."""
+    withdrawn = {
+        (row["withdrawn_effective_date"], row["symbol"], row["action"]): row
+        for row in dispositions if row["disposition"] == "SUPERSEDED"
+    }
+    superseded_official = {
+        row["observation_id"]: row
+        for row in dispositions
+        if row["disposition"] == "SUPERSEDED" and row.get("observation_id")
+    }
+    scope_hash = "e3ad170876e6278ad7a1e99cc924ba610c3f8be4ef0dc85cd2c146e2152ca4ea"
+    scope_source = next((source for source in sources or []
+                         if source.source_sha256 == scope_hash and source.source_tier in {"A1", "A2"}
+                         and Path(source.local_path).is_file()
+                         and sha256_file(Path(source.local_path)) == scope_hash), None)
+    if scope_source is not None:
+        for row in observations:
+            if (row.source_sha256 == scope_hash and row.source_tier in {"A1", "A2"}
+                    and row.index_id == "NIFTY_200" and row.effective_date == date(2016, 11, 15)
+                    and (row.symbol, str(row.action)) in {("CAIRN", "DROP"), ("CROMPTON", "ADD")}):
+                withdrawn[("2016-10-24", row.symbol, str(row.action))] = {
+                    "withdrawn_effective_date": "2016-10-24", "symbol": row.symbol, "action": str(row.action),
+                    "resolution_source": scope_source.source_url, "resolution_source_sha256": scope_hash,
+                    "notes": "B1 date contradicts the index-specific schedule; B1 retained provisional/unresolved.",
+                }
+    retained: list[Observation] = []
+    audit: list[dict[str, Any]] = []
+    for row in observations:
+        official_disposition = superseded_official.get(row.observation_id)
+        if official_disposition is not None and row.source_tier in {"A1", "A2"}:
+            audit.append({
+                **official_disposition,
+                "original_source_url": row.source_url,
+                "original_source_sha256": row.source_sha256,
+                "disposition": "OFFICIAL_SUPERSEDED",
+                "notes": "Superseded first-party assertion retained in raw observations; independently parsed replacement governs reconciliation.",
+            })
+            continue
+        evidence = withdrawn.get((
+            row.effective_date.isoformat() if row.effective_date else "", row.symbol, str(row.action),
+        ))
+        if row.source_tier != "B1" or row.index_id != "NIFTY_200" or evidence is None:
+            retained.append(row)
+            continue
+        audit.append({
+            **evidence, "observation_id": row.observation_id or observation_hash(row),
+            "original_source_url": row.source_url, "original_source_sha256": row.source_sha256,
+            "disposition": "B1_CONTRADICTED",
+            "notes": evidence.get("notes", "B1 assertion remains provisional/unresolved and is not a missing event."),
+        })
+    return retained, audit
+
+
+def _apply_documented_isin_continuity(
+    observations: list[Observation], master: list[dict[str, Any]], aliases: list[dict[str, Any]],
+    sources: list[SourceRecord],
+) -> tuple[list[Observation], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Apply only exact source-hash-verified NSE reference-file continuity links."""
+    rules = [
+        ("J&KBANK", "INE168A01017", "INE168A01041", "2014-09-04", "2014-09-05", 35,
+         "786b5c5e35f33103410dae2473e6bbae728d3bddbf818a9a1d30988bbb2446a0",
+         "98a1dfce5d59f653a2af0243f1ab75c9a48f924bd8a5542478f0d7712cb31879",
+         "e0033dcc96a1a48ef264b8de7b111cd9fbd4146c033573023c2c28bb18d4d463"),
+        ("BATAINDIA", "INE176A01010", "INE176A01028", "2015-10-07", "2015-10-08", 1,
+         "19165b2821beacbd70053fce918555230a5966c558685dcb4dcac658e1141692",
+         "5bf12c923a4fdae35c64b42db565f61869e6ab9b76cfe6b78a47a7d6fba5b275",
+         "1e4904294f249df9baad33639503a04ce51e45df5940eabeb27e01b7e49ec6e2"),
+        ("NATCOPHARM", "INE987B01018", "INE987B01026", "2015-11-26", "2015-11-27", 69,
+         "2241693af4d891f158bce562bfc063a712560ee5572e04fc6136ead6995082db",
+         "9107181b9fad0d1155000e5e8af1350fdaaa2468182413c9dd962d89bef157aa",
+         "0fa7564e64931170ab47912e08a28a29e838416ef6f8d319e164e03ccafd5d35"),
+        ("NBCC", "INE095N01015", "INE095N01023", "2016-06-02", "2016-06-03", 153,
+         "69b7b0ea2b72649ec447ed47df9f15a4ca2cfffeb4983a9557a9246c6d1c74ee",
+         "87df9d926becfd62eae15fb55bfdd5dc2d2d017d00eaacaa8e403078395f5415",
+         "9892c2b4c078fbeadaab8a45087f5b316a833d74e7d7cc4df949ed72953c6e09"),
+        ("KARURVYSYA", "INE036D01010", "INE036D01028", "2016-11-17", "2016-11-18", 1,
+         "a9bdaffd58af89da20f2e435ca7442ba4d2db26910cbd40ee94d2c2ab2b531dd",
+         "088c51d7decb7f8acab04d6f95d8d0d8ac1589fba73aee8a6414a78c60535c7e",
+         "e88f7b5d5fb4bbec80ddd7214b955eb1f4efc46afdb860eac288b7094d014ddd"),
+        ("NBCC", "INE095N01023", "INE095N01031", "2018-04-25", "2018-04-26", 1,
+         "ff186e104f0ec6fce4257422655e453aa289a9b80389b44fff260177856d4521",
+         "2c1bba907be7866dfccaa6e6380b60341d18547ff389f4100526043d0b541dc1",
+         "1c29705c1138d2852db6f0eb0bfd25d61d649e57711b818c57fa033326b2d6cb"),
+        ("BAJFINANCE", "INE296A01016", "INE296A01024", "2016-09-07", "2016-09-09", 1,
+         "11b2a619b064c270d04a3fedc14633317d0a87959a212f98dad5349ad14babc5",
+         "b3cf8eed2deecdf468f0249870e4b0869aac49f3a4c38e93edbddd53f1c4a604",
+         "fba772ecc40bb05c24d29c49f634c79cef0d9a736daa58f266f58ee5f675199d"),
+        ("CESC", "INE486A01013", "INE486A01021", "2021-09-16", "2021-09-21", 3,
+         "a3135b48b38e6f314d9524fc63c7ac0ff2a95234077e9beaddccf296c2cd635c",
+         "9809dd7f425e1fb372458874fb492321a7d5a96c367a1a8446bc16144cf75f68",
+         "bea670d1419fbb711d65e11ff3f03e223b91c931313460ee4933b388c2c25922"),
+    ]
+    needed = {digest for rule in rules for digest in rule[6:]}
+    verified = {source.source_sha256: source for source in sources
+                if source.source_sha256 in needed and source.source_tier in {"A1", "A2"}
+                and Path(source.local_path).is_file()
+                and sha256_file(Path(source.local_path)) == source.source_sha256}
+    parents: dict[tuple[str, str], str] = {}
+    links: list[dict[str, Any]] = []
+    for symbol, old, new, before_day, after_day, page, notice_sha, before_sha, after_sha in rules:
+        if not all(digest in verified for digest in (notice_sha, before_sha, after_sha)):
+            continue
+        if not all(any(row.get("symbol") == symbol and row.get("isin") == isin
+                       and row.get("series") == "EQ" and str(row.get("snapshot_date")) == day
+                       for row in parse_bhavcopy_identities(verified[digest]))
+                   for digest, isin, day in ((before_sha, old, before_day), (after_sha, new, after_day))):
+            continue
+        parents[(symbol, new)] = old
+        links.append({
+            "symbol": symbol, "old_isin": old, "new_isin": new,
+            "identity_event_type": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
+            "source_url": verified[notice_sha].source_url, "source_sha256": notice_sha, "source_page": page,
+            "before_reference_date": before_day, "before_source_url": verified[before_sha].source_url,
+            "before_source_sha256": before_sha, "after_reference_date": after_day,
+            "after_source_url": verified[after_sha].source_url, "after_source_sha256": after_sha,
+            "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
+            "independent_qa": "NOT_ASSERTED",
+        })
+
+    def durable_id(symbol: object, isin: object, original: Any) -> Any:
+        if not original or original != f"NSE-ISIN:{isin}":
+            return original
+        root_isin = str(isin)
+        while (str(symbol), root_isin) in parents:
+            root_isin = parents[(str(symbol), root_isin)]
+        return f"NSE-ISIN:{root_isin}"
+
+    def project(row: dict[str, Any]) -> dict[str, Any]:
+        identifier = durable_id(row.get("symbol"), row.get("isin"), row.get("instrument_id"))
+        if identifier == row.get("instrument_id"):
+            return dict(row)
+        return row | {"instrument_id": identifier,
+                      "identity_reference_instrument_id": row["instrument_id"],
+                      "identity_continuity_basis": "DOCUMENTED_STOCK_SPLIT_SEE_IDENTITY_CONTINUITY_EVIDENCE"}
+
+    for link in links:
+        link["durable_instrument_id"] = durable_id(link["symbol"], link["new_isin"], f"NSE-ISIN:{link['new_isin']}")
+    resolved: list[Observation] = []
+    observation_audit: list[dict[str, Any]] = []
+    for observation in observations:
+        identifier = durable_id(observation.symbol, observation.isin, observation.instrument_id)
+        updated = replace(observation, instrument_id=identifier)
+        resolved.append(updated)
+        if identifier != observation.instrument_id:
+            observation_audit.append({
+                "original_observation_hash": observation_hash(observation),
+                "resolved_observation_hash": observation_hash(updated),
+                "symbol": observation.symbol, "isin": observation.isin,
+                "effective_date": observation.effective_date,
+                "old_instrument_id": observation.instrument_id, "new_instrument_id": identifier,
+                "source_url": observation.source_url, "source_sha256": observation.source_sha256,
+                "membership_or_date_assertion_changed": False,
+            })
+    return resolved, [project(row) for row in master], [project(row) for row in aliases], {
+        "links": links, "observations": observation_audit,
+    }
+
+
+def _company_key(value: object) -> str:
+    value = str(value or "").upper()
+    value = re.sub(r"\bCORPORATION\b", "CORP", value)
+    value = re.sub(r"\bLIMITED\b", "LTD", value)
+    value = re.sub(r"\bCOMPANY\b", "CO", value)
+    return re.sub(r"[^A-Z0-9]", "", value)
+
+
+def _suppress_redundant_workbook_observations(observations: list[Observation]) -> list[Observation]:
+    """Keep workbook provenance but avoid re-flagging events confirmed by a release."""
+    def action_value(observation: Observation) -> str:
+        return observation.action.value if isinstance(observation.action, Action) else str(observation.action or "").upper()
+
+    certified_release_keys = {
+        (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
+        for observation in observations
+        if observation.extraction_method != "OFFICIAL_XLS"
+        and observation.source_tier in {"A1", "A2"}
+        and observation.review_status == "ACCEPTED"
+        and observation.confidence == "CERTIFIED"
+        and observation.instrument_id and observation.symbol and observation.effective_date
+    }
+    variants = [
+        (date(2013, 4, 1), "DROP", "Great Eastern Shipping Co. Ltd.", "The Great Eastern Shipping Co. Ltd.",
+         "747ada17f17537dd854ff497062e263dd32b84598eb74e36795e230c95afff69"),
+        (date(2014, 3, 28), "DROP", "Orissa Min Dev Co Ltd.", "Orissa Min Development Co. Ltd.",
+         "ad374e90736c719b626d0d774b418edb350d2aff5fafb62c3734468a8e7db7c3"),
+        (date(2016, 4, 1), "ADD", "National Buildings Construction Corporation Ltd.", "National Buildings Construction Corp. Ltd.",
+         "db2e4802e43b68fcbfbbf2cb03cb59c6d5f9ebf086ab6687d5a15daa45c2525f"),
+    ]
+    workbook_hash = "8869bb7c4df67403131a494a8cc65509e80828f9438bc150b506cdbf55378046"
+    variant_keys: set[tuple[str, date | None, str, str]] = set()
+    for day, action, workbook_name, release_name, digest in variants:
+        if any(row.source_sha256 == digest and row.index_id == "NIFTY_200" and row.effective_date == day
+               and action_value(row) == action and row.company_name == release_name and row.instrument_id and row.symbol
+               and row.source_tier in {"A1", "A2"} and row.confidence == "CERTIFIED"
+               and row.review_status == "ACCEPTED" for row in observations):
+            variant_keys.add(("NIFTY_200", day, action, _company_key(workbook_name)))
+    return [
+        observation for observation in observations
+        if not (observation.extraction_method == "OFFICIAL_XLS" and (
+            (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
+            in certified_release_keys or (
+                observation.source_sha256 == workbook_hash and observation.source_tier == "A1"
+                and (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
+                in variant_keys
+            )))
+    ]
+
+
+def _verified_calendar_overrides(sources: list[SourceRecord]) -> tuple[SessionOverride, ...]:
+    """Apply the already inspected NSE session exceptions through the calendar contract."""
+    from datetime import time
+
+    rules = [
+        ("c70a96e353be65fa1905057300ddd0cb8823fb8398bb3b9e13d95fbe166888b2", date(2024, 1, 22), "CLOSED", None, None),
+        ("9236595e1d85a2c58abaa9d6a8e2d148f8ca7fdd696faa20407e91b233840361", date(2024, 1, 20), "SPECIAL_SESSION", None, None),
+        ("04b67f39314bae95672d86497c28cbed6cea698ad6f029ba47ef74feb9f6da91", date(2024, 3, 2), "SPECIAL_SESSION", time(9, 15), time(12, 30)),
+        ("04b67f39314bae95672d86497c28cbed6cea698ad6f029ba47ef74feb9f6da91", date(2024, 3, 2), "INTERRUPTION", time(10), time(11, 30)),
+        ("2483f60d67c34231d6fd25024cf5767c031b234196a7a475535d434cd4e758c8", date(2024, 5, 18), "SPECIAL_SESSION", time(9, 15), time(12, 30)),
+        ("2483f60d67c34231d6fd25024cf5767c031b234196a7a475535d434cd4e758c8", date(2024, 5, 18), "INTERRUPTION", time(10), time(11, 30)),
+        ("84d12e29654e75f77baa0b9064a26f6d0e4c3ff58e64df14e01247a0c15a91be", date(2025, 2, 1), "SPECIAL_SESSION", time(9, 15), time(15, 30)),
+        ("09f80430f3ec95aeaeeb98938124273892abccc38a7aaa440b38a6426b428c21", date(2023, 11, 12), "SPECIAL_SESSION", time(18, 15), time(19, 15)),
+    ]
+    verified = {source.source_sha256: source for source in sources if source.source_sha256 in {rule[0] for rule in rules}
+                and source.source_tier in {"A1", "A2"} and Path(source.local_path).is_file()
+                and sha256_file(Path(source.local_path)) == source.source_sha256}
+    return tuple(SessionOverride(day, kind, f"{verified[digest].source_url}#{digest}", start, end)
+                 for digest, day, kind, start, end in rules if digest in verified)
+
+
+def _align_date_only_causality(observations: list[Observation], calendar: Any) -> list[Observation]:
+    announcements = {row.announcement_date for row in observations if row.announcement_date is not None
+                     and row.known_at_basis == "DATE_ONLY_CONSERVATIVE_NEXT_SESSION"}
+    opens = {day: next_trading_session_open(day, calendar=calendar) for day in announcements}
+    return [replace(row, known_at=opens[row.announcement_date])
+            if row.announcement_date in opens and row.known_at_basis == "DATE_ONLY_CONSERVATIVE_NEXT_SESSION" else row
+            for row in observations]
 
 
 def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
     """Parse official NSE rows into period-valid identity evidence."""
-    with Path(source.local_path).open(encoding="utf-8-sig", newline="") as handle:
-        reader = csv.DictReader(handle)
-        required = {"SYMBOL", "NAME OF COMPANY", "DATE OF LISTING", "ISIN NUMBER"}
-        if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
-            return []
-        rows: list[dict[str, Any]] = []
-        seen: set[tuple[str, str]] = set()
-        for original in reader:
-            raw = {str(key).strip().upper(): value for key, value in original.items() if key is not None}
-            symbol = str(raw.get("SYMBOL") or "").strip()
-            isin = str(raw.get("ISIN NUMBER") or "").strip()
-            if not symbol or not isin or isin.casefold() in {"na", "nan"}:
+    observed_snapshot = _parse_day(source.document_date) or _parse_day(source.retrieved_at)
+    data = Path(source.local_path).read_bytes()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252")
+    reader = csv.DictReader(io.StringIO(text))
+    required = {"SYMBOL", "NAME OF COMPANY", "DATE OF LISTING", "ISIN NUMBER"}
+    if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for original in reader:
+        raw = {str(key).strip().upper(): value for key, value in original.items() if key is not None}
+        symbol = str(raw.get("SYMBOL") or "").strip()
+        isin = str(raw.get("ISIN NUMBER") or "").strip()
+        if not symbol or not isin or isin.casefold() in {"na", "nan"}:
+            continue
+        key = (symbol.casefold(), isin.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        listing_date = _parse_day(raw.get("DATE OF LISTING"))
+        rows.append({
+            "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
+            "company_name": str(raw.get("NAME OF COMPANY") or "").strip() or None,
+            "listing_date": listing_date.isoformat() if listing_date else None,
+            "valid_from": listing_date.isoformat() if listing_date else None,
+            "valid_until": None, "source_url": source.source_url,
+            "source_sha256": source.source_sha256, "source_tier": source.source_tier,
+            "snapshot_date": observed_snapshot.isoformat() if observed_snapshot else None,
+            "observed_snapshot_date": observed_snapshot.isoformat() if observed_snapshot else None,
+            "retrieved_at": source.retrieved_at,
+            "has_explicit_historical_interval": False,
+        })
+    return rows
+
+
+def parse_archived_index_constituent_snapshot(source: SourceRecord) -> list[dict[str, Any]]:
+    """Parse a dated archived official index constituent CSV as identity evidence."""
+    data = Path(source.local_path).read_bytes()
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = data.decode("cp1252")
+    reader = csv.DictReader(io.StringIO(text))
+    required = {"COMPANY NAME", "SYMBOL", "SERIES", "ISIN CODE"}
+    if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
+        return []
+    snapshot_date = _parse_day(source.document_date)
+    if snapshot_date is None:
+        return []
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for original in reader:
+        raw = {str(key).strip().upper(): value for key, value in original.items() if key is not None}
+        symbol = str(raw.get("SYMBOL") or "").strip()
+        isin = str(raw.get("ISIN CODE") or "").strip()
+        series = str(raw.get("SERIES") or "").strip().upper()
+        if not symbol or not isin or series != "EQ" or not re.fullmatch(r"IN[A-Z0-9]{10}", isin):
+            continue
+        key = (symbol.casefold(), isin.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append({
+            "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
+            "series": series, "company_name": str(raw.get("COMPANY NAME") or "").strip() or None,
+            "listing_date": None, "valid_from": snapshot_date.isoformat(), "valid_until": None,
+            "validity_basis": "ARCHIVED_INDEX_SNAPSHOT_DATE_ONLY",
+            "source_url": source.source_url, "source_sha256": source.source_sha256,
+            "source_tier": source.source_tier, "snapshot_date": snapshot_date.isoformat(),
+            "observed_snapshot_date": snapshot_date.isoformat(),
+            "has_explicit_historical_interval": False,
+            "identity_event_type": "ARCHIVED_OFFICIAL_INDEX_CONSTITUENT_SNAPSHOT",
+        })
+    return rows
+
+
+def parse_bhavcopy_identities(
+    source: SourceRecord, *, identity_keys: set[tuple[str, str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Read dated NSE ISIN evidence without treating bhavcopy as membership evidence."""
+    rows: list[dict[str, Any]] = []
+    with zipfile.ZipFile(source.local_path) as archive:
+        for member in archive.namelist():
+            if not member.lower().endswith(".csv"):
                 continue
-            key = (symbol.casefold(), isin.casefold())
-            if key in seen:
+            data = archive.read(member)
+            try:
+                text = data.decode("utf-8-sig")
+            except UnicodeDecodeError:
+                text = data.decode("cp1252")
+            for original in csv.DictReader(io.StringIO(text)):
+                raw = {str(key).strip().casefold(): value for key, value in original.items() if key is not None}
+                when = _parse_day(raw.get("timestamp") or raw.get("trad dt") or raw.get("traddt"))
+                symbol = str(raw.get("symbol") or raw.get("ticker") or raw.get("tckrsymb") or "").strip()
+                isin = str(raw.get("isin") or raw.get("isin number") or "").strip()
+                series = str(raw.get("series") or raw.get("sctysrs") or "").strip().upper()
+                if series != "EQ" or not when or not symbol or not re.fullmatch(r"IN[A-Z0-9]{10}", isin):
+                    continue
+                if identity_keys is not None and (when.isoformat(), symbol.upper()) not in identity_keys:
+                    continue
+                if source.document_date and when.isoformat() != source.document_date:
+                    raise ValueError(f"Bhavcopy timestamp disagrees with catalogue: {source.source_url}")
+                rows.append({
+                    "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
+                    "series": series, "company_name": None,
+                    "valid_from": when.isoformat(), "valid_until": (when + timedelta(days=1)).isoformat(),
+                    "snapshot_date": when.isoformat(), "source_url": source.source_url,
+                    "source_sha256": source.source_sha256, "source_tier": source.source_tier,
+                    "source_member": member, "identity_event_type": "DATED_BHAVCOPY_IDENTITY",
+                    "has_explicit_historical_interval": True,
+                })
+    return rows
+
+
+def _enrich_bhavcopy_company_names(
+    bhavcopy_rows: list[dict[str, Any]], reference_rows: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Join dated NSE symbol/ISIN rows to an exact official company assertion."""
+    references: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    references_by_isin: dict[str, list[dict[str, Any]]] = {}
+    for row in reference_rows:
+        symbol = str(row.get("symbol") or "").casefold()
+        isin = str(row.get("isin") or "").casefold()
+        company = str(row.get("company_name") or "").strip()
+        if not symbol or not isin or not company:
+            continue
+        references.setdefault((symbol, isin), []).append(row)
+        references_by_isin.setdefault(isin, []).append(row)
+
+    enriched: list[dict[str, Any]] = []
+    for row in bhavcopy_rows:
+        if row.get("company_name"):
+            enriched.append(dict(row))
+            continue
+        key = (str(row.get("symbol") or "").casefold(), str(row.get("isin") or "").casefold())
+        when = _parse_day(row.get("snapshot_date"))
+        candidates = references.get(key, []) or references_by_isin.get(key[1], [])
+        dated_candidates = [
+            (candidate, candidate_day)
+            for candidate in candidates
+            if (candidate_day := _parse_day(
+                candidate.get("snapshot_date") or candidate.get("valid_from")
+            )) is not None
+        ]
+        ranked = [
+            candidate
+            for candidate, _candidate_day in sorted(
+                dated_candidates,
+                key=lambda item: (
+                    abs((item[1] - when).days) if when else 0,
+                    str(item[0].get("snapshot_date") or item[0].get("valid_from") or ""),
+                ),
+            )
+        ]
+        if ranked:
+            nearest_day = _parse_day(ranked[0].get("snapshot_date") or ranked[0].get("valid_from"))
+            nearest = [candidate for candidate in ranked if (
+                _parse_day(candidate.get("snapshot_date") or candidate.get("valid_from")) == nearest_day
+            )]
+            names = {str(candidate.get("company_name") or "").strip() for candidate in nearest}
+            names.discard("")
+            if len(names) == 1:
+                reference = nearest[0]
+                enriched.append(row | {
+                    "company_name": names.pop(),
+                    "company_name_source_url": reference.get("source_url", ""),
+                    "company_name_source_sha256": reference.get("source_sha256", ""),
+                    "company_name_resolution_basis": "EXACT_SYMBOL_ISIN_CROSS_SOURCE",
+                })
                 continue
-            seen.add(key)
-            listing_date = _parse_day(raw.get("DATE OF LISTING"))
-            rows.append({
-                "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
-                "company_name": str(raw.get("NAME OF COMPANY") or "").strip() or None,
-                "valid_from": listing_date.isoformat() if listing_date else None,
-                "valid_until": None, "source_url": source.source_url,
-                "source_sha256": source.source_sha256, "source_tier": source.source_tier,
-            })
-        return rows
+        enriched.append(dict(row))
+    return enriched
+
+
+def parse_official_identity_change_candidates(
+    records: list[SourceRecord], master: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Parse official symbol/name changes as manual-review identity candidates.
+
+    These tables establish an exchange-published change relationship but do not
+    carry historical ISINs. They are therefore retained as candidates and never
+    promoted into the resolver's certified alias set automatically.
+    """
+    master_by_symbol = {
+        str(row.get("symbol") or "").strip().casefold(): row
+        for row in master if row.get("instrument_id")
+    }
+    result: list[dict[str, Any]] = []
+    for source in records:
+        if source.source_url not in {SYMBOL_CHANGE_URL, NAME_CHANGE_URL}:
+            continue
+        with Path(source.local_path).open(encoding="utf-8-sig", newline="") as handle:
+            reader = csv.reader(handle)
+            if source.source_url == SYMBOL_CHANGE_URL:
+                for raw in reader:
+                    if len(raw) < 4:
+                        continue
+                    old_symbol, new_symbol, changed = str(raw[1]).strip(), str(raw[2]).strip(), _parse_day(raw[3])
+                    candidate = master_by_symbol.get(new_symbol.casefold())
+                    if not old_symbol or not new_symbol or old_symbol.casefold() == new_symbol.casefold() or candidate is None:
+                        continue
+                    result.append({
+                        **candidate,
+                        "symbol": old_symbol,
+                        "valid_from": None,
+                        "valid_until": changed.isoformat() if changed else None,
+                        "identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CANDIDATE",
+                        "confidence": "MANUAL_REVIEW",
+                        "review_status": "MANUAL_REVIEW",
+                        "source_url": source.source_url,
+                        "source_sha256": source.source_sha256,
+                        "source_tier": source.source_tier,
+                        "has_explicit_historical_interval": bool(changed),
+                        "identity_candidate_basis": f"official symbol change {old_symbol}->{new_symbol}",
+                    })
+            else:
+                dict_reader = csv.DictReader(handle)
+                for raw_record in dict_reader:
+                    normalized = {str(key).strip().upper(): value for key, value in raw_record.items() if key is not None}
+                    symbol = str(normalized.get("NCH_SYMBOL") or "").strip()
+                    changed = _parse_day(normalized.get("NCH_DT"))
+                    previous_name = str(normalized.get("NCH_PREV_NAME") or "").strip()
+                    candidate = master_by_symbol.get(symbol.casefold())
+                    if not symbol or not previous_name or candidate is None:
+                        continue
+                    result.append({
+                        **candidate,
+                        "symbol": symbol,
+                        "company_name": previous_name,
+                        "valid_from": None,
+                        "valid_until": changed.isoformat() if changed else None,
+                        "identity_event_type": "OFFICIAL_NAME_CHANGE_CANDIDATE",
+                        "confidence": "MANUAL_REVIEW",
+                        "review_status": "MANUAL_REVIEW",
+                        "source_url": source.source_url,
+                        "source_sha256": source.source_sha256,
+                        "source_tier": source.source_tier,
+                        "has_explicit_historical_interval": bool(changed),
+                        "identity_candidate_basis": f"official company-name change for {symbol}",
+                    })
+    unique: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row in result:
+        key = (
+            str(row.get("instrument_id") or ""), str(row.get("symbol") or "").casefold(),
+            str(row.get("valid_until") or ""), str(row.get("identity_event_type") or ""),
+        )
+        unique[key] = row
+    return sorted(unique.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
 
 
 def parse_challenger_events(source: SourceRecord) -> list[Observation]:
@@ -392,16 +1131,29 @@ def parse_monthly_snapshots(records: list[SourceRecord]) -> list[dict[str, Any]]
 
 def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Combine official identities with unresolved snapshot symbol candidates."""
-    aliases: dict[tuple[str, str], dict[str, Any]] = {}
+    aliases: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     master_symbols: set[str] = set()
+    canonical_master_rows: dict[str, dict[str, Any]] = {}
     for row in master:
         symbol = str(row["symbol"]).strip()
         master_symbols.add(symbol.casefold())
-        aliases[(str(row["instrument_id"]), symbol.casefold())] = {
+        current = canonical_master_rows.get(symbol.casefold())
+        if current is None:
+            canonical_master_rows[symbol.casefold()] = row
+            continue
+        current_is_current = current.get("source_url") == SECURITIES_MASTER_URL
+        row_is_current = row.get("source_url") == SECURITIES_MASTER_URL
+        current_snapshot = str(current.get("snapshot_date") or current.get("valid_from") or "")
+        row_snapshot = str(row.get("snapshot_date") or row.get("valid_from") or "")
+        if (row_is_current and not current_is_current) or (row_is_current == current_is_current and row_snapshot > current_snapshot):
+            canonical_master_rows[symbol.casefold()] = row
+    for row in canonical_master_rows.values():
+        symbol = str(row["symbol"]).strip()
+        aliases[(str(row["instrument_id"]), symbol.casefold(), str(row.get("valid_from") or ""), str(row.get("valid_until") or ""))] = {
             **row, "alias_symbol": row["symbol"], "confidence": "CERTIFIED",
             "resolution_status": "ACCEPTED",
         }
-    candidates: dict[str, dict[str, Any]] = {}
+    candidates: dict[tuple[str, str], dict[str, Any]] = {}
     for row in snapshots:
         symbol = str(row.get("symbol") or "").strip()
         if not symbol:
@@ -411,18 +1163,24 @@ def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, An
         # falsely reports the same current listing as unresolved historical data.
         if symbol.casefold() in master_symbols:
             continue
-        item = candidates.setdefault(symbol, {
+        snapshot_date = str(row.get("snapshot_date") or "")
+        item = candidates.setdefault((symbol.casefold(), snapshot_date), {
             "instrument_id": None, "isin": None, "alias_symbol": symbol,
             "company_name": row.get("company_name"), "valid_from": row["snapshot_date"],
             "valid_until": None, "confidence": "UNRESOLVED", "resolution_status": "MANUAL_REVIEW",
             "source_url": row["source_url"], "source_sha256": row["source_sha256"],
+            "snapshot_date": row.get("snapshot_date"), "has_explicit_historical_interval": True,
         })
         if not item.get("company_name") and row.get("company_name"):
             item["company_name"] = row["company_name"]
     for row in candidates.values():
-        key = (str(row["instrument_id"]), str(row["alias_symbol"]).casefold())
+        key = (str(row["instrument_id"]), str(row["alias_symbol"]).casefold(), str(row.get("valid_from") or ""), str(row.get("valid_until") or ""))
         aliases.setdefault(key, row)
-    return sorted(aliases.values(), key=lambda row: (str(row.get("alias_symbol", "")), str(row.get("instrument_id", ""))))
+    rows = sorted(aliases.values(), key=lambda row: (str(row.get("alias_symbol", "")), str(row.get("instrument_id", "")), str(row.get("valid_from", ""))))
+    for row in rows:
+        identity_key = "|".join(str(row.get(field) or "") for field in ("instrument_id", "alias_symbol", "valid_from", "valid_until", "source_sha256"))
+        row["alias_id"] = hashlib.sha256(identity_key.encode("utf-8")).hexdigest()
+    return rows
 
 
 def _write_json(path: Path, rows: Any) -> None:
@@ -437,7 +1195,34 @@ def _write_json(path: Path, rows: Any) -> None:
     path.write_text(json.dumps(serialise(rows), indent=2, default=str), encoding="utf-8")
 
 
-def _coverage(snapshots: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _verified_count_policy(sources: list[SourceRecord]) -> _CountPolicy | None:
+    available = {source.source_url: source.source_sha256 for source in sources}
+    required = TATA_DVR_COUNT_POLICY["sources"]
+    if all(available.get(item["url"]) == item["sha256"] for item in required):
+        return TATA_DVR_COUNT_POLICY
+    return None
+
+
+def _expected_member_count(
+    as_of: date, sources: list[SourceRecord] | None = None,
+) -> tuple[int, str, str, str]:
+    policy = _verified_count_policy(sources or [])
+    if policy and policy["start"] <= as_of < policy["end"]:
+        source_urls = ";".join(item["url"] for item in policy["sources"])
+        source_shas = ";".join(item["sha256"] for item in policy["sources"])
+        return int(policy["expected_count"]), str(policy["basis"]), source_urls, source_shas
+    return 200, "NIFTY 200 nominal count outside an evidenced exception period", "", ""
+
+
+def _expected_counts_for_sessions(
+    trading_days: list[date], sources: list[SourceRecord],
+) -> dict[date, int]:
+    return {day: _expected_member_count(day, sources)[0] for day in trading_days}
+
+
+def _coverage(
+    snapshots: list[dict[str, Any]], sources: list[SourceRecord] | None = None,
+) -> list[dict[str, str]]:
     by_month: dict[str, set[str]] = {}
     for row in snapshots:
         month = str(row["snapshot_date"])[:7]
@@ -448,11 +1233,21 @@ def _coverage(snapshots: list[dict[str, Any]]) -> list[dict[str, str]]:
     while cursor <= end:
         key = cursor.isoformat()[:7]
         count = len(by_month.get(key, set()) - {""})
+        checkpoint_dates = [
+            _parse_day(row.get("snapshot_date")) for row in snapshots if str(row.get("snapshot_date", ""))[:7] == key
+        ]
+        checkpoint_date = min((value for value in checkpoint_dates if value is not None), default=cursor)
+        expected, basis, source_urls, source_shas = _expected_member_count(checkpoint_date, sources)
+        passed = count == expected
         result.append({
             "period": key, "evidence_type": "OFFICIAL_MONTHLY_WEIGHTAGE",
             "snapshot_member_count": str(count),
-            "status": "PASS" if count == 200 else "BLOCKED",
-            "qa_note": "verified symbol count" if count == 200 else "missing or non-200 official checkpoint",
+            "expected_member_count": str(expected),
+            "expected_count_basis": basis,
+            "expected_count_source_url": source_urls,
+            "expected_count_source_sha256": source_shas,
+            "status": "PASS" if passed else "BLOCKED",
+            "qa_note": f"verified symbol count against expected {expected}" if passed else f"missing or non-{expected} official checkpoint",
         })
         cursor = date(cursor.year + (cursor.month == 12), 1 if cursor.month == 12 else cursor.month + 1, 1)
     return result
@@ -464,9 +1259,10 @@ def _annual_coverage(coverage: list[dict[str, str]]) -> list[dict[str, str]]:
         by_year.setdefault(row["period"][:4], []).append(row)
     return [{
         "year": year, "months_expected": str(len(rows)),
-        "months_with_200_members": str(sum(row["status"] == "PASS" for row in rows)),
+        "months_with_200_members": str(sum(row["status"] == "PASS" and row.get("expected_member_count", "200") == "200" for row in rows)),
+        "months_with_expected_members": str(sum(row["status"] == "PASS" for row in rows)),
         "status": "PASS" if all(row["status"] == "PASS" for row in rows) else "BLOCKED",
-        "qa_note": "year has complete 200-member monthly checkpoints" if all(row["status"] == "PASS" for row in rows)
+        "qa_note": "year has complete expected-count monthly checkpoints" if all(row["status"] == "PASS" for row in rows)
         else "year contains missing or non-200 checkpoints",
     } for year, rows in sorted(by_year.items())]
 
@@ -474,6 +1270,10 @@ def _annual_coverage(coverage: list[dict[str, str]]) -> list[dict[str, str]]:
 def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = list(rows[0]) if rows else ["status"]
+    for row in rows[1:]:
+        for field in row:
+            if field not in fields:
+                fields.append(field)
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader()
@@ -518,32 +1318,64 @@ def _monthly_gap_rows(
         if checkpoint_date is not None:
             replay_count = len({row.instrument_id for row in active_intervals(intervals, checkpoint_date)})
         observed = int(item["snapshot_member_count"])
-        if observed == 200:
+        expected = int(item.get("expected_member_count", "200"))
+        source_issue, source_note = _monthly_source_issue(source)
+        if observed == expected:
             status = "PASS"
             action = "none"
         elif not official_found:
             status = "A_NO_SNAPSHOT_EVIDENCE"
             action = "retrieve an official historical checkpoint or record an external evidence gap"
+        elif source_issue in {"E_HTML_RESPONSE_NOT_ARCHIVE", "E_INVALID_ARCHIVE", "E_CORRUPTED_ARCHIVE", "E_SOURCE_FILE_MISSING", "E_SOURCE_HASH_MISMATCH"}:
+            status = source_issue
+            action = source_note
         elif observed == 0:
             status = "E_SOURCE_PRESENT_ZERO_ROWS"
             action = "inspect the downloaded archive member/table and parser output"
         else:
-            status = "B_SNAPSHOT_NON_200"
-            action = "manual table audit to distinguish parser extraction from methodology/count difference"
+            status = "B_SNAPSHOT_NON_EXPECTED_COUNT"
+            action = "manual table audit to distinguish parser extraction from documented methodology/count difference"
         rows.append({
             "month": month,
             "official_snapshot_found": str(official_found).upper(),
             "observed_count": observed,
-            "expected_count": 200,
+            "expected_count": expected,
+            "expected_count_basis": item.get("expected_count_basis", ""),
+            "expected_count_source_url": item.get("expected_count_source_url", ""),
+            "expected_count_source_sha256": item.get("expected_count_source_sha256", ""),
             "source_url": source.source_url if source else (month_rows[0]["source_url"] if month_rows else ""),
             "archive_url": source.archive_url if source else "",
             "source_sha": source.source_sha256 if source else (month_rows[0]["source_sha256"] if month_rows else ""),
             "replay_member_count": replay_count if replay_count is not None else "",
             "snapshot_vs_replay_diff": (replay_count - observed) if replay_count is not None else "",
             "status": status,
+            "source_issue": source_issue,
             "action_needed": action,
         })
     return rows
+
+
+def _monthly_source_issue(source: SourceRecord | None) -> tuple[str, str]:
+    """Classify a catalogued monthly source before calling it a parser failure."""
+    if source is None:
+        return "A_NO_SNAPSHOT_EVIDENCE", "retrieve an official historical checkpoint or record an external evidence gap"
+    path = Path(source.local_path)
+    if not path.is_file():
+        return "E_SOURCE_FILE_MISSING", "retrieve the missing source bytes from the recorded official URL or archive"
+    if sha256_file(path) != source.source_sha256:
+        return "E_SOURCE_HASH_MISMATCH", "retrieve bytes matching the catalogued SHA-256 before parsing"
+    try:
+        with zipfile.ZipFile(path) as archive:
+            if archive.testzip() is not None:
+                return "E_CORRUPTED_ARCHIVE", "retrieve an intact official archive before parsing"
+            if not [name for name in archive.namelist() if "200" in name.upper() and not name.endswith("/")]:
+                return "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER", "inspect the archive contents and retrieve an official NIFTY-200 member"
+    except (OSError, zipfile.BadZipFile):
+        prefix = path.read_bytes()[:1024].lstrip().lower()
+        if b"<html" in prefix or b"<!doctype html" in prefix:
+            return "E_HTML_RESPONSE_NOT_ARCHIVE", "retrieve the official archive or a verified Wayback copy; the cached response is HTML"
+        return "E_INVALID_ARCHIVE", "retrieve a readable official archive before parsing"
+    return "B_CANDIDATE_MEMBER_ZERO_ROWS", "inspect the candidate archive member/table and parser output"
 
 
 def _known_at_rows(events: list[Any]) -> list[dict[str, Any]]:
@@ -561,17 +1393,59 @@ def _known_at_rows(events: list[Any]) -> list[dict[str, Any]]:
     } for event in events]
 
 
+def _event_date_snapshots(
+    intervals: list[Any], events: list[Any], sources: list[SourceRecord],
+) -> list[dict[str, Any]]:
+    """Materialise replay membership at every canonical effective-date boundary."""
+    rows: list[dict[str, Any]] = []
+    dates = sorted({event.effective_date for event in events if event.effective_date})
+    for as_of in dates:
+        members = sorted(active_intervals(intervals, as_of), key=lambda item: item.instrument_id)
+        expected, basis, source_urls, source_shas = _expected_member_count(as_of, sources)
+        rows.append({
+            "snapshot_date": as_of,
+            "expected_member_count": expected,
+            "replay_member_count": len(members),
+            "instrument_ids": [member.instrument_id for member in members],
+            "symbols": [member.symbol_at_entry for member in members],
+            "event_hashes": sorted(event.event_hash for event in events if event.effective_date == as_of),
+            "expected_count_basis": basis,
+            "expected_count_source_url": source_urls,
+            "expected_count_source_sha256": source_shas,
+            "status": "PASS" if len(members) == expected else "BLOCKED",
+        })
+    return rows
+
+
+def _baseline_blocker_counts(root: Path) -> Counter[str]:
+    baseline = root / "artifacts/nifty200_pit_v1_pre_end_to_end_20260918/blocker_ledger.csv"
+    if not baseline.is_file():
+        return Counter()
+    with baseline.open(encoding="utf-8", newline="") as handle:
+        return Counter(row.get("blocker_type", "") for row in csv.DictReader(handle) if row.get("blocker_type"))
+
+
 def _historical_master_rows(
     instrument_master: list[dict[str, Any]], aliases: list[dict[str, Any]],
+    identity_change_candidates: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows = [{
         "instrument_id": row.get("instrument_id"),
         "isin": row.get("isin"),
         "symbol": row.get("symbol"),
         "company_name": row.get("company_name"),
+        "listing_date": row.get("listing_date", row.get("valid_from")),
         "valid_from": row.get("valid_from"),
         "valid_until": row.get("valid_until"),
-        "identity_event_type": "CURRENT_SECURITY_MASTER_LISTING_ANCHOR",
+        "snapshot_date": row.get("snapshot_date"),
+        "observed_snapshot_date": row.get("observed_snapshot_date", row.get("snapshot_date")),
+        "retrieved_at": row.get("retrieved_at"),
+        "has_explicit_historical_interval": bool(row.get("has_explicit_historical_interval", False)),
+        "identity_event_type": (
+            "CURRENT_SECURITY_MASTER_LISTING_ANCHOR"
+            if row.get("source_url") == SECURITIES_MASTER_URL
+            else row.get("identity_event_type") or "HISTORICAL_SECURITY_MASTER_SNAPSHOT"
+        ),
         "source_url": row.get("source_url"),
         "source_sha256": row.get("source_sha256"),
         "source_tier": row.get("source_tier"),
@@ -585,8 +1459,13 @@ def _historical_master_rows(
         "isin": row.get("isin"),
         "symbol": row.get("alias_symbol") or row.get("symbol"),
         "company_name": row.get("company_name"),
+        "listing_date": row.get("listing_date", row.get("valid_from")),
         "valid_from": row.get("valid_from"),
         "valid_until": row.get("valid_until"),
+        "snapshot_date": row.get("snapshot_date"),
+        "observed_snapshot_date": row.get("observed_snapshot_date", row.get("snapshot_date")),
+        "retrieved_at": row.get("retrieved_at"),
+        "has_explicit_historical_interval": bool(row.get("has_explicit_historical_interval", False)),
         "identity_event_type": "HISTORICAL_ALIAS_UNRESOLVED",
         "source_url": row.get("source_url"),
         "source_sha256": row.get("source_sha256"),
@@ -596,6 +1475,7 @@ def _historical_master_rows(
         "predecessor_instrument_id": None,
         "successor_instrument_id": None,
     } for row in aliases if row.get("confidence") != "CERTIFIED")
+    rows.extend(identity_change_candidates or [])
     return rows
 
 
@@ -725,6 +1605,7 @@ def _symbol_key(value: object) -> str:
 
 def _valid_checkpoint_groups(
     snapshots: list[dict[str, Any]],
+    expected_member_counts: Mapping[Any, int] | None = None,
 ) -> list[tuple[date, list[dict[str, Any]]]]:
     grouped: dict[date, list[dict[str, Any]]] = {}
     for row in snapshots:
@@ -735,8 +1616,17 @@ def _valid_checkpoint_groups(
         grouped.setdefault(snapshot_date, []).append(row)
     return sorted(
         (snapshot_date, rows) for snapshot_date, rows in grouped.items()
-        if len({_symbol_key(row.get("symbol")) for row in rows} - {""}) == 200
+        if len({_symbol_key(row.get("symbol")) for row in rows} - {""})
+        == _expected_replay_count(snapshot_date, expected_member_counts)
     )
+
+
+def _expected_replay_count(
+    session_date: date,
+    expected_member_counts: Mapping[Any, int] | None,
+) -> int:
+    mapping = expected_member_counts or {}
+    return int(mapping.get(session_date.isoformat(), mapping.get(session_date, 200)))
 
 
 def _anchor_replay_forensics(
@@ -744,9 +1634,10 @@ def _anchor_replay_forensics(
     events: list[Any],
     instrument_master: list[dict[str, Any]],
     trading_days: list[date],
+    expected_member_counts: Mapping[Any, int] | None = None,
 ) -> dict[str, Any]:
     """Measure a later-checkpoint reverse replay without making it authoritative."""
-    checkpoints = _valid_checkpoint_groups(snapshots)
+    checkpoints = _valid_checkpoint_groups(snapshots, expected_member_counts)
     if not checkpoints:
         return {
             "anchor_evidence": [], "candidate_rows": [], "session_rows": [],
@@ -755,7 +1646,8 @@ def _anchor_replay_forensics(
                 "status": "NOT_ESTABLISHED", "source_checkpoint_date": "",
                 "source_checkpoint_count": 0, "candidate_member_count": 0,
                 "first_divergence_date": "", "first_divergence_count": "",
-                "last_divergence_date": "", "sessions_below_200": 0,
+                "last_divergence_date": "", "sessions_below_expected": 0,
+                "sessions_above_expected": 0, "sessions_below_200": 0,
                 "sessions_above_200": 0, "anchor_raw_rows": 0,
                 "anchor_unique_members": 0, "anchor_unique_durable_ids": 0,
                 "anchor_unique_isins": 0, "anchor_duplicate_rows": 0,
@@ -849,6 +1741,7 @@ def _anchor_replay_forensics(
     state_by_session: dict[date, set[str]] = {}
     event_position = 0
     for session_date in sorted(trading_days):
+        expected_count = _expected_replay_count(session_date, expected_member_counts)
         count_before = len(active)
         applied_events = []
         while event_position < len(ordered_events) and ordered_events[event_position].effective_date <= session_date:
@@ -866,7 +1759,8 @@ def _anchor_replay_forensics(
         state_by_session[session_date] = set(active)
         session_rows.append({
             "session_date": session_date.isoformat(), "active_member_count": len(active),
-            "expected_member_count": 200, "status": "PASS" if len(active) == 200 else "BLOCKED",
+            "expected_member_count": expected_count,
+            "status": "PASS" if len(active) == expected_count else "BLOCKED",
             "candidate_method": "REVERSE_CANONICAL_EVENTS_FROM_LATER_CHECKPOINT",
             "source_checkpoint_date": checkpoint_date.isoformat(),
             "source_checkpoint_sha256": checkpoint_rows[0].get("source_sha256", ""),
@@ -912,13 +1806,16 @@ def _anchor_replay_forensics(
                 "notes": "Diagnostic reverse replay retains a symbol not present in the official checkpoint.",
             })
 
-    divergence = next((row for row in session_rows if row["active_member_count"] != 200), None)
+    divergence = next(
+        (row for row in session_rows if row["active_member_count"] != row["expected_member_count"]),
+        None,
+    )
     divergence_events = divergence.get("events_on_session", "") if divergence else ""
     first_divergence = {
         "date": divergence["session_date"] if divergence else "",
         "count_before": divergence.get("count_before", "") if divergence else "",
         "count_after": divergence.get("count_after", "") if divergence else "",
-        "expected_count": 200 if divergence else "",
+        "expected_count": divergence.get("expected_member_count", "") if divergence else "",
         "event_count_on_session": divergence.get("event_count_on_session", "") if divergence else "",
         "events_on_session": divergence_events,
         "missing_from_replay": "UNRESOLVED_INITIAL_ANCHOR" if divergence else "",
@@ -941,7 +1838,10 @@ def _anchor_replay_forensics(
         str(master_by_symbol[symbol].get("isin") or "")
         for symbol in source_by_symbol if master_by_symbol.get(symbol, {}).get("isin")
     }
-    divergent_dates = [row["session_date"] for row in session_rows if row["active_member_count"] != 200]
+    divergent_dates = [
+        row["session_date"] for row in session_rows
+        if row["active_member_count"] != row["expected_member_count"]
+    ]
     summary = {
         "status": "NOT_ESTABLISHED", "source_checkpoint_date": checkpoint_date.isoformat(),
         "source_checkpoint_count": len(source_by_symbol), "candidate_member_count": len(candidate_rows),
@@ -950,6 +1850,12 @@ def _anchor_replay_forensics(
         "first_divergence_count": divergence["active_member_count"] if divergence else "",
         "first_divergence_events": divergence_events,
         "last_divergence_date": divergent_dates[-1] if divergent_dates else "",
+        "sessions_below_expected": sum(
+            row["active_member_count"] < row["expected_member_count"] for row in session_rows
+        ),
+        "sessions_above_expected": sum(
+            row["active_member_count"] > row["expected_member_count"] for row in session_rows
+        ),
         "sessions_below_200": sum(row["active_member_count"] < 200 for row in session_rows),
         "sessions_above_200": sum(row["active_member_count"] > 200 for row in session_rows),
         "anchor_raw_rows": len(checkpoint_rows),
@@ -959,6 +1865,12 @@ def _anchor_replay_forensics(
         "anchor_duplicate_rows": len(checkpoint_rows) - len(source_by_symbol),
         "anchor_unresolved_identities": len(source_by_symbol) - len(anchor_durable_ids),
         "session_count": len(session_rows),
+        "session_exact_expected": sum(
+            row["active_member_count"] == row["expected_member_count"] for row in session_rows
+        ),
+        "session_not_expected": sum(
+            row["active_member_count"] != row["expected_member_count"] for row in session_rows
+        ),
         "session_exact_200": sum(row["active_member_count"] == 200 for row in session_rows),
         "session_not_200": sum(row["active_member_count"] != 200 for row in session_rows),
         "checkpoint_count": len(checkpoint_rows_out),
@@ -1012,6 +1924,56 @@ def _conflict_forensics(
     return result
 
 
+def _raw_unresolved_observations(
+    raw_observations: list[Observation],
+    resolved_observations: list[Observation],
+    events: list[Any],
+) -> list[dict[str, Any]]:
+    """Keep still-unresolved raw assertions separate from required-event blockers.
+
+    Raw observations are retained for lineage, but resolution happens before
+    reconciliation. Filtering the pre-resolution list would therefore label
+    every source assertion as unresolved even when the resolver supplied a
+    durable identity. Pairing by the stable raw-evidence ID preserves the
+    original fields while making the unresolved report describe the actual
+    post-resolution state.
+    """
+    canonical_ids = {event.observation_id for event in events if event.observation_id}
+    resolved_by_id = {
+        observation.observation_id or observation_hash(observation): observation
+        for observation in resolved_observations
+    }
+    rows: list[dict[str, Any]] = []
+    for observation in raw_observations:
+        observation_id = observation.observation_id or observation_hash(observation)
+        resolved = resolved_by_id.get(observation_id, observation)
+        if observation_id in canonical_ids or (
+            (resolved.instrument_id or resolved.isin)
+            and str(observation.source_tier).upper() in {"A1", "A2"}
+        ):
+            continue
+        action = observation.action.value if isinstance(observation.action, Action) else str(observation.action or "")
+        rows.append({
+            "observation_id": observation_id,
+            "symbol": observation.symbol or "",
+            "company": observation.company_name or "",
+            "action": action,
+            "announcement_date": observation.announcement_date.isoformat() if observation.announcement_date else "",
+            "effective_date": observation.effective_date.isoformat() if observation.effective_date else "",
+            "source_tier": observation.source_tier,
+            "source_url": observation.source_url,
+            "source_sha256": observation.source_sha256,
+            "required_event_status": "CANONICAL_EVENT" if observation_id in canonical_ids else "NOT_CANONICALIZED",
+            "resolution_status": (
+                "IDENTITY_RESOLVED_EVENT_UNVERIFIED"
+                if resolved.instrument_id or resolved.isin
+                else "UNRESOLVED_AFTER_ID_RESOLUTION"
+            ),
+            "notes": "Raw source assertion is retained separately because it is not a canonical authoritative event; review its evidence tier and causality independently.",
+        })
+    return rows
+
+
 def _checkpoint_requirement_audit() -> str:
     return """# NIFTY-200 PIT checkpoint requirement audit
 
@@ -1044,6 +2006,7 @@ def _blocker_ledger(
     *,
     conflicts: list[Conflict],
     events: list[Any],
+    observations: list[Observation] | None = None,
     snapshots: list[dict[str, Any]],
     coverage: list[dict[str, str]],
     sources: list[SourceRecord],
@@ -1054,16 +2017,47 @@ def _blocker_ledger(
         snapshot_by_month.setdefault(str(row["snapshot_date"])[:7], []).append(row)
     conflict_by_id = {conflict.conflict_id: conflict for conflict in conflicts}
     event_by_hash = {event.event_hash: event for event in events}
+    event_by_observation_id = {event.observation_id: event for event in events if event.observation_id}
+    observation_by_id = {}
+    for observation in observations or []:
+        if observation.observation_id:
+            observation_by_id[observation.observation_id] = observation
+        observation_by_id[observation_hash(observation)] = observation
     coverage_by_month = {row["period"]: row for row in coverage}
     rows: list[dict[str, Any]] = []
+
+    def evidence_context(conflict: Conflict) -> tuple[str, str, str, str, str, str, str]:
+        for observation_id in conflict.observation_ids:
+            event = event_by_observation_id.get(observation_id)
+            if event is not None:
+                return (
+                    event.symbol or "", event.company_name or "", event.instrument_id or "", event.isin or "",
+                    event.source_tier or "", event.source_url or "", event.source_sha256 or "",
+                )
+            observation = observation_by_id.get(observation_id)
+            if observation is not None:
+                return (
+                    observation.symbol or "", observation.company_name or "", observation.instrument_id or "", observation.isin or "",
+                    observation.source_tier or "", observation.source_url or "", observation.source_sha256 or "",
+                )
+        return "", "", "", "", "", "", ""
 
     def append(reason: str, *, blocker_type: str, as_of: str = "", symbol: str = "",
                company: str = "", instrument_id: str = "", isin: str = "",
                expected: Any = "", observed: Any = "", source_tier: str = "",
                source_url: str = "", source_sha: str = "", severity: str = "HIGH",
                root_cause: str = "", resolution_source: str = "", notes: str = "") -> None:
+        blocker_payload = {
+            "blocker_type": blocker_type, "date": as_of, "symbol": symbol, "company": company,
+            "instrument_id": instrument_id, "isin": isin, "expected_value": expected,
+            "observed_value": observed, "source_url": source_url, "source_sha256": source_sha,
+            "root_cause": root_cause, "notes": notes or reason,
+        }
+        blocker_id = hashlib.sha256(
+            json.dumps(blocker_payload, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
         rows.append({
-            "blocker_id": f"{blocker_type}:{as_of}:{len(rows) + 1}",
+            "blocker_id": blocker_id,
             "blocker_type": blocker_type, "date": as_of, "year": as_of[:4] if as_of else "",
             "symbol": symbol, "company": company, "instrument_id": instrument_id, "isin": isin,
             "expected_value": expected, "observed_value": observed, "source_tier": source_tier,
@@ -1073,11 +2067,21 @@ def _blocker_ledger(
         })
 
     for reason in report.reasons:
+        if reason == "initial_anchor_not_established":
+            append(
+                reason, blocker_type="MISSING_INITIAL_ANCHOR", as_of=CAMPAIGN_FROM.isoformat(),
+                expected="authoritative historical NIFTY-200 membership anchor",
+                severity="CRITICAL",
+                root_cause="Replay member counts are not certifiable until the 2012-01-02 initial membership is established from authoritative evidence.",
+                notes="Daily replay counts are retained as diagnostics and are not treated as independent COUNT_NOT_200 failures.",
+            )
+            continue
         if reason.startswith("member_count:"):
             _, as_of, observed = reason.split(":", 2)
-            append(reason, blocker_type="COUNT_NOT_200", as_of=as_of, expected=200,
+            expected = int(report.metrics.get("expected_member_counts", {}).get(as_of, 200))
+            append(reason, blocker_type="COUNT_NOT_200", as_of=as_of, expected=expected,
                    observed=observed, severity="CRITICAL",
-                   root_cause="Replay intervals do not establish 200 durable members on this NSE session.")
+                   root_cause=f"Replay intervals do not establish the expected {expected} durable members on this NSE session.")
             continue
         if reason.startswith("unresolved_conflict:"):
             conflict_id = reason.split(":", 1)[1]
@@ -1089,7 +2093,11 @@ def _blocker_ledger(
                        severity="HIGH", root_cause="Validation references an unresolved conflict not present in the structured conflict table.")
                 continue
             conflict_type = conflict.conflict_type
-            if conflict_type == "UNRESOLVED_OBSERVATION":
+            if conflict_type == "MISSING_OFFICIAL_EVENT":
+                kind = "MISSING_OFFICIAL_EVENT"
+            elif conflict_type == "MISSING_EVENT_CAUSALITY":
+                kind = "MISSING_ANNOUNCEMENT_DATE"
+            elif conflict_type in {"UNRESOLVED_OBSERVATION", "MISSING_DURABLE_IDENTITY"}:
                 kind = "MISSING_DURABLE_IDENTITY"
             elif conflict_type == "REMOVAL_OF_ABSENT_MEMBER":
                 kind = "MISSING_INITIAL_ANCHOR"
@@ -1097,14 +2105,23 @@ def _blocker_ledger(
                 kind = "DUPLICATE_EVENT"
             elif "IDENTITY" in conflict_type:
                 kind = "HISTORICAL_SYMBOL_CHANGE"
+            elif conflict_type == "INVALID_ALIAS_PERIOD":
+                kind = "INVALID_ALIAS_PERIOD"
+            elif conflict_type == "ALIAS_INTERVAL_OVERLAP":
+                kind = "INTERVAL_OVERLAP"
+            elif conflict_type == "SAME_DAY_EVENT_COLLISION":
+                kind = "CONFLICTING_OFFICIAL_EVENTS"
             elif "COVERAGE" in conflict_type:
                 kind = "MONTHLY_SNAPSHOT_MISSING"
             elif "OFFICIAL" in conflict_type:
                 kind = "CONFLICTING_OFFICIAL_EVENTS"
             else:
                 kind = "OTHER"
+            symbol, company, instrument_id, isin, source_tier, source_url, source_sha = evidence_context(conflict)
             append(reason, blocker_type=kind, as_of=conflict.date.isoformat() if conflict.date else "",
-                   source_url=";".join(conflict.source_urls), severity=conflict.severity,
+                   symbol=symbol, company=company, instrument_id=instrument_id, isin=isin,
+                   source_tier=source_tier, source_url=source_url or ";".join(conflict.source_urls),
+                   source_sha=source_sha, severity=conflict.severity,
                    root_cause=conflict.message, notes=f"conflict_type={conflict_type}; required_action={conflict.required_action}")
             continue
         match = re.fullmatch(r"(\d{4}-\d{2}):(\d+)", reason)
@@ -1117,30 +2134,48 @@ def _blocker_ledger(
                 kind = "MONTHLY_SNAPSHOT_MISSING"
                 root = "No official monthly checkpoint is present in the acquired corpus."
             elif count == 0:
-                kind = "PARSER_FAILURE"
-                root = "An official monthly source is present but the parser extracted zero members."
+                source_issue, source_note = _monthly_source_issue(source)
+                if source_issue.startswith("E_"):
+                    kind = "SOURCE_DOWNLOAD_FAILURE"
+                    root = source_note
+                elif source_issue == "A_ARCHIVE_WITHOUT_NIFTY200_MEMBER":
+                    kind = "MONTHLY_SNAPSHOT_MISSING"
+                    root = source_note
+                else:
+                    kind = "PARSER_FAILURE"
+                    root = "An official monthly archive member is present but the parser extracted zero members."
             else:
+                expected_count = int(coverage_by_month[month].get("expected_member_count", "200"))
                 kind = "MONTHLY_SNAPSHOT_NOT_200"
-                root = "The official checkpoint was parsed but does not establish exactly 200 members."
+                root = f"The official checkpoint was parsed but does not establish the expected {expected_count} members."
             snapshot_row = month_rows[0] if month_rows else None
-            append(reason, blocker_type=kind, as_of=f"{month}-01", expected=200, observed=count,
+            expected_count = int(coverage_by_month[month].get("expected_member_count", "200"))
+            append(reason, blocker_type=kind, as_of=f"{month}-01", expected=expected_count, observed=count,
                    source_tier=source.source_tier if source else (snapshot_row.get("source_tier", "") if snapshot_row else ""),
                    source_url=source.source_url if source else (snapshot_row.get("source_url", "") if snapshot_row else ""),
                    source_sha=source.source_sha256 if source else (snapshot_row.get("source_sha256", "") if snapshot_row else ""),
                    severity="HIGH", root_cause=root,
-                   notes="Status categories A-E are kept separate in the monthly gap analysis.")
+                   notes=f"Status categories A-E are kept separate in the monthly gap analysis; source_issue={_monthly_source_issue(source)[0]}.")
             continue
         if reason.startswith("interval_overlap:"):
             append(reason, blocker_type="INTERVAL_OVERLAP", instrument_id=reason.split(":", 1)[1], severity="CRITICAL",
                    root_cause="Two certified intervals overlap for one instrument.")
             continue
         if reason.startswith("missing_instrument_id:"):
-            append(reason, blocker_type="MISSING_DURABLE_IDENTITY", severity="CRITICAL",
-                   root_cause="Canonical event has no durable instrument identifier.")
+            event = event_by_hash.get(reason.split(":", 1)[1])
+            append(reason, blocker_type="MISSING_DURABLE_IDENTITY",
+                   as_of=event.effective_date.isoformat() if event and event.effective_date else "",
+                   symbol=event.symbol if event else "", company=event.company_name if event else "",
+                   instrument_id=event.instrument_id if event else "", isin=event.isin if event else "",
+                   severity="CRITICAL", root_cause="Canonical event has no durable instrument identifier.")
             continue
         if reason.startswith("missing_event_causality:"):
-            append(reason, blocker_type="KNOWN_AT_UNRESOLVED", severity="CRITICAL",
-                   root_cause="Canonical event lacks a complete causality chain.")
+            event = event_by_hash.get(reason.split(":", 1)[1])
+            append(reason, blocker_type="KNOWN_AT_UNRESOLVED",
+                   as_of=event.effective_date.isoformat() if event and event.effective_date else "",
+                   symbol=event.symbol if event else "", company=event.company_name if event else "",
+                   instrument_id=event.instrument_id if event else "", isin=event.isin if event else "",
+                   severity="CRITICAL", root_cause="Canonical event lacks a complete causality chain.")
             continue
         if reason.startswith("missing_source_sha:") or reason.startswith("missing_source:") or reason.startswith("hash_mismatch:"):
             append(reason, blocker_type="SOURCE_DOWNLOAD_FAILURE", severity="CRITICAL",
@@ -1163,22 +2198,136 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
 
     sources = load_sources(root)
     source_errors = verify_source_hashes(sources)
+    calendar_overrides = _verified_calendar_overrides(sources)
+    calendar = build_nse_calendar(
+        verified_through=CAMPAIGN_TO,
+        overrides=calendar_overrides,
+        version="nse-pandas-market-calendars-with-evidenced-exceptions",
+    )
+    trading_days = calendar.iter_trading_days(CAMPAIGN_FROM, CAMPAIGN_TO)
     workbook = next((source for source in sources if source.source_url.endswith("IndexInclExcl.xls")), None)
     observations = parse_workbook_events(root, workbook) if workbook else []
-    observations.extend(parse_press_releases(sources))
+    observations.extend(parse_press_releases(sources, calendar=calendar))
     challenger = next((source for source in sources if source.source_url == CHALLENGER_EVENTS_URL), None)
     if challenger:
         observations.extend(parse_challenger_events(challenger))
+    # Assign the immutable evidence ID before resolver enrichment so the raw
+    # artifact and every derived table refer to the same source assertion.
+    raw_observations = [
+        replace(observation, observation_id=observation.observation_id or stable_observation_id(observation))
+        for observation in observations
+    ]
+    observations = list(raw_observations)
     snapshots = parse_monthly_snapshots(sources)
-    security_master = next((source for source in sources if source.source_url == SECURITIES_MASTER_URL), None)
-    instrument_master = parse_security_master(security_master) if security_master else []
+    security_source_urls = {
+        SECURITIES_MASTER_URL,
+        HISTORICAL_SECURITY_MASTER_URL,
+        HISTORICAL_SECURITY_MASTER_2017_ARCHIVE_URL,
+        HISTORICAL_SECURITY_MASTER_2021_ARCHIVE_URL,
+        *HISTORICAL_INDEX_CONSTITUENT_URLS,
+    }
+    security_sources = [source for source in sources if source.source_url in security_source_urls]
+    current_security_source = max(
+        (source for source in security_sources if source.source_url == SECURITIES_MASTER_URL),
+        key=lambda source: (_parse_day(source.document_date) or _parse_day(source.retrieved_at) or date.min, source.source_sha256),
+        default=None,
+    )
+    current_instrument_master = parse_security_master(current_security_source) if current_security_source else []
+    for row in current_instrument_master:
+        row["validity_basis"] = "CURRENT_SNAPSHOT_ONLY"
+    historical_instrument_master: list[dict[str, Any]] = []
+    for security_source in security_sources:
+        if security_source.source_url == SECURITIES_MASTER_URL:
+            continue
+        if security_source.source_url in HISTORICAL_INDEX_CONSTITUENT_URLS:
+            historical_instrument_master.extend(parse_archived_index_constituent_snapshot(security_source))
+        else:
+            historical_instrument_master.extend(parse_security_master(security_source))
+    instrument_rows = current_instrument_master + historical_instrument_master
+    required_identity_keys = {
+        (row.effective_date.isoformat(), str(row.symbol).upper())
+        for row in observations if row.effective_date and row.symbol
+    }
+    required_identity_keys.update(
+        (str(row["snapshot_date"])[:10], str(row.get("symbol") or "").upper())
+        for row in snapshots
+    )
+    for source in sources:
+        if (
+            ("/content/historical/EQUITIES/" in source.source_url and source.source_url.endswith("bhav.csv.zip"))
+            or "/content/cm/" in source.source_url
+        ):
+            instrument_rows.extend(parse_bhavcopy_identities(source))
+    instrument_rows = _enrich_bhavcopy_company_names(instrument_rows, current_instrument_master + historical_instrument_master)
+    instrument_master: list[dict[str, Any]] = []
+    seen_identity_rows: set[tuple[str, str, str]] = set()
+    for row in instrument_rows:
+        key = (
+            str(row.get("instrument_id") or ""),
+            str(row.get("symbol") or "").casefold(),
+            str(row.get("snapshot_date") or ""),
+        )
+        if key in seen_identity_rows:
+            continue
+        seen_identity_rows.add(key)
+        instrument_master.append(row)
+    current_by_symbol = {
+        str(row.get("symbol") or "").casefold(): row for row in current_instrument_master
+    }
+    for row in instrument_master:
+        current = current_by_symbol.get(str(row.get("symbol") or "").casefold())
+        current_start = _parse_day(current.get("valid_from")) if current else None
+        snapshot_day = _parse_day(row.get("snapshot_date"))
+        if (
+            snapshot_day and current and row.get("instrument_id") != current.get("instrument_id")
+            and not row.get("valid_until") and current_start and current_start > snapshot_day
+        ):
+            row["valid_until"] = current["valid_from"]
+    identity_change_candidates = parse_official_identity_change_candidates(sources, instrument_master)
     aliases = _identity_aliases(snapshots, instrument_master)
     observations = resolve_observations(observations, instrument_master, aliases=aliases)
+    observations, instrument_master, aliases, identity_continuity_audit = _apply_documented_isin_continuity(
+        observations, instrument_master, aliases, sources,
+    )
+    observations = _align_date_only_causality(observations, calendar)
+    observations, schedule_dispositions = _apply_official_rescheduling(observations, sources)
+    considered_observations, challenger_dispositions = _exclude_withdrawn_challenger_assertions(
+        observations, schedule_dispositions, sources,
+    )
+    schedule_dispositions.extend(challenger_dispositions)
+    reconciliation_observations = _suppress_redundant_workbook_observations(considered_observations)
 
-    reconciliation = reconcile_observations(observations)
+    reconciliation = reconcile_observations(reconciliation_observations)
+    out_of_scope_events = [
+        event for event in reconciliation.events
+        if event.effective_date < CAMPAIGN_FROM or event.effective_date > CAMPAIGN_TO
+    ]
+    # The source catalogue and raw observation lineage retain every acquired
+    # assertion, but canonical PIT replay must be limited to the requested
+    # campaign horizon.  Otherwise a later-dated release can appear as a
+    # campaign event even though it cannot affect any checked session.
+    reconciliation = replace(
+        reconciliation,
+        events=[
+            event for event in reconciliation.events
+            if CAMPAIGN_FROM <= event.effective_date <= CAMPAIGN_TO
+        ],
+    )
     interval_result = build_intervals(reconciliation.events, horizon_start=CAMPAIGN_FROM, horizon_end=CAMPAIGN_TO)
+    event_date_snapshots = _event_date_snapshots(interval_result.intervals, reconciliation.events, sources)
     conflicts = reconciliation.conflicts + interval_result.conflicts
-    coverage = _coverage(snapshots)
+    conflicts.extend(
+        Conflict(
+            conflict_id=error,
+            date=None,
+            severity="CRITICAL",
+            conflict_type="INVALID_ALIAS_PERIOD" if error.startswith("invalid_alias_period:") else "ALIAS_INTERVAL_OVERLAP",
+            message="Accepted certified identity aliases contain an invalid or overlapping validity interval.",
+            required_action="MANUAL_REVIEW",
+        )
+        for error in validate_alias_intervals(aliases)
+    )
+    coverage = _coverage(snapshots, sources)
     annual_coverage = _annual_coverage(coverage)
     coverage_gaps = [row for row in coverage if row["status"] != "PASS"]
     anchor_differences = [
@@ -1195,38 +2344,83 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         conflicts.append(Conflict(
             conflict_id="monthly_coverage_gaps", date=None, severity="HIGH",
             conflict_type="COVERAGE_GAP",
-            message=f"{len(coverage_gaps)} campaign months lack a verified 200-member official checkpoint.",
+            message=f"{len(coverage_gaps)} campaign months lack a verified expected-count official checkpoint.",
             required_action="SOURCE_RETRIEVAL_OR_MANUAL_REVIEW",
         ))
-    calendar = build_nse_calendar(verified_through=CAMPAIGN_TO, version="nse-pandas-market-calendars")
-    trading_days = calendar.iter_trading_days(CAMPAIGN_FROM, CAMPAIGN_TO)
-    anchor_forensics = _anchor_replay_forensics(snapshots, reconciliation.events, instrument_master, trading_days)
+    expected_member_counts = _expected_counts_for_sessions(trading_days, sources)
+    anchor_forensics = _anchor_replay_forensics(
+        snapshots, reconciliation.events, instrument_master, trading_days, expected_member_counts,
+    )
     anchor_summary = anchor_forensics["summary"]
-    historical_master = _historical_master_rows(instrument_master, aliases)
+    historical_master = _historical_master_rows(instrument_master, aliases, identity_change_candidates)
+    raw_unresolved_rows = _raw_unresolved_observations(raw_observations, observations, reconciliation.events)
     report = validate_campaign(
         interval_result.intervals, reconciliation.events, campaign_from=CAMPAIGN_FROM, campaign_to=CAMPAIGN_TO,
-        trading_days=trading_days, conflicts=conflicts, source_hash_errors=source_errors,
+        trading_days=trading_days, expected_member_counts=expected_member_counts,
+        initial_anchor_established=anchor_summary.get("status") == "ESTABLISHED",
+        conflicts=conflicts, source_hash_errors=source_errors,
         anchor_differences=anchor_differences,
     )
     replay_counts = list(report.metrics["daily_member_counts"].values())
+    snapshot_dates = {str(row["snapshot_date"]) for row in snapshots}
     report = replace(report, metrics=report.metrics | {
+        "source_count": len(sources),
+        "event_observation_count": len(observations),
+        "canonical_event_count": len(reconciliation.events),
+        "out_of_scope_canonical_event_count": len(out_of_scope_events),
+        "add_event_count": sum(event.action == Action.ADD for event in reconciliation.events),
+        "drop_event_count": sum(event.action == Action.DROP for event in reconciliation.events),
+        "snapshot_row_count": len(snapshots),
+        "snapshot_date_count": len(snapshot_dates),
+        "event_date_snapshot_count": len({row["snapshot_date"] for row in event_date_snapshots}) if "event_date_snapshots" in locals() else 0,
+        "source_hash_error_count": len(source_errors),
         "calendar_version": calendar.version,
+        "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
+        "calendar_verified_override_count": len(calendar_overrides),
         "minimum_active_constituent_count": min(replay_counts, default=0),
         "maximum_active_constituent_count": max(replay_counts, default=0),
-        "sessions_not_expected_count": sum(value != 200 for value in replay_counts),
+        "sessions_not_expected_count": sum(
+            value != expected_member_counts[day] for day, value in zip(trading_days, replay_counts)
+        ),
+        "expected_count_policy": {
+            "exception_period": {
+                "start": TATA_DVR_COUNT_POLICY["start"].isoformat(),
+                "end_exclusive": TATA_DVR_COUNT_POLICY["end"].isoformat(),
+                "expected_count": TATA_DVR_COUNT_POLICY["expected_count"],
+                "basis": TATA_DVR_COUNT_POLICY["basis"],
+                "sources": list(TATA_DVR_COUNT_POLICY["sources"]),
+                "verified": _verified_count_policy(sources) is not None,
+            },
+        },
         "known_at_unresolved_count": sum(event.known_at is None or not event.known_at_basis for event in reconciliation.events),
-        "current_security_master_rows": len(instrument_master),
+        "conflict_count": len(conflicts),
+        "high_conflict_count": sum(conflict.severity == "HIGH" for conflict in conflicts),
+        "critical_conflict_count": sum(conflict.severity == "CRITICAL" for conflict in conflicts),
+        "raw_unresolved_observation_count": len(raw_unresolved_rows),
+        "raw_unresolved_canonical_event_count": sum(
+            row["required_event_status"] == "CANONICAL_EVENT" for row in raw_unresolved_rows
+        ),
+        "raw_unresolved_not_canonicalized_count": sum(
+            row["required_event_status"] == "NOT_CANONICALIZED" for row in raw_unresolved_rows
+        ),
+        "current_security_master_rows": len(current_instrument_master),
         "historical_identity_rows": len(historical_master),
         "unique_historical_instruments": len({row.get("instrument_id") for row in instrument_master}),
         "durable_id_resolution_percent": round((sum(row.get("confidence") == "CERTIFIED" for row in aliases) / len(aliases) * 100) if aliases else 0, 4),
         "isin_resolution_percent": round((sum(bool(row.get("isin")) for row in aliases if row.get("confidence") == "CERTIFIED") / len(aliases) * 100) if aliases else 0, 4),
         "unresolved_identity_count": sum(row.get("confidence") != "CERTIFIED" for row in aliases),
-        "valid_200_checkpoints": sum(row["status"] == "PASS" for row in coverage),
+        "documented_isin_continuity_links": len(identity_continuity_audit["links"]),
+        "redundant_workbook_observation_count": len(considered_observations) - len(reconciliation_observations),
+        "contradicted_challenger_count": len(challenger_dispositions),
+        "valid_200_checkpoints": sum(row["status"] == "PASS" and row.get("expected_member_count", "200") == "200" for row in coverage),
+        "valid_expected_count_checkpoints": sum(row["status"] == "PASS" for row in coverage),
         "missing_or_non_200_checkpoints": len(coverage_gaps),
+        "missing_or_non_expected_checkpoints": len(coverage_gaps),
         "anchor_status": anchor_summary.get("status", "NOT_ESTABLISHED"),
         "anchor_forward_checkpoint_date": anchor_summary.get("source_checkpoint_date", ""),
         "anchor_candidate_member_count": anchor_summary.get("candidate_member_count", 0),
         "anchor_reverse_event_count": anchor_summary.get("reverse_event_count", 0),
+        "anchor_replay_session_not_expected": anchor_summary.get("session_not_expected", 0),
         "anchor_replay_session_not_200": anchor_summary.get("session_not_200", 0),
         "anchor_replay_checkpoint_set_matches": anchor_summary.get("checkpoint_set_matches", 0),
         "anchor_replay_checkpoint_set_mismatches": anchor_summary.get("checkpoint_set_mismatches", 0),
@@ -1237,6 +2431,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     _write_json(derived / "constituent_intervals.json", interval_result.intervals)
     _write_json(derived / "conflicts.json", [row.to_dict() for row in conflicts])
     _write_json(derived / "monthly_snapshots.json", snapshots)
+    _write_json(derived / "event_date_snapshots.json", event_date_snapshots)
     _write_csv(derived / "coverage_matrix_2012_2026.csv", coverage)
     _write_csv(derived / "coverage_matrix_by_year.csv", annual_coverage)
     _write_csv(derived / "unresolved_gaps.csv", coverage_gaps)
@@ -1246,7 +2441,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     known_at_rows = _known_at_rows(reconciliation.events)
     blocker_rows = _blocker_ledger(
         report, conflicts=conflicts, events=reconciliation.events, snapshots=snapshots,
-        coverage=coverage, sources=sources,
+        observations=observations, coverage=coverage, sources=sources,
     )
     identity_resolution_rows = _historical_identity_resolution_rows(snapshots, aliases)
     checkpoint_forensics, checkpoint_debug = _checkpoint_forensics(snapshots, sources, instrument_master)
@@ -1262,24 +2457,42 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     _write_csv(reports_dir / "nifty200_pit_checkpoint_forensics_debug.csv", checkpoint_debug)
     _write_csv(reports_dir / "nifty200_pit_duplicate_event_forensics.csv", duplicate_event_forensics)
     _write_csv(reports_dir / "nifty200_pit_official_event_conflicts.csv", official_conflict_forensics)
+    _write_csv(reports_dir / "nifty200_pit_raw_unresolved_observations.csv", raw_unresolved_rows)
+    _write_csv(reports_dir / "nifty200_pit_official_identity_change_candidates.csv", identity_change_candidates)
     _write_csv(reports_dir / "nifty200_pit_anchor_replay_checkpoint_comparison.csv", anchor_forensics["checkpoint_rows"])
     _write_csv(reports_dir / "nifty200_pit_anchor_replay_checkpoint_differences.csv", anchor_forensics["details"])
     _write_csv(reports_dir / "nifty200_pit_anchor_replay_first_divergence.csv", [anchor_forensics["first_divergence"]])
     _write_csv(reports_dir / "nifty200_pit_anchor_replay_active_count_distribution.csv", anchor_forensics["distribution_rows"])
     blocker_counts = Counter(row["blocker_type"] for row in blocker_rows)
     conflict_severity_counts = Counter(conflict.severity for conflict in conflicts)
+    baseline_blocker_counts = _baseline_blocker_counts(root)
     blocker_delta_rows = [
         {
-            "blocker_type": blocker_type, "before_count": count, "after_count": count,
+            "blocker_type": blocker_type,
+            "before_count": baseline_blocker_counts.get(blocker_type, 0), "after_count": count,
+            "delta": count - baseline_blocker_counts.get(blocker_type, 0),
             "resolution_status": "UNRESOLVED",
-            "resolution_source": "anchor_replay_candidate.parquet",
-            "notes": "Diagnostic reverse replay is not consumed by authoritative validation; blocker count unchanged.",
+            "resolution_source": "current_validation_and_blocker_ledger",
+            "notes": "Counts compare the preserved pre-remediation package with this build.",
         }
         for blocker_type, count in sorted(blocker_counts.items())
     ]
     blocker_delta_rows.extend(
         {
-            "blocker_type": f"CONFLICT_{severity}", "before_count": count, "after_count": count,
+            "blocker_type": blocker_type, "before_count": count,
+            "after_count": blocker_counts.get(blocker_type, 0),
+            "delta": blocker_counts.get(blocker_type, 0) - count,
+            "resolution_status": "RESOLVED",
+            "resolution_source": "current_validation_and_blocker_ledger",
+            "notes": "Blocker type was present in the preserved baseline but not in the current ledger.",
+        }
+        for blocker_type, count in sorted(baseline_blocker_counts.items())
+        if blocker_type not in blocker_counts
+    )
+    blocker_delta_rows.extend(
+        {
+            "blocker_type": f"CONFLICT_{severity}", "before_count": 0, "after_count": count,
+            "delta": count,
             "resolution_status": "UNRESOLVED",
             "resolution_source": "conflict_report.parquet",
             "notes": "No conflict was auto-resolved by the anchor diagnostic.",
@@ -1342,6 +2555,11 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     )
     _write_csv(artifact_dir / "monthly_gap_analysis.csv", monthly_gap_rows)
     _write_csv(artifact_dir / "known_at_audit.csv", known_at_rows)
+    _write_csv(artifact_dir / "raw_unresolved_observations.csv", raw_unresolved_rows)
+    _write_csv(artifact_dir / "official_identity_change_candidates.csv", identity_change_candidates)
+    _write_csv(artifact_dir / "official_schedule_dispositions.csv", schedule_dispositions)
+    _write_csv(artifact_dir / "identity_continuity_audit.csv", identity_continuity_audit["observations"])
+    _write_json(artifact_dir / "identity_continuity_evidence.json", identity_continuity_audit["links"])
     _write_csv(artifact_dir / "blocker_ledger.csv", blocker_rows)
     _write_csv(artifact_dir / "historical_identity_resolution.csv", identity_resolution_rows)
     _write_csv(artifact_dir / "checkpoint_forensics.csv", checkpoint_forensics)
@@ -1352,6 +2570,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     write_table(artifact_dir / "initial_anchor_evidence.parquet", anchor_forensics["anchor_evidence"])
     write_table(artifact_dir / "anchor_replay_candidate.parquet", anchor_forensics["candidate_rows"])
     write_table(artifact_dir / "anchor_replay_sessions.parquet", anchor_forensics["session_rows"])
+    write_table(artifact_dir / "event_date_snapshots.parquet", event_date_snapshots)
     _write_csv(artifact_dir / "anchor_replay_checkpoint_comparison.csv", anchor_forensics["checkpoint_rows"])
     _write_csv(artifact_dir / "anchor_replay_checkpoint_differences.csv", anchor_forensics["details"])
     _write_csv(artifact_dir / "anchor_replay_first_divergence.csv", [anchor_forensics["first_divergence"]])
@@ -1370,11 +2589,51 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         by_date.setdefault(str(row["snapshot_date"]), set()).add(str(row.get("symbol") or ""))
     for snapshot_date, symbols in sorted(by_date.items()):
         unique_symbols = len(symbols - {""})
+        as_of = date.fromisoformat(snapshot_date[:10])
+        expected_count, expected_basis, expected_source_urls, expected_source_shas = _expected_member_count(
+            as_of, sources,
+        )
+        official_rows = [row for row in snapshots if str(row["snapshot_date"])[:10] == as_of.isoformat()]
+        replay_rows = active_intervals(interval_result.intervals, as_of)
+        official_symbols = {str(row.get("symbol") or "") for row in official_rows if row.get("symbol")}
+        replay_symbols = {str(row.symbol_at_entry or "") for row in replay_rows if row.symbol_at_entry}
+        missing_symbols = sorted(official_symbols - replay_symbols)
+        unexpected_symbols = sorted(replay_symbols - official_symbols)
+        official_ids = {str(row.get("instrument_id") or "") for row in official_rows if row.get("instrument_id")}
+        replay_ids = {str(row.instrument_id) for row in replay_rows if row.instrument_id}
+        identity_mismatches = sorted(
+            f"{symbol}:official_id_missing_or_different"
+            for symbol in sorted(official_symbols & replay_symbols)
+            if official_ids and replay_ids and not (
+                {str(row.get("instrument_id") or "") for row in official_rows if row.get("symbol") == symbol} & replay_ids
+            )
+        )
+        symbol_alias_mismatches = sorted(
+            f"{instrument_id}:official_symbol_missing_or_different"
+            for instrument_id in sorted(official_ids & replay_ids)
+            if {str(row.get("symbol") or "") for row in official_rows if str(row.get("instrument_id") or "") == instrument_id}
+            != {str(row.symbol_at_entry or "") for row in replay_rows if row.instrument_id == instrument_id}
+        )
+        effective_date_mismatches = sorted(
+            f"{event.symbol}:{event.action.value}:{event.effective_date.isoformat()}"
+            for event in reconciliation.events
+            if event.effective_date == as_of and event.symbol not in official_symbols
+        )
+        passed = unique_symbols == expected_count
         discrepancy_rows.append({
             "snapshot_date": snapshot_date, "observed_member_count": unique_symbols,
-            "expected_member_count": 200, "discrepancy": unique_symbols - 200,
-            "status": "PASS" if unique_symbols == 200 else "BLOCKED",
-            "note": "source checkpoint count differs from required 200" if unique_symbols != 200 else "",
+            "expected_member_count": expected_count, "discrepancy": unique_symbols - expected_count,
+            "expected_count_basis": expected_basis,
+            "expected_count_source_url": expected_source_urls,
+            "expected_count_source_sha256": expected_source_shas,
+            "replay_member_count": len(replay_rows),
+            "missing_from_reconstruction": ";".join(missing_symbols),
+            "unexpected_in_reconstruction": ";".join(unexpected_symbols),
+            "identity_mismatch": ";".join(identity_mismatches),
+            "symbol_alias_mismatch": ";".join(symbol_alias_mismatches),
+            "effective_date_mismatch": ";".join(effective_date_mismatches),
+            "status": "PASS" if passed else "BLOCKED",
+            "note": f"source checkpoint count differs from expected {expected_count}" if not passed else "",
         })
     source_contact_rows = [{
         "source_url": source.source_url, "source_tier": source.source_tier, "status": source.status,
@@ -1406,9 +2665,12 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         f"- Source tiers: A1={sum(source.source_tier == 'A1' for source in sources)}, "
         f"B1={sum(source.source_tier == 'B1' for source in sources)}.\n"
         f"- Event observations: {len(observations)}; canonical events: {len(reconciliation.events)}.\n"
+        f"- Raw unresolved observations kept separately: {len(raw_unresolved_rows)}; not canonicalized: "
+        f"{sum(row['required_event_status'] == 'NOT_CANONICALIZED' for row in raw_unresolved_rows)}.\n"
         f"- Monthly snapshot rows: {len(snapshots)} across {len(by_date)} checkpoints.\n"
         f"- Durable identity mappings: {sum(row.get('confidence') == 'CERTIFIED' for row in aliases)} certified; "
         f"{sum(row.get('confidence') != 'CERTIFIED' for row in aliases)} remain manual-review candidates.\n"
+        f"- Official symbol/name-change candidates: {len(identity_change_candidates)}; none are auto-certified because these tables do not carry historical ISINs.\n"
         f"- Coverage gaps or non-200 checkpoints: {len(coverage_gaps)} campaign months.\n"
         f"- NSE sessions checked: {len(trading_days)}; replay count range: {min(replay_counts, default=0)}..{max(replay_counts, default=0)}.\n"
         f"- Blocker ledger rows: {len(blocker_rows)}; known_at unresolved canonical events: "
@@ -1421,7 +2683,9 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
 
     write_artifacts(
         artifact_dir, source_records=sources, observations=observations, events=reconciliation.events,
+        raw_observations=raw_observations, observation_lineage=reconciliation.lineage,
         aliases=aliases, intervals=interval_result.intervals, monthly_snapshots=snapshots,
+        event_date_snapshots=event_date_snapshots,
         conflicts=conflicts, validation_report=report,
         campaign_from=CAMPAIGN_FROM.isoformat(), campaign_to=CAMPAIGN_TO.isoformat(),
     )
@@ -1438,7 +2702,9 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     }, indent=2), encoding="utf-8")
     write_artifacts(
         artifact_dir, source_records=sources, observations=observations, events=reconciliation.events,
+        raw_observations=raw_observations, observation_lineage=reconciliation.lineage,
         aliases=aliases, intervals=interval_result.intervals, monthly_snapshots=snapshots,
+        event_date_snapshots=event_date_snapshots,
         conflicts=conflicts, validation_report=report,
         campaign_from=CAMPAIGN_FROM.isoformat(), campaign_to=CAMPAIGN_TO.isoformat(),
     )

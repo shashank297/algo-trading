@@ -18,7 +18,7 @@ interface TradeStats {
   base_investment_profit: number;
   avg_profit_per_win: number;
   avg_loss_per_loss: number;
-  profit_factor: number;
+  profit_factor: number | 'INFINITE' | 'N/A';
   max_drawdown: number;
 }
 
@@ -26,6 +26,8 @@ interface MonthlyReturn {
   year: number;
   month: number;
   return_pct: number;
+  amount: number;
+  return_basis: string;
 }
 
 interface TradeLedgerEntry {
@@ -138,6 +140,7 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
   const [monthly, setMonthly] = useState<MonthlyReturn[]>([]);
   const [ledger,  setLedger]  = useState<TradeLedgerEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   // year filter
   const [selectedYear, setSelectedYear] = useState<number | null>(null);
@@ -152,37 +155,72 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
   // Fetch base data whenever run or symbol changes
   useEffect(() => {
     if (!selectedRunId) return;
+    const controller = new AbortController();
     setLoading(true);
+    setError(null);
     setSelectedYear(null);
     setYearStats(null);
     setPage(1);
 
     const sym = selectedSymbol ? `?symbol=${encodeURIComponent(selectedSymbol)}` : '';
+    const fetchJson = async (url: string) => {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) throw new Error(`Dashboard request failed: ${response.status}`);
+      return response.json();
+    };
     Promise.all([
-      fetch(`${API_BASE}/runs/${selectedRunId}/analytics/stats${sym}`).then(r => r.json()),
-      fetch(`${API_BASE}/runs/${selectedRunId}/analytics/monthly${sym}`).then(r => r.json()),
-      fetch(`${API_BASE}/runs/${selectedRunId}/analytics/ledger${sym}`).then(r => r.json()),
+      fetchJson(`${API_BASE}/runs/${selectedRunId}/analytics/stats${sym}`),
+      fetchJson(`${API_BASE}/runs/${selectedRunId}/analytics/monthly${sym}`),
+      fetchJson(`${API_BASE}/runs/${selectedRunId}/analytics/ledger${sym}`),
     ]).then(([s, m, l]) => {
+      if (controller.signal.aborted) return;
       setStats(s);
       setMonthly(m);
       setLedger(l);
       setLoading(false);
-    }).catch(() => setLoading(false));
+    }).catch((reason: unknown) => {
+      if (!controller.signal.aborted) {
+        setStats(null);
+        setMonthly([]);
+        setLedger([]);
+        setError(reason instanceof Error ? reason.message : 'Dashboard request failed');
+        setLoading(false);
+      }
+    });
+    return () => controller.abort();
   }, [selectedRunId, selectedSymbol]);
 
   // Fetch year-specific stats
   useEffect(() => {
     if (!selectedRunId || !selectedYear) { setYearStats(null); return; }
+    const controller = new AbortController();
     setYearLoading(true);
+    setError(null);
     const sym  = selectedSymbol ? `&symbol=${encodeURIComponent(selectedSymbol)}` : '';
-    fetch(`${API_BASE}/runs/${selectedRunId}/analytics/stats?year=${selectedYear}${sym}`)
-      .then(r => r.json())
-      .then(s => { setYearStats(s); setYearLoading(false); })
-      .catch(() => setYearLoading(false));
+    fetch(`${API_BASE}/runs/${selectedRunId}/analytics/stats?year=${selectedYear}${sym}`, { signal: controller.signal })
+      .then(r => {
+        if (!r.ok) throw new Error(`Dashboard request failed: ${r.status}`);
+        return r.json();
+      })
+      .then(s => {
+        if (controller.signal.aborted) return;
+        setYearStats(s);
+        setYearLoading(false);
+      })
+      .catch((reason: unknown) => {
+        if (!controller.signal.aborted) {
+          setYearStats(null);
+          setError(reason instanceof Error ? reason.message : 'Dashboard request failed');
+          setYearLoading(false);
+        }
+      });
+    return () => controller.abort();
   }, [selectedRunId, selectedYear, selectedSymbol]);
 
   // Derived display stats
   const displayStats = selectedYear ? yearStats : stats;
+  const profitFactor = displayStats?.profit_factor;
+  const finiteProfitFactor = typeof profitFactor === 'number' ? profitFactor : null;
 
   // Build monthly matrix
   const matrixByYear = useMemo<Record<number, number[]>>(() => {
@@ -197,14 +235,17 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
   // Years for filter dropdown
   const allYears = useMemo(() => Object.keys(matrixByYear).map(Number).sort((a, b) => b - a), [matrixByYear]);
 
-  // Yearly totals for bar chart
+  // Yearly totals for bar chart. Symbol-filtered rows are PnL contributions,
+  // not compounding portfolio returns, so use their explicit rupee amounts.
   const yearlyData = useMemo(() =>
     allYears.map(year => ({
       year,
-      total_pnl: (matrixByYear[year] || [])
-        .filter(v => v !== null)
-        .reduce((sum, v) => sum + v * 100_000, 0),
-    })), [matrixByYear, allYears]);
+      total_pnl: selectedSymbol
+        ? monthly.filter(row => row.year === year).reduce((total, row) => total + row.amount, 0)
+        : (matrixByYear[year] || [])
+            .filter(v => v !== null)
+            .reduce((capital, value) => capital * (1 + value), 100_000) - 100_000,
+    })), [matrixByYear, allYears, monthly, selectedSymbol]);
 
   // Filtered matrix rows
   const matrixRows = useMemo(() =>
@@ -216,7 +257,7 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
   // Sorted + paginated ledger
   const sortedLedger = useMemo(() => {
     const filtered = selectedYear
-      ? ledger.filter(t => new Date(t.exit_timestamp).getFullYear() === selectedYear)
+      ? ledger.filter(t => new Date(t.exit_timestamp).getUTCFullYear() === selectedYear)
       : ledger;
     return [...filtered].sort((a, b) => {
       const av = a[sortKey], bv = b[sortKey];
@@ -255,6 +296,18 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
         <div className="animate-pulse flex flex-col items-center gap-4">
           <div className="w-8 h-8 border-4 border-violet-500 border-t-transparent rounded-full animate-spin" />
           <span className="text-muted">Loading deep dive analytics…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="glass-panel p-6 min-h-[200px] flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <AlertTriangle className="w-10 h-10 text-rose-400 mx-auto" />
+          <p className="text-rose-300">{error}</p>
+          <p className="text-muted text-sm">Retry by changing the run or filter.</p>
         </div>
       </div>
     );
@@ -410,12 +463,12 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
         <KpiCard
           label="Profit Factor"
           value={
-            <span className={(displayStats?.profit_factor ?? 0) >= 1 ? 'text-emerald-400' : 'text-rose-400'}>
-              {(displayStats?.profit_factor ?? 0).toFixed(2)}×
+            <span className={(finiteProfitFactor === null || finiteProfitFactor >= 1) ? 'text-emerald-400' : 'text-rose-400'}>
+              {finiteProfitFactor === null ? (profitFactor ?? 'N/A') : `${finiteProfitFactor.toFixed(2)}×`}
             </span>
           }
           sub="Win PnL ÷ Loss PnL"
-          accent={(displayStats?.profit_factor ?? 0) >= 1 ? 'emerald' : 'rose'}
+          accent={(finiteProfitFactor === null || finiteProfitFactor >= 1) ? 'emerald' : 'rose'}
         />
       </div>
 
@@ -425,7 +478,7 @@ export function AnalyticsTab({ selectedRunId, selectedSymbol, onClearSymbol }: P
           <div className="p-5 border-b border-white/10 flex justify-between items-center bg-white/5">
             <h2 className="text-lg font-bold flex items-center gap-2">
               <BarChart2 className="text-amber-400 w-5 h-5" />
-              Yearly Returns — Net PnL in ₹
+              {selectedSymbol ? 'Yearly Returns — Symbol PnL in ₹' : 'Yearly Returns — Net PnL in ₹'}
             </h2>
           </div>
           <div className="p-5">
