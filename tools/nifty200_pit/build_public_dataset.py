@@ -1541,9 +1541,14 @@ def _historical_master_rows(
         "snapshot_date": row.get("snapshot_date"),
         "observed_snapshot_date": row.get("observed_snapshot_date", row.get("snapshot_date")),
         "retrieved_at": row.get("retrieved_at"),
+        "validity_basis": (
+            "EXPLICIT_HISTORICAL_INTERVAL" if row.get("has_explicit_historical_interval")
+            else "CURRENT_SNAPSHOT_ONLY" if row.get("source_url") == SECURITIES_MASTER_URL
+            else row.get("validity_basis") or "HISTORICAL_SNAPSHOT_OBSERVATION"
+        ),
         "has_explicit_historical_interval": bool(row.get("has_explicit_historical_interval", False)),
         "identity_event_type": (
-            "CURRENT_SECURITY_MASTER_LISTING_ANCHOR"
+            "CURRENT_SECURITY_MASTER_SNAPSHOT_ONLY"
             if row.get("source_url") == SECURITIES_MASTER_URL
             else row.get("identity_event_type") or "HISTORICAL_SECURITY_MASTER_SNAPSHOT"
         ),
@@ -1566,6 +1571,10 @@ def _historical_master_rows(
         "snapshot_date": row.get("snapshot_date"),
         "observed_snapshot_date": row.get("observed_snapshot_date", row.get("snapshot_date")),
         "retrieved_at": row.get("retrieved_at"),
+        "validity_basis": (
+            "EXPLICIT_HISTORICAL_INTERVAL" if row.get("has_explicit_historical_interval")
+            else row.get("validity_basis") or "HISTORICAL_ALIAS_CANDIDATE"
+        ),
         "has_explicit_historical_interval": bool(row.get("has_explicit_historical_interval", False)),
         "identity_event_type": "HISTORICAL_ALIAS_UNRESOLVED",
         "source_url": row.get("source_url"),
@@ -1578,6 +1587,71 @@ def _historical_master_rows(
     } for row in aliases if row.get("confidence") != "CERTIFIED")
     rows.extend(identity_change_candidates or [])
     return rows
+
+
+def _identity_metric_summary(
+    instrument_master: list[dict[str, Any]], observations: list[Observation],
+    aliases: list[dict[str, Any]], identity_change_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return identity metrics with historical and current evidence separated."""
+    current_only_rows = [
+        row for row in instrument_master
+        if str(row.get("validity_basis") or "") == "CURRENT_SNAPSHOT_ONLY"
+        and not bool(row.get("has_explicit_historical_interval"))
+    ]
+    explicit_interval_rows = [
+        row for row in instrument_master
+        if bool(row.get("has_explicit_historical_interval"))
+    ]
+    historical_rows = [
+        row for row in instrument_master
+        if not (
+            str(row.get("validity_basis") or "") == "CURRENT_SNAPSHOT_ONLY"
+            and not bool(row.get("has_explicit_historical_interval"))
+        )
+    ]
+    certified_historical_rows = [
+        row for row in historical_rows
+        if str(row.get("confidence", "CERTIFIED")).upper() == "CERTIFIED"
+        and str(row.get("review_status", "ACCEPTED")).upper() == "ACCEPTED"
+    ]
+    manual_review_rows = [
+        row for row in aliases
+        if str(row.get("confidence", "CERTIFIED")).upper() != "CERTIFIED"
+        or str(row.get("review_status", "ACCEPTED")).upper() == "MANUAL_REVIEW"
+    ]
+    manual_review_rows.extend(identity_change_candidates)
+    event_rows = [row for row in observations if row.effective_date is not None]
+    certified_event_rows = [
+        row for row in event_rows
+        if row.instrument_id and str(row.confidence).upper() == "CERTIFIED"
+    ]
+    unresolved_event_rows = [row for row in event_rows if not row.instrument_id]
+    manual_review_event_rows = [
+        row for row in event_rows
+        if str(row.confidence).upper() == "MANUAL_REVIEW"
+        or str(row.review_status).upper() == "MANUAL_REVIEW"
+    ]
+    event_total = len(event_rows)
+    certified_event_pct = round((len(certified_event_rows) / event_total * 100) if event_total else 0, 4)
+    certified_event_isin_pct = round((sum(bool(row.isin) for row in certified_event_rows) / event_total * 100) if event_total else 0, 4)
+    return {
+        "certified_historical_identity_rows": len(certified_historical_rows),
+        "current_snapshot_only_identity_rows": len(current_only_rows),
+        "explicit_historical_interval_identity_rows": len(explicit_interval_rows),
+        "manual_review_identity_rows": len(manual_review_rows),
+        "historical_event_identity_rows": event_total,
+        "certified_historical_event_identity_rows": len(certified_event_rows),
+        "unresolved_historical_event_identity_cases": len(unresolved_event_rows),
+        "manual_review_historical_event_identity_rows": len(manual_review_event_rows),
+        "certified_identity_resolution_pct_among_historical_event_rows": certified_event_pct,
+        "isin_resolution_pct_among_historical_event_rows": certified_event_isin_pct,
+        # Keep legacy keys for report consumers, but use the explicit
+        # historical-event denominator instead of the current alias inventory.
+        "durable_id_resolution_percent": certified_event_pct,
+        "isin_resolution_percent": certified_event_isin_pct,
+        "unresolved_identity_count": len(unresolved_event_rows),
+    }
 
 
 def _historical_identity_resolution_rows(
@@ -2455,6 +2529,9 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     )
     anchor_summary = anchor_forensics["summary"]
     historical_master = _historical_master_rows(instrument_master, aliases, identity_change_candidates)
+    identity_metrics = _identity_metric_summary(
+        instrument_master, observations, aliases, identity_change_candidates,
+    )
     raw_unresolved_rows = _raw_unresolved_observations(raw_observations, observations, reconciliation.events)
     report = validate_campaign(
         interval_result.intervals, reconciliation.events, campaign_from=CAMPAIGN_FROM, campaign_to=CAMPAIGN_TO,
@@ -2508,9 +2585,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "current_security_master_rows": len(current_instrument_master),
         "historical_identity_rows": len(historical_master),
         "unique_historical_instruments": len({row.get("instrument_id") for row in instrument_master}),
-        "durable_id_resolution_percent": round((sum(row.get("confidence") == "CERTIFIED" for row in aliases) / len(aliases) * 100) if aliases else 0, 4),
-        "isin_resolution_percent": round((sum(bool(row.get("isin")) for row in aliases if row.get("confidence") == "CERTIFIED") / len(aliases) * 100) if aliases else 0, 4),
-        "unresolved_identity_count": sum(row.get("confidence") != "CERTIFIED" for row in aliases),
+        **identity_metrics,
         "documented_isin_continuity_links": len(identity_continuity_audit["links"]),
         "redundant_workbook_observation_count": len(considered_observations) - len(reconciliation_observations),
         "contradicted_challenger_count": len(challenger_dispositions),

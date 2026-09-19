@@ -68,6 +68,13 @@ def test_evidence_closure_writes_case_files_without_promoting_blockers(tmp_path)
     assert "official archive has no NIFTY-200 member file" in (
         report_root / "nifty200_pit_checkpoint_governance_recommendation.md"
     ).read_text(encoding="utf-8")
+    governance_text = (report_root / "nifty200_pit_checkpoint_governance_recommendation.md").read_text(
+        encoding="utf-8"
+    )
+    assert "Non-passing monthly checkpoint periods: 2." in governance_text
+    assert "underlying evidence-gap record denominator (2 records)" in governance_text
+    assert "## Monthly checkpoint periods" in governance_text
+    assert "## Underlying evidence-gap records" in governance_text
     assert "DATA EVIDENCE BLOCKED" in (
         report_root / "nifty200_pit_evidence_closure_current.md"
     ).read_text(encoding="utf-8")

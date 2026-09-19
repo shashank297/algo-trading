@@ -4,9 +4,23 @@ The strict monthly checkpoint gate remains in force. No missing checkpoint is
 converted into a synthetic snapshot, and no non-200 result is silently accepted
 as a complete historical constituent list.
 
-Non-passing checkpoint rows: 68.
+Non-passing monthly checkpoint periods: 68.
+The period denominator is one row per campaign month; it is distinct from
+the underlying evidence-gap record denominator (176 records).
 
-| Classification | Rows | Required evidence/action |
+## Monthly checkpoint periods
+
+| Period status | Monthly periods | Required evidence/action |
+| --- | ---: | --- |
+| PASS | 108 | No action for this gate |
+| A: no snapshot evidence | 62 | Retrieve an official checkpoint or retain an evidence gap |
+| E1: corrupt/incomplete download | 1 | Retrieve valid archive bytes or a verified Wayback copy |
+| E2: source present but zero NIFTY-200 rows | 5 | Obtain an official NIFTY-200 member checkpoint; do not substitute another index |
+
+## Underlying evidence-gap records
+
+These counts describe source/archive/member records and must not be added to the monthly-period count.
+| Evidence-gap classification | Records | Required evidence/action |
 | --- | ---: | --- |
 | A: no snapshot evidence | 161 | Retrieve an official checkpoint or retain an evidence gap |
 | B: candidate/zero-row extraction | 9 | Inspect archive member/table and parser output |
