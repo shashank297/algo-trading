@@ -2934,3 +2934,97 @@ def test_smartapi_websocket_client_binary_packets_and_quarantine_draining():
 
     # 3. Stop
     client.stop()
+
+
+def test_forward_paper_edge_paths_preserve_fail_closed_execution(tmp_path):
+    db = DuckDBManager(str(tmp_path / "paper_edge_paths.duckdb"))
+    engine = ForwardPaperSessionEngine(
+        db=db,
+        calendar=build_nse_calendar(),
+        risk_engine=RiskEngine(RiskPolicy()),
+    )
+    bar = {
+        "timestamp": "2026-01-06 09:15:00+05:30",
+        "open": 1000.0,
+        "close": 1000.0,
+        "volume": 100000.0,
+    }
+
+    # Unknown execution modes use completed-bar pricing and a zero target must
+    # produce no order or fill.
+    no_change = engine._execute_pending(
+        "sess-no-change",
+        "RELIANCE",
+        bar,
+        {"target_position": 0.0},
+        100000.0,
+        0.0,
+        0.0,
+        100000.0,
+        100000.0,
+        100000.0,
+        execution_mode="UNSUPPORTED_MODE",
+    )
+    assert no_change[7] is None
+    assert no_change[8] is None
+
+    # A sub-share delta is deliberately not sent to the broker.
+    fractional = engine._execute_pending(
+        "sess-fractional",
+        "RELIANCE",
+        bar,
+        {"target_position": 0.02},
+        100000.0,
+        1.5,
+        1000.0,
+        100000.0,
+        100000.0,
+        100000.0,
+    )
+    assert fractional[7] is None
+    assert fractional[8] is None
+    assert fractional[11] is not None
+
+    assert ForwardPaperSessionEngine._paper_cost_rows(
+        "sess-invalid-json",
+        [{"metadata_json": "not-json"}],
+    ) == []
+
+
+def test_certification_rejects_frame_without_expected_dataset_hash(tmp_path):
+    db = DuckDBManager(str(tmp_path / "cert_missing_hash.duckdb"))
+    service = RunCertificationService(db)
+    db.conn.execute(
+        "INSERT INTO market_datasets "
+        "(dataset_id, symbol, canonical_symbol, timeframe, exchange, provider_name, "
+        "raw_hash, transformation_hash, status, lifecycle_status) "
+        "VALUES ('ds_missing_hash', 'RELIANCE', 'RELIANCE', '1d', 'NSE', 'TEST', "
+        "'raw-hash', 'transformation-hash', 'VERIFIED', 'CANONICAL_PROMOTED')"
+    )
+    db.conn.execute(
+        "INSERT INTO research_frame_certifications "
+        "(frame_certification_id, research_frame_hash, contributing_dataset_ids_json, "
+        "symbol, timeframe, row_count, basis, validator_version, status, verified_at, "
+        "dataset_evidence_json, dq_certification_ids_json) "
+        "VALUES ('frame_missing_hash', 'frame-hash', '[\"ds_missing_hash\"]', "
+        "'RELIANCE', '1d', 1, 'SPLIT_ADJUSTED', 'validator-v1', 'CERTIFIED', "
+        "CURRENT_TIMESTAMP, '{}', '[]')"
+    )
+    db.conn.execute(
+        "INSERT INTO strategy_runs "
+        "(run_id, strategy_name, asset_class, symbol, timeframe, mode, parameters_json, "
+        "data_hash, status, started_at, notes, frame_certification_id) "
+        "VALUES ('run_missing_hash', 'donchian_trend', 'INDIA_EQUITY', 'RELIANCE', '1d', "
+        "'BACKTEST', '{}', 'frame-hash', 'COMPLETED', CURRENT_TIMESTAMP, '{}', "
+        "'frame_missing_hash')"
+    )
+
+    bundle_id = service.certify("run_missing_hash")
+    lineage = db.conn.execute(
+        "SELECT status, evidence_json FROM run_certifications "
+        "WHERE bundle_id = ? AND category = 'DATA_LINEAGE'",
+        [bundle_id],
+    ).fetchone()
+    assert lineage is not None
+    assert lineage[0] == "FAIL"
+    assert "missing_dataset_hash" in lineage[1]

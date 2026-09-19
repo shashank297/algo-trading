@@ -294,6 +294,8 @@ def test_policy_validation_is_fail_closed(kwargs: dict[str, object], message: st
 
 
 def test_stress_threshold_validation_and_caution_target() -> None:
+    with pytest.raises(ValueError, match="at least one numeric trigger"):
+        StressThresholds()
     with pytest.raises(ValueError, match="non-negative"):
         StressThresholds(benchmark_loss_caution=-0.01)
     with pytest.raises(ValueError, match="below caution"):
@@ -307,6 +309,22 @@ def test_stress_threshold_validation_and_caution_target() -> None:
         stress_evidence=StressEvidence(snapshot.decision_time, benchmark_loss=0.03),
     )
     assert result.risk_state.risk_state == OperationalRiskState.CAUTION
+
+
+def test_context_config_and_risk_clock_validation_fail_closed() -> None:
+    with pytest.raises(ValueError, match="context config must be a mapping"):
+        RegimeTransitionPolicy.from_config(
+            {"contexts": {"EOD": ["invalid"]}},
+            context_type=MarketContextType.EOD,
+        )
+
+    engine = RegimeTransitionEngine()
+    first_snapshot = _snapshot(RawMarketRegime.BULL_LOW_VOL, 0)
+    first = engine.evaluate(first_snapshot)
+    state_without_clock = replace(first.state, last_decision_time=None, last_raw_regime_id=None, policy_hash="")
+    earlier = _snapshot(RawMarketRegime.BULL_LOW_VOL, -1)
+    with pytest.raises(ValueError, match="distinct risk observations"):
+        engine.evaluate(earlier, state_without_clock, first.risk_state)
 
 
 def test_invalid_stress_and_state_context_fail_closed() -> None:
