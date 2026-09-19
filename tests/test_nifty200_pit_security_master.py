@@ -33,6 +33,92 @@ def test_security_master_does_not_resolve_before_listing():
     assert result.confidence == "UNRESOLVED"
 
 
+def test_current_security_master_does_not_backdate_from_listing_date():
+    result = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2026, 3, 30)),
+        [{
+            "instrument_id": "NSE-ISIN:INE123",
+            "isin": "INE123",
+            "symbol": "ABC",
+            "valid_from": "2024-01-01",
+            "snapshot_date": "2026-09-09",
+            "observed_snapshot_date": "2026-09-09",
+            "validity_basis": "CURRENT_SNAPSHOT_ONLY",
+            "has_explicit_historical_interval": False,
+        }],
+    )
+    assert result.instrument_id is None
+    assert result.confidence == "MANUAL_REVIEW"
+
+
+def test_current_security_master_certifies_at_snapshot_date_and_after():
+    row = {
+        "instrument_id": "NSE-ISIN:INE123",
+        "isin": "INE123",
+        "symbol": "ABC",
+        "valid_from": "2024-01-01",
+        "snapshot_date": "2026-09-09",
+        "observed_snapshot_date": "2026-09-09",
+        "validity_basis": "CURRENT_SNAPSHOT_ONLY",
+        "has_explicit_historical_interval": False,
+    }
+
+    at_snapshot = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2026, 9, 9)), [row]
+    )
+    after_snapshot = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2026, 9, 10)), [row]
+    )
+
+    assert at_snapshot.instrument_id == "NSE-ISIN:INE123"
+    assert at_snapshot.confidence == "CERTIFIED"
+    assert after_snapshot.instrument_id == "NSE-ISIN:INE123"
+    assert after_snapshot.confidence == "CERTIFIED"
+
+
+def test_explicit_historical_interval_certifies_pre_snapshot_observation():
+    result = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2026, 3, 30)),
+        [{
+            "instrument_id": "NSE-ISIN:INE123",
+            "isin": "INE123",
+            "symbol": "ABC",
+            "valid_from": "2024-01-01",
+            "valid_until": "2026-09-09",
+            "snapshot_date": "2026-09-09",
+            "validity_basis": "CURRENT_SNAPSHOT_ONLY",
+            "has_explicit_historical_interval": True,
+        }],
+    )
+
+    assert result.instrument_id == "NSE-ISIN:INE123"
+    assert result.confidence == "CERTIFIED"
+
+
+def test_archived_snapshot_obeys_its_observation_date():
+    row = {
+        "instrument_id": "NSE-ISIN:INE123",
+        "isin": "INE123",
+        "symbol": "ABC",
+        "valid_from": "2015-01-02",
+        "snapshot_date": "2015-01-02",
+        "observed_snapshot_date": "2015-01-02",
+        "validity_basis": "ARCHIVED_INDEX_SNAPSHOT_DATE_ONLY",
+        "has_explicit_historical_interval": False,
+    }
+
+    before = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2015, 1, 1)), [row]
+    )
+    on_snapshot = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2015, 1, 2)), [row]
+    )
+
+    assert before.instrument_id is None
+    assert on_snapshot.instrument_id == "NSE-ISIN:INE123"
+    assert on_snapshot.confidence == "CERTIFIED"
+
+
 def test_harvester_stores_and_deduplicates_content_addressed_source(tmp_path, monkeypatch):
     payload = (
         b"SYMBOL,NAME OF COMPANY,DATE OF LISTING,ISIN NUMBER\n"

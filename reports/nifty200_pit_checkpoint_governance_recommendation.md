@@ -1,4 +1,4 @@
-# NIFTY-200 PIT Monthly Checkpoint Governance Decision
+# NIFTY-200 PIT Monthly Checkpoint Governance Recommendation
 
 The strict monthly checkpoint gate remains in force. No missing checkpoint is
 converted into a synthetic snapshot, and no non-200 result is silently accepted

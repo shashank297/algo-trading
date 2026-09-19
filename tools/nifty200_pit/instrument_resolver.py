@@ -147,6 +147,12 @@ def _valid_on(row: dict[str, Any], when: date | None) -> bool:
         return True
     snapshot = _date(row.get("snapshot_date") or row.get("observed_snapshot_date"))
     effective_start: date | None = start
+    # A snapshot-only observation proves the identity at the observed snapshot
+    # date, not continuously back to the listing date.  The same lower bound
+    # applies to the current security master: listing date alone cannot prove
+    # that the symbol/ISIN relationship was unchanged before the snapshot.
+    # Explicit historical intervals are the only exception because their
+    # period validity is established by separate evidence.
     if snapshot is not None and not row.get("has_explicit_historical_interval"):
         effective_start = snapshot if (start is None or start < snapshot) else start
     return (effective_start is None or when >= effective_start) and (end is None or when < end)
