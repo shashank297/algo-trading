@@ -34,17 +34,17 @@ The pre-fix residual baseline is recorded in `reports/nifty200_pit_residual_evid
 | Valid 200 checkpoints | 58 |
 | Missing/non-200 checkpoints | 68 |
 | Current security-master rows | 2578 |
-| Historical identity rows | 197012 |
+| Historical identity rows | 196196 |
 | Unique historical instruments | 3874 |
-| Certified historical identity rows | 192913 |
+| Certified historical identity rows | 192097 |
 | Current-snapshot-only identity rows | 2578 |
-| Explicit historical-interval identity rows | 187602 |
+| Explicit historical-interval identity rows | 186786 |
 | Manual-review identity rows | 1521 |
 | Historical event identity rows (denominator) | 1544 |
-| Certified historical event identity rows | 678 |
-| Certified historical event identity resolution % | 43.9119 |
-| ISIN resolution % among historical event rows | 43.9119 |
-| Unresolved historical event identity cases | 58 |
+| Certified historical event identity rows | 677 |
+| Certified historical event identity resolution % | 43.8472 |
+| ISIN resolution % among historical event rows | 43.8472 |
+| Unresolved historical event identity cases | 65 |
 | Manual-review historical event identity rows | 464 |
 | Constituent intervals | 306 |
 | Trading sessions checked | 3613 |
@@ -70,8 +70,13 @@ Non-passing monthly checkpoint rows: 68.
 
 The pre-correction PR #29 report exposed unresolved identity as 0 using its legacy alias-inventory denominator; that was not a strict historical-event measure.
 A separate pre-PR #29 strict historical-event baseline was not preserved, so it is not inferred here.
-Corrected strict historical-event result: 58 unresolved of 1544 event identity rows; 464 remain manual-review.
-Certified historical identity resolution among event rows: 43.9119%; ISIN resolution on the same denominator: 43.9119%.
+Corrected strict historical-event result: 65 unresolved of 1544 event identity rows; 464 remain manual-review.
+Certified historical identity resolution among event rows: 43.8472%; ISIN resolution on the same denominator: 43.8472%.
+## Name-change and historical identity semantics
+
+The previous name-change path incorrectly combined an official NSE namechange.csv relationship, the current EQUITY_L.csv symbol/ISIN, and the current listing date into a certified historical ISIN interval.
+The corrected path retains namechange.csv as certified company-name evidence, but the current security master cannot establish historical ISIN continuity before its snapshot date.
+Historical ISIN certification now requires a period-valid first-party observation or a separately evidenced explicit historical interval. Historical evidence is selected by temporal validity and exact identity before current snapshot corroboration.
 The source-download failure, duplicate OFSS event, initial anchor, and monthly checkpoint gaps remain explicitly unresolved where no free exact A1/A2 evidence closes them.
 
 ## Final blockers

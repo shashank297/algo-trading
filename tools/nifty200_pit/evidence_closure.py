@@ -398,6 +398,10 @@ def generate(root: Path) -> dict[str, Any]:
         "A separate pre-PR #29 strict historical-event baseline was not preserved, so it is not inferred here.",
         f"Corrected strict historical-event result: {current['unresolved_historical_event_identity_cases']} unresolved of {current['historical_event_identity_rows']} event identity rows; {current['manual_review_historical_event_identity_rows']} remain manual-review.",
         f"Certified historical identity resolution among event rows: {current['certified_identity_resolution_pct_among_historical_event_rows']}%; ISIN resolution on the same denominator: {current['isin_resolution_pct_among_historical_event_rows']}%.",
+        "## Name-change and historical identity semantics", "",
+        "The previous name-change path incorrectly combined an official NSE namechange.csv relationship, the current EQUITY_L.csv symbol/ISIN, and the current listing date into a certified historical ISIN interval.",
+        "The corrected path retains namechange.csv as certified company-name evidence, but the current security master cannot establish historical ISIN continuity before its snapshot date.",
+        "Historical ISIN certification now requires a period-valid first-party observation or a separately evidenced explicit historical interval. Historical evidence is selected by temporal validity and exact identity before current snapshot corroboration.",
         "The source-download failure, duplicate OFSS event, initial anchor, and monthly checkpoint gaps remain explicitly unresolved where no free exact A1/A2 evidence closes them.", "", "## Final blockers", "",
     ])
     if source_failures:

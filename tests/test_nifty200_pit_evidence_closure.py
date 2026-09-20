@@ -78,6 +78,9 @@ def test_evidence_closure_writes_case_files_without_promoting_blockers(tmp_path)
     assert "DATA EVIDENCE BLOCKED" in (
         report_root / "nifty200_pit_evidence_closure_current.md"
     ).read_text(encoding="utf-8")
+    closure_text = (report_root / "nifty200_pit_residual_evidence_closure.md").read_text(encoding="utf-8")
+    assert "Name-change and historical identity semantics" in closure_text
+    assert "current security master cannot establish historical ISIN continuity" in closure_text
     residual_identity = list(csv.DictReader(
         (report_root / "nifty200_pit_residual_identity_cases.csv").open(
             encoding="utf-8", newline=""

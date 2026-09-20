@@ -556,14 +556,18 @@ def test_official_identity_change_tables_remain_manual_without_historical_isin(t
     rows = parse_official_identity_change_candidates(records, master)
 
     assert {row["identity_event_type"] for row in rows} == {
-        "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_CANDIDATE",
+        "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_EVIDENCE",
     }
     assert all(row["confidence"] == "MANUAL_REVIEW" for row in rows)
+    name_row = next(row for row in rows if row["identity_event_type"] == "OFFICIAL_NAME_CHANGE_EVIDENCE")
+    assert name_row["name_evidence_confidence"] == "CERTIFIED"
+    assert name_row["historical_identity_status"] == "MANUAL_REVIEW"
+    assert name_row["has_explicit_historical_interval"] is False
 
 
-def test_exact_official_name_change_can_certify_prior_name_with_current_isin():
+def test_name_change_does_not_certify_historical_isin_from_current_master():
     rows = _certified_official_name_change_rows([{
-        "identity_event_type": "OFFICIAL_NAME_CHANGE_CANDIDATE",
+        "identity_event_type": "OFFICIAL_NAME_CHANGE_EVIDENCE",
         "instrument_id": "NSE-ISIN:INE1",
         "isin": "INE1",
         "symbol": "ATGL",
@@ -577,14 +581,36 @@ def test_exact_official_name_change_can_certify_prior_name_with_current_isin():
         "identity_master_source_sha256": "c" * 64,
     }])
 
+    assert rows == []
+
+
+def test_explicit_historical_name_interval_can_certify_with_separate_identity_source():
+    rows = _certified_official_name_change_rows([{
+        "identity_event_type": "OFFICIAL_NAME_CHANGE_EVIDENCE",
+        "instrument_id": "NSE-ISIN:INE1",
+        "isin": "INE1",
+        "symbol": "ATGL",
+        "company_name": "Adani Gas Limited",
+        "valid_until": "2021-01-13",
+        "identity_valid_from": "2018-11-05",
+        "has_explicit_historical_interval": True,
+        "source_tier": "A1",
+        "source_url": "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+        "source_sha256": "b" * 64,
+        "identity_source_url": "https://nse.example/historical/ATGL-identity.pdf",
+        "identity_source_sha256": "d" * 64,
+        "identity_validity_basis": "OFFICIAL_PERIOD_VALID_IDENTITY_DOCUMENT",
+    }])
+
     assert len(rows) == 1
     assert rows[0]["confidence"] == "CERTIFIED"
     assert rows[0]["valid_from"] == "2018-11-05"
     assert rows[0]["valid_until"] == "2021-01-13"
-    assert "namechange.csv" in rows[0]["source_url"]
+    assert rows[0]["name_change_source_url"].endswith("namechange.csv")
+    assert rows[0]["identity_source_url"].endswith("ATGL-identity.pdf")
 
 
-def test_identity_change_prefers_current_master_over_dated_bhavcopy(tmp_path):
+def test_identity_change_prefers_dated_historical_master_over_current_master(tmp_path):
     name_path = tmp_path / "namechange.csv"
     name_path.write_text(
         "NCH_SYMBOL,NCH_PREV_NAME,NCH_NEW_NAME,NCH_DT\n"
@@ -604,17 +630,63 @@ def test_identity_change_prefers_current_master_over_dated_bhavcopy(tmp_path):
             "snapshot_date": "2026-09-19",
         },
         {
-            "instrument_id": "NSE-ISIN:INE399L01023", "isin": "INE399L01023",
-            "symbol": "ATGL", "company_name": None,
-            "valid_from": "2024-03-28", "snapshot_date": "2024-03-28",
-            "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2024/MAR/cm28MAR2024bhav.csv.zip",
+            "instrument_id": "NSE-ISIN:INE399L01099", "isin": "INE399L01099",
+            "symbol": "ATGL", "company_name": "Adani Gas Limited",
+            "valid_from": "2021-01-13", "snapshot_date": "2021-01-13",
+            "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
         },
     ]
 
     rows = parse_official_identity_change_candidates(records, master)
 
-    assert rows[0]["listing_date"] == "2018-11-05"
-    assert rows[0]["identity_master_source_url"].endswith("EQUITY_L.csv")
+    name_row = next(row for row in rows if row["identity_event_type"] == "OFFICIAL_NAME_CHANGE_EVIDENCE")
+    assert name_row["isin"] == "INE399L01099"
+    assert name_row["identity_master_source_url"].endswith("cm13JAN2021bhav.csv.zip")
+    assert name_row["identity_observation_date"] == "2021-01-13"
+
+
+def test_symbol_change_candidate_does_not_create_historical_interval(tmp_path):
+    symbol_path = tmp_path / "symbolchange.csv"
+    symbol_path.write_text("Old Name,OLD,NEW,30-OCT-2019\n", encoding="utf-8")
+    records = [SourceRecord(
+        "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+        str(symbol_path), "a" * 64, "2026-09-18T00:00:00Z",
+    )]
+    master = [{
+        "instrument_id": "NSE-ISIN:INE1", "isin": "INE1", "symbol": "NEW",
+        "company_name": "New Name", "valid_from": "2020-01-01", "snapshot_date": "2026-09-19",
+    }]
+
+    rows = parse_official_identity_change_candidates(records, master)
+
+    assert rows[0]["has_explicit_historical_interval"] is False
+    assert rows[0]["historical_identity_status"] == "MANUAL_REVIEW"
+
+
+def test_identity_aliases_prefer_dated_historical_source_for_checkpoint():
+    aliases = _identity_aliases(
+        [{"snapshot_date": "2021-01-13", "symbol": "ATGL", "company_name": "Adani Gas Limited"}],
+        [
+            {
+                "instrument_id": "NSE-ISIN:INE399L01023", "isin": "INE399L01023",
+                "symbol": "ATGL", "valid_from": "2018-11-05",
+                "snapshot_date": "2026-09-19",
+                "source_url": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+                "source_sha256": "c" * 64,
+            },
+            {
+                "instrument_id": "NSE-ISIN:INE399L01099", "isin": "INE399L01099",
+                "symbol": "ATGL", "valid_from": "2021-01-13",
+                "snapshot_date": "2021-01-13",
+                "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
+                "source_sha256": "d" * 64,
+            },
+        ],
+    )
+
+    assert len(aliases) == 1
+    assert aliases[0]["instrument_id"] == "NSE-ISIN:INE399L01099"
+    assert aliases[0]["source_url"].endswith("cm13JAN2021bhav.csv.zip")
 
 
 def test_superseded_official_assertion_is_audited_but_not_reconciled():
