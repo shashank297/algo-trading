@@ -59,21 +59,39 @@ def validate_campaign(
     conflicts: Iterable[Conflict] = (),
     source_hash_errors: Iterable[str] = (),
     anchor_differences: Iterable[str] = (),
+    calendar_provenance: str | None = None,
+    calendar_certified: bool = False,
 ) -> ValidationReport:
     rows, event_rows, conflict_rows = list(intervals), list(events), list(conflicts)
     source_hash_errors = list(source_hash_errors)
     anchor_differences = list(anchor_differences)
     reasons: list[str] = []
-    days = list(trading_days) if trading_days is not None else _days(campaign_from, campaign_to)
+    days = list(trading_days) if trading_days is not None else []
     counts: dict[str, int] = {}
     expected_counts: dict[str, int] = {}
+
+    if trading_days is None:
+        reasons.append("trading_days_required")
+    if not days:
+        reasons.append("trading_days_empty")
+    if not all(isinstance(day, date) and not isinstance(day, datetime) for day in days):
+        reasons.append("trading_days_malformed")
+    valid_days = [day for day in days if isinstance(day, date) and not isinstance(day, datetime)]
+    if len(valid_days) == len(days) and len(set(valid_days)) != len(valid_days):
+        reasons.append("trading_days_duplicate")
+    if valid_days != days or (valid_days and valid_days != sorted(valid_days)):
+        reasons.append("trading_days_not_sorted")
+    if any(day < campaign_from or day > campaign_to for day in valid_days):
+        reasons.append("trading_days_out_of_range")
+    if not calendar_provenance or not calendar_certified:
+        reasons.append("calendar_not_certified")
 
     def expected_count(as_of: date) -> int:
         if not expected_member_counts:
             return required_member_count
         return int(expected_member_counts.get(as_of, expected_member_counts.get(as_of.isoformat(), required_member_count)))
 
-    for as_of in days:
+    for as_of in valid_days:
         active = active_intervals(rows, as_of)
         unique = {row.instrument_id for row in active}
         counts[as_of.isoformat()] = len(unique)
@@ -110,6 +128,8 @@ def validate_campaign(
             initial_anchor_established and counts[day] != expected_counts[day] for day in counts
         ),
         "count_validation_evaluable": initial_anchor_established,
+        "calendar_provenance": calendar_provenance,
+        "calendar_certified": bool(calendar_certified),
         "expected_member_counts": expected_counts,
         "interval_count": len(rows), "event_count": len(event_rows), "conflict_count": len(conflict_rows),
         "high_critical_conflicts": sum(conflict.severity in {"HIGH", "CRITICAL"} for conflict in conflict_rows),

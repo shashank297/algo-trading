@@ -235,13 +235,42 @@ class PandasNSECalendar(MarketCalendar):
         self.provider = market_calendars.get_calendar("NSE")
 
     def _schedule(self, start_date: date, end_date: date) -> pd.DataFrame:
-        return self.provider.schedule(start_date=start_date, end_date=end_date)
+        schedule = self.provider.schedule(start_date=start_date, end_date=end_date).copy()
+        if not schedule.empty:
+            schedule = schedule.loc[
+                [start_date <= pd.Timestamp(value).date() <= end_date for value in schedule.index]
+            ]
+        closed_dates = {
+            override.session_date
+            for override in self.overrides
+            if override.override_type == "CLOSED" and start_date <= override.session_date <= end_date
+        }
+        if closed_dates and not schedule.empty:
+            schedule = schedule.loc[
+                [pd.Timestamp(value).date() not in closed_dates for value in schedule.index]
+            ]
+        for override in self.overrides:
+            if (
+                override.override_type != "SPECIAL_SESSION"
+                or not start_date <= override.session_date <= end_date
+                or override.session_date in closed_dates
+            ):
+                continue
+            bounds = super().session_bounds(override.session_date)
+            index = pd.Timestamp(override.session_date)
+            index_tz = getattr(schedule.index, "tz", None)
+            if index_tz is not None:
+                index = index.tz_localize(index_tz)
+            row = {column: pd.NaT for column in schedule.columns}
+            row["market_open"] = pd.Timestamp(bounds.start).tz_convert("UTC")
+            row["market_close"] = pd.Timestamp(bounds.end).tz_convert("UTC")
+            if schedule.empty:
+                schedule = pd.DataFrame([row], index=pd.DatetimeIndex([index]))
+            else:
+                schedule.loc[index, list(row)] = list(row.values())
+        return schedule.sort_index()
 
     def is_trading_day(self, trading_date: date) -> bool:
-        if self._overrides_for(trading_date, "CLOSED"):
-            return False
-        if self._overrides_for(trading_date, "SPECIAL_SESSION"):
-            return True
         return not self._schedule(trading_date, trading_date).empty
 
     def session_bounds(self, trading_date: date) -> SessionWindow:
@@ -258,23 +287,13 @@ class PandasNSECalendar(MarketCalendar):
 
     def iter_trading_days(self, start_date: date, end_date: date) -> list[date]:
         schedule = self._schedule(start_date, end_date)
-        dates = {pd.Timestamp(value).date() for value in schedule.index}
-        dates.update(
-            override.session_date for override in self.overrides
-            if override.override_type == "SPECIAL_SESSION" and start_date <= override.session_date <= end_date
-        )
-        dates.difference_update(
-            override.session_date for override in self.overrides if override.override_type == "CLOSED"
-        )
-        return sorted(dates)
+        return sorted({pd.Timestamp(value).date() for value in schedule.index})
 
     def expected_minute_index(self, start_date: date, end_date: date) -> pd.DatetimeIndex:
         schedule = self._schedule(start_date, end_date)
         ranges: list[pd.DatetimeIndex] = []
-        scheduled_dates: set[date] = set()
         for index, row in schedule.iterrows():
             trading_date = pd.Timestamp(index).date()
-            scheduled_dates.add(trading_date)
             start = pd.Timestamp(row["market_open"]).tz_convert(self.zone)
             end = pd.Timestamp(row["market_close"]).tz_convert(self.zone)
             values = pd.date_range(start, end - timedelta(minutes=1), freq="min")
@@ -284,14 +303,6 @@ class PandasNSECalendar(MarketCalendar):
                     interruption_end = datetime.combine(trading_date, interruption.end_time, tzinfo=self.zone)
                     values = values[(values < interruption_start) | (values >= interruption_end)]
             ranges.append(values)
-        for override in self.overrides:
-            if (
-                override.override_type == "SPECIAL_SESSION"
-                and start_date <= override.session_date <= end_date
-                and override.session_date not in scheduled_dates
-            ):
-                bounds = super().session_bounds(override.session_date)
-                ranges.append(pd.date_range(bounds.start, bounds.end - timedelta(minutes=1), freq="min"))
         if not ranges:
             return pd.DatetimeIndex([])
         result = ranges[0]
@@ -315,12 +326,6 @@ class PandasNSECalendar(MarketCalendar):
             )
             for index, row in schedule.iterrows()
         }
-        for override in self.overrides:
-            if override.override_type == "SPECIAL_SESSION":
-                special = super().session_bounds(override.session_date)
-                bounds[override.session_date] = (pd.Timestamp(special.start), pd.Timestamp(special.end))
-            elif override.override_type == "CLOSED":
-                bounds.pop(override.session_date, None)
         out_of_session = []
         for timestamp in local:
             session = bounds.get(timestamp.date())

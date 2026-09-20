@@ -81,7 +81,9 @@ def _pit_alias_rows(db: DuckDBManager, *, required: bool = False) -> list[tuple[
     """Load certified, period-bounded aliases when the identity migration exists."""
     try:
         return db.conn.execute(
-            """SELECT instrument_id, alias_symbol, valid_from, valid_until
+            """SELECT instrument_id, alias_symbol, valid_from, valid_until,
+                      snapshot_date, observed_snapshot_date, validity_basis,
+                      has_explicit_historical_interval, source_sha256
                FROM instrument_alias_history
                WHERE confidence = 'CERTIFIED' AND resolution_status = 'ACCEPTED'"""
         ).fetchall()
@@ -150,13 +152,22 @@ def _pit_eligibility_mask(
     # Resolve provider symbols to durable identities only within their dated
     # alias periods. Ambiguous aliases intentionally remain ineligible.
     alias_rows = _pit_alias_rows(db, required=required)
-    alias_evidence = pd.Series(False, index=frame.index)
-    for alias_id, alias_symbol, valid_from, valid_until in alias_rows:
+    alias_candidates: dict[Any, set[str]] = {index: set() for index in frame.index}
+    for (
+        alias_id, alias_symbol, valid_from, valid_until, snapshot_date,
+        _observed_snapshot_date, _validity_basis, has_explicit_interval, _source_sha256,
+    ) in alias_rows:
         alias_symbol_upper = str(alias_symbol or "").upper()
         if not alias_symbol_upper or not str(alias_id or "").strip():
             continue
         alias_start = pd.Timestamp(valid_from).date() if pd.notna(valid_from) else None
         alias_end = pd.Timestamp(valid_until).date() if pd.notna(valid_until) else None
+        snapshot = pd.Timestamp(snapshot_date).date() if pd.notna(snapshot_date) else None
+        if not bool(has_explicit_interval):
+            if snapshot is None:
+                raise RuntimeError(f"Alias '{alias_symbol_upper}' lacks a snapshot bound.")
+            if alias_start is None or snapshot > alias_start:
+                alias_start = snapshot
         if alias_start is not None and alias_end is not None and alias_start >= alias_end:
             raise RuntimeError(f"Corrupt instrument alias interval for '{alias_symbol_upper}'.")
         candidate = symbols == alias_symbol_upper
@@ -164,14 +175,27 @@ def _pit_eligibility_mask(
             candidate &= local_dates >= alias_start
         if alias_end is not None:
             candidate &= local_dates < alias_end
-        alias_evidence |= candidate
-        existing = frame_instrument_ids.loc[candidate]
-        frame_instrument_ids.loc[candidate & frame_instrument_ids.isna()] = str(alias_id).strip()
-        frame_instrument_ids.loc[candidate & frame_instrument_ids.notna() & (existing != str(alias_id).strip())] = pd.NA
+        for index in frame.index[candidate]:
+            alias_candidates[index].add(str(alias_id).strip())
+
+    alias_evidence = pd.Series(False, index=frame.index)
+    for index, candidate_ids in alias_candidates.items():
+        if not candidate_ids:
+            continue
+        alias_evidence.at[index] = True
+        if len(candidate_ids) != 1:
+            frame_instrument_ids.at[index] = pd.NA
+            continue
+        alias_id = next(iter(candidate_ids))
+        existing = frame_instrument_ids.at[index]
+        if pd.isna(existing):
+            frame_instrument_ids.at[index] = alias_id
+        elif str(existing) != alias_id:
+            frame_instrument_ids.at[index] = pd.NA
 
     eligible = pd.Series(False, index=frame.index)
     for _, row in pit_df.iterrows():
-        mask = frame_instrument_ids == str(row["instrument_id"])
+        mask = (frame_instrument_ids == str(row["instrument_id"])).fillna(False)
         # Symbol fallback is allowed only when there is no certified alias
         # evidence for that symbol/date.  Conflicting aliases therefore remain
         # ineligible instead of being admitted through the legacy symbol path.

@@ -18,11 +18,13 @@ from tools.nifty200_pit.build_public_dataset import (
     _identity_aliases,
     _anchor_replay_forensics,
     parse_official_identity_change_candidates,
+    _certified_official_name_change_rows,
     _raw_unresolved_observations,
     parse_press_releases,
     _exclude_withdrawn_challenger_assertions,
     _suppress_redundant_workbook_observations,
     _enrich_bhavcopy_company_names,
+    _numbered_continuation_prefix,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, Observation, SourceRecord, ValidationReport, stable_observation_id
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -102,6 +104,65 @@ def test_press_parser_rejects_unrelated_next_index_rows(monkeypatch):
     rows = parse_press_releases([source])
 
     assert [row.symbol for row in rows] == ["FIRST", "SECOND"]
+
+
+def test_press_parser_retains_symbols_split_by_pdf_spacing(monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _path: [
+        "The changes become effective from April 27, 2012.\n"
+        "(4) CNX 200 Index\nThe following companies are being excluded:\n"
+        "9 Orchid Chemicals & Pharmaceuticals Ltd. ORCHIDCHE M\n"
+        "The following companies are being included:\n"
+        "4 Gujarat Mineral Development Corporation Ltd. GMDCLT D",
+    ])
+    source = SourceRecord(
+        "https://www.niftyindices.com/Press_Release/ind_prs14032012.pdf",
+        "fixture.pdf", "a" * 64, "2026-09-18T00:00:00Z",
+    )
+
+    rows = parse_press_releases([source])
+
+    assert [(row.symbol, row.action.value) for row in rows] == [
+        ("ORCHIDCHEM", "DROP"),
+        ("GMDCLTD", "ADD"),
+    ]
+
+
+def test_numbered_continuation_accepts_wrapped_rows_and_action_table_reset():
+    page = (
+        "The following companies are being included:\n"
+        "1 Aarti Industries Ltd. AARTIIND\n"
+        "2 Abbott India Ltd. ABBOTINDIA\n"
+        "3 Adani Gas Ltd. ADANIGAS\n"
+        "4 Dr. Lal Path Labs Ltd. LALPATHLAB\n"
+        "5 Gujarat Gas Ltd. GUJGASLTD\n"
+        "6\nIndian Railway Catering And Tourism\n"
+        "Corporation Ltd. IRCTC\n"
+        "7 NIIT Technologies Ltd. NIITTECH\n"
+        "8 Polycab India Ltd. POLYCAB\n"
+        "9 Trent Ltd. TRENT\n"
+        "13) NIFTY Auto\n"
+    )
+
+    prefix = _numbered_continuation_prefix(page, expected_first_row=11)
+
+    assert prefix is not None
+    assert "IRCTC" in prefix
+
+
+def test_numbered_continuation_accepts_prior_page_table_reset_without_heading():
+    page = (
+        "35 Va Tech Wabag Ltd. WABAG\n"
+        "The following scrips are being included:\n"
+        "1 Adani Enterprises Ltd. ADANIENT\n"
+        "2 Arvind Ltd. ARVIND\n"
+        "3 BEML Ltd. BEML\n"
+    )
+
+    prefix = _numbered_continuation_prefix(page, expected_first_row=35)
+
+    assert prefix is not None
 
 
 def test_coverage_is_blocked_for_missing_or_non_200_months():
@@ -342,6 +403,7 @@ def test_identity_aliases_do_not_duplicate_exact_current_symbols():
 
     assert len(aliases) == 1
     assert aliases[0]["confidence"] == "CERTIFIED"
+    assert aliases[0]["exchange"] == "NSE"
 
 
 def test_historical_master_keeps_unresolved_snapshot_aliases_manual_review():
@@ -460,6 +522,24 @@ def test_certified_alias_interval_validation_rejects_overlap_and_inversion():
     assert "invalid_alias_period:c" in errors
 
 
+def test_current_snapshot_alias_is_bounded_by_observation_date():
+    aliases = _identity_aliases(
+        [{"symbol": "ABC", "snapshot_date": "2026-09-09", "source_url": "snapshot", "source_sha256": "a" * 64}],
+        [{
+            "instrument_id": "NSE-ISIN:INE123", "isin": "INE123", "symbol": "ABC",
+            "company_name": "ABC Ltd", "listing_date": "2012-01-01", "valid_from": "2012-01-01",
+            "valid_until": None, "snapshot_date": "2026-09-09", "observed_snapshot_date": "2026-09-09",
+            "validity_basis": "CURRENT_SNAPSHOT_ONLY", "has_explicit_historical_interval": False,
+            "source_url": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+            "source_sha256": "b" * 64, "source_tier": "A1", "confidence": "CERTIFIED",
+            "review_status": "ACCEPTED",
+        }],
+    )
+    assert aliases[0]["valid_from"] == "2026-09-09"
+    assert aliases[0]["listing_date"] == "2012-01-01"
+    assert aliases[0]["validity_basis"] == "CURRENT_SNAPSHOT_ONLY"
+
+
 def test_manual_alias_candidate_is_not_used_as_certified_identity():
     observation = Observation(symbol="OLD", effective_date=date(2020, 1, 2))
     resolution = resolve_observation(
@@ -473,6 +553,21 @@ def test_manual_alias_candidate_is_not_used_as_certified_identity():
 
     assert resolution.instrument_id is None
     assert resolution.confidence == "UNRESOLVED"
+
+
+def test_duplicate_certified_alias_rows_for_one_instrument_are_deduplicated():
+    resolution = resolve_observation(
+        Observation(symbol="OLD", effective_date=date(2020, 1, 2)),
+        [],
+        aliases=[
+            {"instrument_id": "SEC-1", "alias_symbol": "OLD", "valid_from": "2010-01-01",
+             "valid_until": None, "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+            {"instrument_id": "SEC-1", "alias_symbol": "OLD", "valid_from": "2015-01-01",
+             "valid_until": None, "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+        ],
+    )
+    assert resolution.instrument_id == "SEC-1"
+    assert resolution.confidence == "CERTIFIED"
 
 
 def test_official_identity_change_tables_remain_manual_without_historical_isin(tmp_path):
@@ -495,9 +590,137 @@ def test_official_identity_change_tables_remain_manual_without_historical_isin(t
     rows = parse_official_identity_change_candidates(records, master)
 
     assert {row["identity_event_type"] for row in rows} == {
-        "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_CANDIDATE",
+        "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_EVIDENCE",
     }
     assert all(row["confidence"] == "MANUAL_REVIEW" for row in rows)
+    name_row = next(row for row in rows if row["identity_event_type"] == "OFFICIAL_NAME_CHANGE_EVIDENCE")
+    assert name_row["name_evidence_confidence"] == "CERTIFIED"
+    assert name_row["historical_identity_status"] == "MANUAL_REVIEW"
+    assert name_row["has_explicit_historical_interval"] is False
+
+
+def test_name_change_does_not_certify_historical_isin_from_current_master():
+    rows = _certified_official_name_change_rows([{
+        "identity_event_type": "OFFICIAL_NAME_CHANGE_EVIDENCE",
+        "instrument_id": "NSE-ISIN:INE1",
+        "isin": "INE1",
+        "symbol": "ATGL",
+        "company_name": "Adani Gas Limited",
+        "listing_date": "2018-11-05",
+        "valid_until": "2021-01-13",
+        "source_tier": "A1",
+        "source_url": "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+        "source_sha256": "b" * 64,
+        "identity_master_source_url": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+        "identity_master_source_sha256": "c" * 64,
+    }])
+
+    assert rows == []
+
+
+def test_explicit_historical_name_interval_can_certify_with_separate_identity_source():
+    rows = _certified_official_name_change_rows([{
+        "identity_event_type": "OFFICIAL_NAME_CHANGE_EVIDENCE",
+        "instrument_id": "NSE-ISIN:INE1",
+        "isin": "INE1",
+        "symbol": "ATGL",
+        "company_name": "Adani Gas Limited",
+        "valid_until": "2021-01-13",
+        "identity_valid_from": "2018-11-05",
+        "has_explicit_historical_interval": True,
+        "source_tier": "A1",
+        "source_url": "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+        "source_sha256": "b" * 64,
+        "identity_source_url": "https://nse.example/historical/ATGL-identity.pdf",
+        "identity_source_sha256": "d" * 64,
+        "identity_validity_basis": "OFFICIAL_PERIOD_VALID_IDENTITY_DOCUMENT",
+    }])
+
+    assert len(rows) == 1
+    assert rows[0]["confidence"] == "CERTIFIED"
+    assert rows[0]["valid_from"] == "2018-11-05"
+    assert rows[0]["valid_until"] == "2021-01-13"
+    assert rows[0]["name_change_source_url"].endswith("namechange.csv")
+    assert rows[0]["identity_source_url"].endswith("ATGL-identity.pdf")
+
+
+def test_identity_change_prefers_dated_historical_master_over_current_master(tmp_path):
+    name_path = tmp_path / "namechange.csv"
+    name_path.write_text(
+        "NCH_SYMBOL,NCH_PREV_NAME,NCH_NEW_NAME,NCH_DT\n"
+        "ATGL,Adani Gas Limited,Adani Total Gas Limited,13-JAN-2021\n",
+        encoding="utf-8",
+    )
+    records = [SourceRecord(
+        "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+        str(name_path), "b" * 64, "2026-09-18T00:00:00Z",
+    )]
+    master = [
+        {
+            "instrument_id": "NSE-ISIN:INE399L01023", "isin": "INE399L01023",
+            "symbol": "ATGL", "company_name": "Adani Total Gas Limited",
+            "listing_date": "2018-11-05", "valid_from": "2018-11-05",
+            "source_url": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+            "snapshot_date": "2026-09-19",
+        },
+        {
+            "instrument_id": "NSE-ISIN:INE399L01099", "isin": "INE399L01099",
+            "symbol": "ATGL", "company_name": "Adani Gas Limited",
+            "valid_from": "2021-01-13", "snapshot_date": "2021-01-13",
+            "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
+        },
+    ]
+
+    rows = parse_official_identity_change_candidates(records, master)
+
+    name_row = next(row for row in rows if row["identity_event_type"] == "OFFICIAL_NAME_CHANGE_EVIDENCE")
+    assert name_row["isin"] == "INE399L01099"
+    assert name_row["identity_master_source_url"].endswith("cm13JAN2021bhav.csv.zip")
+    assert name_row["identity_observation_date"] == "2021-01-13"
+
+
+def test_symbol_change_candidate_does_not_create_historical_interval(tmp_path):
+    symbol_path = tmp_path / "symbolchange.csv"
+    symbol_path.write_text("Old Name,OLD,NEW,30-OCT-2019\n", encoding="utf-8")
+    records = [SourceRecord(
+        "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+        str(symbol_path), "a" * 64, "2026-09-18T00:00:00Z",
+    )]
+    master = [{
+        "instrument_id": "NSE-ISIN:INE1", "isin": "INE1", "symbol": "NEW",
+        "company_name": "New Name", "valid_from": "2020-01-01", "snapshot_date": "2026-09-19",
+    }]
+
+    rows = parse_official_identity_change_candidates(records, master)
+
+    assert rows[0]["has_explicit_historical_interval"] is False
+    assert rows[0]["historical_identity_status"] == "MANUAL_REVIEW"
+
+
+def test_identity_aliases_prefer_dated_historical_source_for_checkpoint():
+    aliases = _identity_aliases(
+        [{"snapshot_date": "2021-01-13", "symbol": "ATGL", "company_name": "Adani Gas Limited"}],
+        [
+            {
+                "instrument_id": "NSE-ISIN:INE399L01023", "isin": "INE399L01023",
+                "symbol": "ATGL", "valid_from": "2018-11-05",
+                "snapshot_date": "2026-09-19",
+                "source_url": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+                "source_sha256": "c" * 64,
+            },
+            {
+                "instrument_id": "NSE-ISIN:INE399L01099", "isin": "INE399L01099",
+                "symbol": "ATGL", "valid_from": "2021-01-13",
+                "snapshot_date": "2021-01-13",
+                "source_url": "https://archives.nseindia.com/content/historical/EQUITIES/2021/JAN/cm13JAN2021bhav.csv.zip",
+                "source_sha256": "d" * 64,
+            },
+        ],
+    )
+
+    assert len(aliases) == 1
+    assert aliases[0]["instrument_id"] == "NSE-ISIN:INE399L01099"
+    assert aliases[0]["source_url"].endswith("cm13JAN2021bhav.csv.zip")
 
 
 def test_superseded_official_assertion_is_audited_but_not_reconciled():
@@ -535,6 +758,65 @@ def test_workbook_assertion_is_suppressed_by_exact_release_name_normalization():
     )
 
     assert _suppress_redundant_workbook_observations([workbook, release]) == [release]
+
+
+def test_workbook_assertion_is_suppressed_by_exact_release_identity():
+    workbook = Observation(
+        source_url="https://nse.example/IndexInclExcl.xls", source_sha256="a" * 64,
+        extraction_method="OFFICIAL_XLS", source_tier="A1", index_id="NIFTY_200",
+        company_name="Name from workbook", symbol="WABAG", isin="INE956G01038",
+        instrument_id="NSE-ISIN:INE956G01038", effective_date=date(2016, 4, 1),
+        action="ADD",
+    )
+    release = Observation(
+        source_url="https://niftyindices.example/release.pdf", source_sha256="b" * 64,
+        extraction_method="PDF_TEXT", source_tier="A1", index_id="NIFTY_200",
+        company_name="35 Va Tech Wabag Ltd.", symbol="WABAG", isin="INE956G01038",
+        instrument_id="NSE-ISIN:INE956G01038", effective_date=date(2016, 4, 1),
+        action="ADD", confidence="CERTIFIED", review_status="ACCEPTED",
+    )
+
+    assert _suppress_redundant_workbook_observations([workbook, release]) == [release]
+
+
+def test_official_scrip_continuation_table_is_admitted():
+    page_with_heading = """16) Nifty 200 Index
+The following scrips are being excluded:
+34 Unitech Ltd. UNITECH
+"""
+    page_continuation = """9
+35 Va Tech Wabag Ltd. WABAG
+The following scrips are being included:
+1 Adani Enterprises Ltd. ADANIENT
+"""
+
+    from tools.nifty200_pit.build_public_dataset import (
+        _nifty200_final_section_context,
+        _numbered_continuation_prefix,
+    )
+
+    context = _nifty200_final_section_context(page_with_heading)
+    assert context == (34, "The following scrips are being excluded:")
+    assert _numbered_continuation_prefix(page_continuation, 35) == page_continuation.rstrip()
+
+
+def test_official_continuation_table_allows_visual_row_order_variation():
+    page_continuation = """9
+The following companies are being included:
+1 Dalmia Bharat Ltd. DALMIABHA
+2 Edelweiss Financial Services Ltd. EDELWEISS
+3 Endurance Technologies Ltd. ENDURANCE
+5 Dr. Lal Path Labs Ltd. LALPATHLAB
+4 ICICI Prudential Life Insurance Company Ltd. ICICIPRULI
+6 L&T Technology Services Ltd. LTTS
+7 Manappuram Finance Ltd. MANAPPURAM
+8 Quess Corp Ltd. QUESS
+11) NIFTY Smallcap 50
+"""
+
+    from tools.nifty200_pit.build_public_dataset import _numbered_continuation_prefix
+
+    assert _numbered_continuation_prefix(page_continuation, 9) == page_continuation.split("11) NIFTY", 1)[0].rstrip()
 
 
 def test_bhavcopy_company_name_join_requires_exact_symbol_and_isin():

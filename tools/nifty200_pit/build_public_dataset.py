@@ -261,8 +261,9 @@ _NIFTY200_INDEX_HEADING_RE = re.compile(
     re.I,
 )
 _TABLE_ROW_NUMBER_RE = re.compile(r"^\s*(\d{1,3})\s+.+\s+[A-Z0-9][A-Z0-9&.-]{1,19}\s*$")
+_TABLE_ROW_START_RE = re.compile(r"^\s*(\d{1,3})(?:\s+|$)")
 _ACTION_HEADING_RE = re.compile(
-    r"^\s*The following (?:companies|company) (?:are|is) being (?:excluded|included):?\s*$",
+    r"^\s*The following (?:companies|company|scrips|scrip) (?:are|is) being (?:excluded|included):?\s*$",
     re.I | re.M,
 )
 _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES = {
@@ -317,9 +318,25 @@ def _numbered_continuation_prefix(page_text: str, expected_first_row: int) -> st
             if segments[-1]:
                 segments.append([])
             continue
-        match = _TABLE_ROW_NUMBER_RE.match(line)
+        # Native PDF extraction preserves printed page numbers as standalone
+        # numeric lines. They are not table row numbers and must not break a
+        # continuation that starts with the next numbered security.
+        if re.fullmatch(r"\s*\d{1,3}\s*", line) and not any(segments):
+            continue
+        # A wrapped company name can put the symbol on a later line (for
+        # example row ``6`` followed by ``Corporation Ltd. IRCTC``).  The
+        # continuation gate only needs row numbering; full row extraction is
+        # still performed by the NIFTY-200 parser.
+        match = _TABLE_ROW_START_RE.match(line)
         if match is not None:
-            segments[-1].append(int(match.group(1)))
+            row_number = int(match.group(1))
+            # Some official releases finish the exclusion table on one page
+            # and start the inclusion table on the next without repeating the
+            # action heading.  Treat the reset to row 1 as a new table only
+            # after a genuine continuation row has been observed.
+            if segments[-1] and row_number == 1 and segments[-1][0] != 1:
+                segments.append([])
+            segments[-1].append(row_number)
     segments = [segment for segment in segments if segment]
     if not segments:
         return None
@@ -333,7 +350,14 @@ def _numbered_continuation_prefix(page_text: str, expected_first_row: int) -> st
     for segment in segments:
         if segment is not first_segment and segment[0] != 1:
             return None
-        if any(current != previous + 1 for previous, current in zip(segment, segment[1:])):
+        if segment[0] == 1 and _ACTION_HEADING_RE.search(prefix) is not None:
+            # A few official PDFs contain a valid table whose printed row
+            # numbers are out of order (for example 1,2,3,5,4,6...).  The
+            # continuation gate must verify a complete numbered table without
+            # requiring the PDF text layer to preserve visual row order.
+            if sorted(set(segment)) != list(range(1, max(segment) + 1)):
+                return None
+        elif any(current != previous + 1 for previous, current in zip(segment, segment[1:])):
             return None
     return prefix
 
@@ -380,6 +404,7 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
             matching_pages = [
                 page_number for page_number, page_text in enumerate(pages, start=1)
                 if row.symbol in page_text
+                or row.symbol in re.sub(r"\s+", "", page_text)
             ]
             matched_page: int | None = next((item for item in matching_pages if item in allowed_pages), None)
             if matched_page is not None:
@@ -655,6 +680,22 @@ def _suppress_redundant_workbook_observations(observations: list[Observation]) -
         and observation.confidence == "CERTIFIED"
         and observation.instrument_id and observation.symbol and observation.effective_date
     }
+    certified_release_identity_keys = {
+        (
+            observation.index_id,
+            observation.effective_date,
+            action_value(observation),
+            observation.instrument_id,
+            observation.isin,
+            observation.symbol.casefold(),
+        )
+        for observation in observations
+        if observation.extraction_method != "OFFICIAL_XLS"
+        and observation.source_tier in {"A1", "A2"}
+        and observation.review_status == "ACCEPTED"
+        and observation.confidence == "CERTIFIED"
+        and observation.instrument_id and observation.symbol and observation.effective_date
+    }
     variants = [
         (date(2013, 4, 1), "DROP", "Great Eastern Shipping Co. Ltd.", "The Great Eastern Shipping Co. Ltd.",
          "747ada17f17537dd854ff497062e263dd32b84598eb74e36795e230c95afff69"),
@@ -676,6 +717,15 @@ def _suppress_redundant_workbook_observations(observations: list[Observation]) -
         if not (observation.extraction_method == "OFFICIAL_XLS" and (
             (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
             in certified_release_keys or (
+                (
+                    observation.index_id,
+                    observation.effective_date,
+                    action_value(observation),
+                    observation.instrument_id,
+                    observation.isin,
+                    observation.symbol.casefold() if observation.symbol else "",
+                ) in certified_release_identity_keys
+            ) or (
                 observation.source_sha256 == workbook_hash and observation.source_tier == "A1"
                 and (observation.index_id, observation.effective_date, action_value(observation), _company_key(observation.company_name))
                 in variant_keys
@@ -892,6 +942,55 @@ def _enrich_bhavcopy_company_names(
     return enriched
 
 
+def _identity_evidence_sort_key(
+    row: dict[str, Any], target_date: date | None,
+) -> tuple[int, int, int, int]:
+    """Rank identity evidence by temporal validity before source recency.
+
+    A current security-master row is useful corroboration, but it cannot outrank
+    a dated first-party identity observation for a historical question.  The
+    listing date is deliberately not used as a historical observation date.
+    """
+    source_url = str(row.get("source_url") or "")
+    is_current_master = source_url == SECURITIES_MASTER_URL
+    snapshot = _parse_day(row.get("snapshot_date") or row.get("observed_snapshot_date"))
+    if snapshot is None and not is_current_master:
+        snapshot = _parse_day(row.get("valid_from"))
+    valid_from = _parse_day(row.get("valid_from"))
+    valid_until = _parse_day(row.get("valid_until"))
+    source_rank = {"A1": 0, "A2": 1, "B1": 2}.get(str(row.get("source_tier") or "A1").upper(), 3)
+    snapshot_ordinal = snapshot.toordinal() if snapshot else -1
+
+    if target_date is None:
+        temporal_rank = 0 if is_current_master else 1
+        distance = 0
+    elif bool(row.get("has_explicit_historical_interval")) and (
+        (valid_from is None or valid_from <= target_date)
+        and (valid_until is None or target_date < valid_until)
+    ):
+        temporal_rank = 0
+        distance = 0
+    elif snapshot is not None and snapshot <= target_date:
+        temporal_rank = 1
+        distance = (target_date - snapshot).days
+    elif is_current_master:
+        temporal_rank = 3
+        distance = (snapshot - target_date).days if snapshot is not None else 0
+    else:
+        temporal_rank = 4
+        distance = (snapshot - target_date).days if snapshot is not None else 0
+    return temporal_rank, distance, source_rank, -snapshot_ordinal
+
+
+def _select_temporally_relevant_identity_row(
+    rows: list[dict[str, Any]], target_date: date | None,
+) -> dict[str, Any] | None:
+    """Select exact identity evidence without backdating a current assertion."""
+    if not rows:
+        return None
+    return min(rows, key=lambda row: _identity_evidence_sort_key(row, target_date))
+
+
 def parse_official_identity_change_candidates(
     records: list[SourceRecord], master: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
@@ -901,10 +1000,12 @@ def parse_official_identity_change_candidates(
     carry historical ISINs. They are therefore retained as candidates and never
     promoted into the resolver's certified alias set automatically.
     """
-    master_by_symbol = {
-        str(row.get("symbol") or "").strip().casefold(): row
-        for row in master if row.get("instrument_id")
-    }
+    master_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in master:
+        if not row.get("instrument_id"):
+            continue
+        symbol_key = str(row.get("symbol") or "").strip().casefold()
+        master_by_symbol.setdefault(symbol_key, []).append(row)
     result: list[dict[str, Any]] = []
     for source in records:
         if source.source_url not in {SYMBOL_CHANGE_URL, NAME_CHANGE_URL}:
@@ -916,11 +1017,15 @@ def parse_official_identity_change_candidates(
                     if len(raw) < 4:
                         continue
                     old_symbol, new_symbol, changed = str(raw[1]).strip(), str(raw[2]).strip(), _parse_day(raw[3])
-                    candidate = master_by_symbol.get(new_symbol.casefold())
+                    candidate = _select_temporally_relevant_identity_row(
+                        master_by_symbol.get(new_symbol.casefold(), []), changed,
+                    )
                     if not old_symbol or not new_symbol or old_symbol.casefold() == new_symbol.casefold() or candidate is None:
                         continue
                     result.append({
                         **candidate,
+                        "identity_master_source_url": candidate.get("source_url", ""),
+                        "identity_master_source_sha256": candidate.get("source_sha256", ""),
                         "symbol": old_symbol,
                         "valid_from": None,
                         "valid_until": changed.isoformat() if changed else None,
@@ -930,7 +1035,17 @@ def parse_official_identity_change_candidates(
                         "source_url": source.source_url,
                         "source_sha256": source.source_sha256,
                         "source_tier": source.source_tier,
-                        "has_explicit_historical_interval": bool(changed),
+                        "has_explicit_historical_interval": False,
+                        "historical_identity_status": "MANUAL_REVIEW",
+                        "identity_source_url": candidate.get("source_url", ""),
+                        "identity_source_sha256": candidate.get("source_sha256", ""),
+                        "identity_observation_date": candidate.get("snapshot_date") or candidate.get("valid_from"),
+                        "identity_validity_basis": candidate.get("validity_basis") or (
+                            "CURRENT_SNAPSHOT_ONLY" if candidate.get("source_url") == SECURITIES_MASTER_URL
+                            else "HISTORICAL_POINT_OBSERVATION"
+                        ),
+                        "symbol_change_source_url": source.source_url,
+                        "symbol_change_source_sha256": source.source_sha256,
                         "identity_candidate_basis": f"official symbol change {old_symbol}->{new_symbol}",
                     })
             else:
@@ -940,22 +1055,38 @@ def parse_official_identity_change_candidates(
                     symbol = str(normalized.get("NCH_SYMBOL") or "").strip()
                     changed = _parse_day(normalized.get("NCH_DT"))
                     previous_name = str(normalized.get("NCH_PREV_NAME") or "").strip()
-                    candidate = master_by_symbol.get(symbol.casefold())
+                    candidate = _select_temporally_relevant_identity_row(
+                        master_by_symbol.get(symbol.casefold(), []), changed,
+                    )
                     if not symbol or not previous_name or candidate is None:
                         continue
                     result.append({
                         **candidate,
+                        "identity_master_source_url": candidate.get("source_url", ""),
+                        "identity_master_source_sha256": candidate.get("source_sha256", ""),
                         "symbol": symbol,
                         "company_name": previous_name,
                         "valid_from": None,
                         "valid_until": changed.isoformat() if changed else None,
-                        "identity_event_type": "OFFICIAL_NAME_CHANGE_CANDIDATE",
+                        "identity_event_type": "OFFICIAL_NAME_CHANGE_EVIDENCE",
                         "confidence": "MANUAL_REVIEW",
                         "review_status": "MANUAL_REVIEW",
                         "source_url": source.source_url,
                         "source_sha256": source.source_sha256,
                         "source_tier": source.source_tier,
-                        "has_explicit_historical_interval": bool(changed),
+                        "has_explicit_historical_interval": False,
+                        "historical_identity_status": "MANUAL_REVIEW",
+                        "name_evidence_confidence": "CERTIFIED",
+                        "name_evidence_review_status": "ACCEPTED",
+                        "name_change_source_url": source.source_url,
+                        "name_change_source_sha256": source.source_sha256,
+                        "identity_source_url": candidate.get("source_url", ""),
+                        "identity_source_sha256": candidate.get("source_sha256", ""),
+                        "identity_observation_date": candidate.get("snapshot_date") or candidate.get("valid_from"),
+                        "identity_validity_basis": candidate.get("validity_basis") or (
+                            "CURRENT_SNAPSHOT_ONLY" if candidate.get("source_url") == SECURITIES_MASTER_URL
+                            else "HISTORICAL_POINT_OBSERVATION"
+                        ),
                         "identity_candidate_basis": f"official company-name change for {symbol}",
                     })
     unique: dict[tuple[str, str, str, str], dict[str, Any]] = {}
@@ -966,6 +1097,47 @@ def parse_official_identity_change_candidates(
         )
         unique[key] = row
     return sorted(unique.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
+
+
+def _certified_official_name_change_rows(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Create exact historical name rows from an official NSE name-change link.
+
+    A name-change row is promoted only when a separate, explicit historical
+    identity interval is supplied. Current EQUITY_L.csv evidence and its
+    listing date are not sufficient to establish that interval.
+    """
+    rows: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for candidate in candidates:
+        if candidate.get("identity_event_type") not in {
+            "OFFICIAL_NAME_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_EVIDENCE",
+        }:
+            continue
+        if not candidate.get("has_explicit_historical_interval"):
+            continue
+        if not all(candidate.get(field) for field in (
+            "instrument_id", "isin", "symbol", "company_name", "valid_until",
+            "identity_source_url", "identity_source_sha256", "identity_valid_from",
+        )):
+            continue
+        row = dict(candidate)
+        row.update({
+            "valid_from": row.get("identity_valid_from"),
+            "has_explicit_historical_interval": True,
+            "identity_event_type": "OFFICIAL_NAME_CHANGE_CERTIFIED",
+            "confidence": "CERTIFIED",
+            "review_status": "ACCEPTED",
+            "name_change_source_url": row.get("name_change_source_url") or row.get("source_url"),
+            "name_change_source_sha256": row.get("name_change_source_sha256") or row.get("source_sha256"),
+            "identity_resolution_basis": (
+                "official name-change evidence plus separate period-valid historical "
+                "identity evidence"
+            ),
+        })
+        key = (str(row["instrument_id"]), str(row["company_name"]).casefold(), str(row["valid_until"]))
+        rows[key] = row
+    return sorted(rows.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
 
 
 def parse_challenger_events(source: SourceRecord) -> list[Observation]:
@@ -1130,27 +1302,51 @@ def parse_monthly_snapshots(records: list[SourceRecord]) -> list[dict[str, Any]]
 
 
 def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Combine official identities with unresolved snapshot symbol candidates."""
+    """Combine temporally relevant identities with unresolved snapshot symbols."""
     aliases: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     master_symbols: set[str] = set()
-    canonical_master_rows: dict[str, dict[str, Any]] = {}
+    master_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for row in master:
         symbol = str(row["symbol"]).strip()
         master_symbols.add(symbol.casefold())
-        current = canonical_master_rows.get(symbol.casefold())
-        if current is None:
-            canonical_master_rows[symbol.casefold()] = row
-            continue
-        current_is_current = current.get("source_url") == SECURITIES_MASTER_URL
-        row_is_current = row.get("source_url") == SECURITIES_MASTER_URL
-        current_snapshot = str(current.get("snapshot_date") or current.get("valid_from") or "")
-        row_snapshot = str(row.get("snapshot_date") or row.get("valid_from") or "")
-        if (row_is_current and not current_is_current) or (row_is_current == current_is_current and row_snapshot > current_snapshot):
-            canonical_master_rows[symbol.casefold()] = row
-    for row in canonical_master_rows.values():
+        master_by_symbol.setdefault(symbol.casefold(), []).append(row)
+
+    snapshot_dates_by_symbol: dict[str, set[date]] = {}
+    for snapshot in snapshots:
+        symbol = str(snapshot.get("symbol") or "").strip().casefold()
+        snapshot_date = _parse_day(snapshot.get("snapshot_date"))
+        if symbol and snapshot_date is not None:
+            snapshot_dates_by_symbol.setdefault(symbol, set()).add(snapshot_date)
+
+    selected_rows: dict[str, dict[str, Any]] = {}
+    for symbol_key, rows in master_by_symbol.items():
+        target = min(snapshot_dates_by_symbol[symbol_key]) if symbol_key in snapshot_dates_by_symbol else None
+        selected = _select_temporally_relevant_identity_row(rows, target)
+        if selected is not None:
+            selected_rows[symbol_key] = selected
+    for row in selected_rows.values():
         symbol = str(row["symbol"]).strip()
-        aliases[(str(row["instrument_id"]), symbol.casefold(), str(row.get("valid_from") or ""), str(row.get("valid_until") or ""))] = {
-            **row, "alias_symbol": row["symbol"], "confidence": "CERTIFIED",
+        symbol_key = symbol.casefold()
+        alias_row = dict(row)
+        snapshot_observed_date = _parse_day(row.get("snapshot_date") or row.get("observed_snapshot_date"))
+        if snapshot_observed_date is None and symbol_key in snapshot_dates_by_symbol:
+            snapshot_observed_date = min(snapshot_dates_by_symbol[symbol_key])
+        if not bool(row.get("has_explicit_historical_interval")):
+            # A listing date proves existence, not uninterrupted symbol/ISIN
+            # continuity.  Preserve it for audit, but bound the exported alias
+            # by the date on which this identity was actually observed.
+            if snapshot_observed_date is None:
+                continue
+            alias_row["listing_date"] = row.get("listing_date")
+            alias_row["snapshot_date"] = snapshot_observed_date.isoformat()
+            alias_row["valid_from"] = snapshot_observed_date.isoformat()
+            alias_row["validity_basis"] = row.get("validity_basis") or (
+                "CURRENT_SNAPSHOT_ONLY" if row.get("source_url") == SECURITIES_MASTER_URL
+                else "HISTORICAL_POINT_OBSERVATION"
+            )
+        aliases[(str(alias_row["instrument_id"]), symbol.casefold(), str(alias_row.get("valid_from") or ""), str(alias_row.get("valid_until") or ""))] = {
+            **alias_row, "exchange": alias_row.get("exchange") or "NSE",
+            "alias_symbol": alias_row["symbol"], "confidence": "CERTIFIED",
             "resolution_status": "ACCEPTED",
         }
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1163,9 +1359,10 @@ def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, An
         # falsely reports the same current listing as unresolved historical data.
         if symbol.casefold() in master_symbols:
             continue
-        snapshot_date = str(row.get("snapshot_date") or "")
-        item = candidates.setdefault((symbol.casefold(), snapshot_date), {
+        snapshot_date_text = str(row.get("snapshot_date") or "")
+        item = candidates.setdefault((symbol.casefold(), snapshot_date_text), {
             "instrument_id": None, "isin": None, "alias_symbol": symbol,
+            "exchange": "NSE",
             "company_name": row.get("company_name"), "valid_from": row["snapshot_date"],
             "valid_until": None, "confidence": "UNRESOLVED", "resolution_status": "MANUAL_REVIEW",
             "source_url": row["source_url"], "source_sha256": row["source_sha256"],
@@ -1440,9 +1637,14 @@ def _historical_master_rows(
         "snapshot_date": row.get("snapshot_date"),
         "observed_snapshot_date": row.get("observed_snapshot_date", row.get("snapshot_date")),
         "retrieved_at": row.get("retrieved_at"),
+        "validity_basis": (
+            "EXPLICIT_HISTORICAL_INTERVAL" if row.get("has_explicit_historical_interval")
+            else "CURRENT_SNAPSHOT_ONLY" if row.get("source_url") == SECURITIES_MASTER_URL
+            else row.get("validity_basis") or "HISTORICAL_SNAPSHOT_OBSERVATION"
+        ),
         "has_explicit_historical_interval": bool(row.get("has_explicit_historical_interval", False)),
         "identity_event_type": (
-            "CURRENT_SECURITY_MASTER_LISTING_ANCHOR"
+            "CURRENT_SECURITY_MASTER_SNAPSHOT_ONLY"
             if row.get("source_url") == SECURITIES_MASTER_URL
             else row.get("identity_event_type") or "HISTORICAL_SECURITY_MASTER_SNAPSHOT"
         ),
@@ -1465,6 +1667,10 @@ def _historical_master_rows(
         "snapshot_date": row.get("snapshot_date"),
         "observed_snapshot_date": row.get("observed_snapshot_date", row.get("snapshot_date")),
         "retrieved_at": row.get("retrieved_at"),
+        "validity_basis": (
+            "EXPLICIT_HISTORICAL_INTERVAL" if row.get("has_explicit_historical_interval")
+            else row.get("validity_basis") or "HISTORICAL_ALIAS_CANDIDATE"
+        ),
         "has_explicit_historical_interval": bool(row.get("has_explicit_historical_interval", False)),
         "identity_event_type": "HISTORICAL_ALIAS_UNRESOLVED",
         "source_url": row.get("source_url"),
@@ -1477,6 +1683,71 @@ def _historical_master_rows(
     } for row in aliases if row.get("confidence") != "CERTIFIED")
     rows.extend(identity_change_candidates or [])
     return rows
+
+
+def _identity_metric_summary(
+    instrument_master: list[dict[str, Any]], observations: list[Observation],
+    aliases: list[dict[str, Any]], identity_change_candidates: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Return identity metrics with historical and current evidence separated."""
+    current_only_rows = [
+        row for row in instrument_master
+        if str(row.get("validity_basis") or "") == "CURRENT_SNAPSHOT_ONLY"
+        and not bool(row.get("has_explicit_historical_interval"))
+    ]
+    explicit_interval_rows = [
+        row for row in instrument_master
+        if bool(row.get("has_explicit_historical_interval"))
+    ]
+    historical_rows = [
+        row for row in instrument_master
+        if not (
+            str(row.get("validity_basis") or "") == "CURRENT_SNAPSHOT_ONLY"
+            and not bool(row.get("has_explicit_historical_interval"))
+        )
+    ]
+    certified_historical_rows = [
+        row for row in historical_rows
+        if str(row.get("confidence", "CERTIFIED")).upper() == "CERTIFIED"
+        and str(row.get("review_status", "ACCEPTED")).upper() == "ACCEPTED"
+    ]
+    manual_review_rows = [
+        row for row in aliases
+        if str(row.get("confidence", "CERTIFIED")).upper() != "CERTIFIED"
+        or str(row.get("review_status", "ACCEPTED")).upper() == "MANUAL_REVIEW"
+    ]
+    manual_review_rows.extend(identity_change_candidates)
+    event_rows = [row for row in observations if row.effective_date is not None]
+    certified_event_rows = [
+        row for row in event_rows
+        if row.instrument_id and str(row.confidence).upper() == "CERTIFIED"
+    ]
+    unresolved_event_rows = [row for row in event_rows if not row.instrument_id]
+    manual_review_event_rows = [
+        row for row in event_rows
+        if str(row.confidence).upper() == "MANUAL_REVIEW"
+        or str(row.review_status).upper() == "MANUAL_REVIEW"
+    ]
+    event_total = len(event_rows)
+    certified_event_pct = round((len(certified_event_rows) / event_total * 100) if event_total else 0, 4)
+    certified_event_isin_pct = round((sum(bool(row.isin) for row in certified_event_rows) / event_total * 100) if event_total else 0, 4)
+    return {
+        "certified_historical_identity_rows": len(certified_historical_rows),
+        "current_snapshot_only_identity_rows": len(current_only_rows),
+        "explicit_historical_interval_identity_rows": len(explicit_interval_rows),
+        "manual_review_identity_rows": len(manual_review_rows),
+        "historical_event_identity_rows": event_total,
+        "certified_historical_event_identity_rows": len(certified_event_rows),
+        "unresolved_historical_event_identity_cases": len(unresolved_event_rows),
+        "manual_review_historical_event_identity_rows": len(manual_review_event_rows),
+        "certified_identity_resolution_pct_among_historical_event_rows": certified_event_pct,
+        "isin_resolution_pct_among_historical_event_rows": certified_event_isin_pct,
+        # Keep legacy keys for report consumers, but use the explicit
+        # historical-event denominator instead of the current alias inventory.
+        "durable_id_resolution_percent": certified_event_pct,
+        "isin_resolution_percent": certified_event_isin_pct,
+        "unresolved_identity_count": len(unresolved_event_rows),
+    }
 
 
 def _historical_identity_resolution_rows(
@@ -2284,6 +2555,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         ):
             row["valid_until"] = current["valid_from"]
     identity_change_candidates = parse_official_identity_change_candidates(sources, instrument_master)
+    instrument_master.extend(_certified_official_name_change_rows(identity_change_candidates))
     aliases = _identity_aliases(snapshots, instrument_master)
     observations = resolve_observations(observations, instrument_master, aliases=aliases)
     observations, instrument_master, aliases, identity_continuity_audit = _apply_documented_isin_continuity(
@@ -2353,13 +2625,19 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     )
     anchor_summary = anchor_forensics["summary"]
     historical_master = _historical_master_rows(instrument_master, aliases, identity_change_candidates)
+    identity_metrics = _identity_metric_summary(
+        instrument_master, observations, aliases, identity_change_candidates,
+    )
     raw_unresolved_rows = _raw_unresolved_observations(raw_observations, observations, reconciliation.events)
+    calendar_audit_status = "PARTIAL_NOT_CERTIFIED"
     report = validate_campaign(
         interval_result.intervals, reconciliation.events, campaign_from=CAMPAIGN_FROM, campaign_to=CAMPAIGN_TO,
         trading_days=trading_days, expected_member_counts=expected_member_counts,
         initial_anchor_established=anchor_summary.get("status") == "ESTABLISHED",
         conflicts=conflicts, source_hash_errors=source_errors,
         anchor_differences=anchor_differences,
+        calendar_provenance=calendar.version,
+        calendar_certified=calendar_audit_status == "CERTIFIED",
     )
     replay_counts = list(report.metrics["daily_member_counts"].values())
     snapshot_dates = {str(row["snapshot_date"]) for row in snapshots}
@@ -2375,7 +2653,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "event_date_snapshot_count": len({row["snapshot_date"] for row in event_date_snapshots}) if "event_date_snapshots" in locals() else 0,
         "source_hash_error_count": len(source_errors),
         "calendar_version": calendar.version,
-        "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
+        "calendar_audit_status": calendar_audit_status,
         "calendar_verified_override_count": len(calendar_overrides),
         "minimum_active_constituent_count": min(replay_counts, default=0),
         "maximum_active_constituent_count": max(replay_counts, default=0),
@@ -2406,9 +2684,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "current_security_master_rows": len(current_instrument_master),
         "historical_identity_rows": len(historical_master),
         "unique_historical_instruments": len({row.get("instrument_id") for row in instrument_master}),
-        "durable_id_resolution_percent": round((sum(row.get("confidence") == "CERTIFIED" for row in aliases) / len(aliases) * 100) if aliases else 0, 4),
-        "isin_resolution_percent": round((sum(bool(row.get("isin")) for row in aliases if row.get("confidence") == "CERTIFIED") / len(aliases) * 100) if aliases else 0, 4),
-        "unresolved_identity_count": sum(row.get("confidence") != "CERTIFIED" for row in aliases),
+        **identity_metrics,
         "documented_isin_continuity_links": len(identity_continuity_audit["links"]),
         "redundant_workbook_observation_count": len(considered_observations) - len(reconciliation_observations),
         "contradicted_challenger_count": len(challenger_dispositions),
