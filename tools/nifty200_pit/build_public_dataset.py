@@ -40,6 +40,7 @@ from tools.nifty200_pit.source_catalogue import sha256_file
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
 from trading_stack.calendars import SessionOverride, build_nse_calendar
 from tools.nifty200_pit.causality import next_trading_session_open
+from tools.nifty200_pit.corpus import CorpusIncompleteError, assert_corpus_complete
 
 CAMPAIGN_FROM = date(2012, 1, 2)
 CAMPAIGN_TO = date(2026, 8, 20)
@@ -2467,7 +2468,13 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     derived.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    sources = load_sources(root)
+    try:
+        sources = load_sources(root)
+    except FileNotFoundError as exc:
+        raise CorpusIncompleteError(
+            f"CORPUS_INCOMPLETE: source metadata or raw corpus is missing: {exc}"
+        ) from exc
+    assert_corpus_complete(root, sources)
     source_errors = verify_source_hashes(sources)
     calendar_overrides = _verified_calendar_overrides(sources)
     calendar = build_nse_calendar(
@@ -2999,7 +3006,11 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
 
 
 def main() -> int:
-    result = build_dataset()
+    try:
+        result = build_dataset()
+    except CorpusIncompleteError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     print(json.dumps(result, indent=2))
     return 0
 

@@ -1,6 +1,8 @@
+import json
 from datetime import date
 
 from tools.nifty200_pit.causality import derive_known_at
+from tools.nifty200_pit.corpus import CorpusIncompleteError, assert_corpus_complete
 from tools.nifty200_pit.parse_html import extract_links, is_index_change_candidate
 from tools.nifty200_pit.source_catalogue import SourceCatalogue
 
@@ -42,3 +44,130 @@ def test_date_only_knowledge_time_is_conservative():
     assert known_at.isoformat().startswith("2024-08-16T09:15:00")
     assert basis == "DATE_ONLY_CONSERVATIVE_NEXT_SESSION"
     assert review is None
+
+
+def test_corpus_preflight_reports_missing_source_bytes(tmp_path):
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "nifty200_pit_corpus_requirements.json").write_text(
+        '{"records": [{"source_url": "https://nse.example/missing.pdf", '
+        '"source_sha256": "' + "a" * 64 + '", '
+        '"relative_path": "data/raw/missing.pdf"}]}',
+        encoding="utf-8",
+    )
+
+    try:
+        assert_corpus_complete(tmp_path, [])
+    except CorpusIncompleteError as exc:
+        assert "CORPUS_INCOMPLETE" in str(exc)
+        assert "missing_source_bytes" in str(exc)
+    else:
+        raise AssertionError("missing raw evidence must fail closed")
+
+
+def test_corpus_preflight_accepts_hash_verified_source(tmp_path):
+    source = SourceCatalogue(tmp_path / "sources").add_bytes(
+        b"official", source_url="https://nse.example/source.pdf", extension=".pdf"
+    )
+    relative = source.local_path.replace(str(tmp_path) + "\\", "").replace("\\", "/")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "nifty200_pit_corpus_requirements.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "source_url": source.source_url,
+                        "source_sha256": source.source_sha256,
+                        "relative_path": relative,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert_corpus_complete(tmp_path, [source])
+
+
+def test_corpus_preflight_reports_hash_mismatch(tmp_path):
+    (tmp_path / "config").mkdir()
+    required = tmp_path / "data" / "raw" / "required.pdf"
+    required.parent.mkdir(parents=True)
+    required.write_bytes(b"changed")
+    (tmp_path / "config" / "nifty200_pit_corpus_requirements.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "source_url": "https://nse.example/required.pdf",
+                        "source_sha256": "a" * 64,
+                        "relative_path": "data/raw/required.pdf",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        assert_corpus_complete(tmp_path, [])
+    except CorpusIncompleteError as exc:
+        assert "source_hash_mismatch" in str(exc)
+    else:
+        raise AssertionError("a changed raw source must fail closed")
+
+
+def test_unregistered_extra_file_does_not_satisfy_required_source(tmp_path):
+    (tmp_path / "config").mkdir()
+    extra = tmp_path / "data" / "raw" / "extra.pdf"
+    extra.parent.mkdir(parents=True)
+    extra.write_bytes(b"required bytes")
+    (tmp_path / "config" / "nifty200_pit_corpus_requirements.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "source_url": "https://nse.example/required.pdf",
+                        "source_sha256": "a" * 64,
+                        "relative_path": "data/raw/required.pdf",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        assert_corpus_complete(tmp_path, [])
+    except CorpusIncompleteError as exc:
+        assert "missing_source_bytes" in str(exc)
+    else:
+        raise AssertionError("an unregistered extra file must not satisfy a requirement")
+
+
+def test_source_provenance_is_required_for_a_complete_corpus(tmp_path):
+    source = SourceCatalogue(tmp_path / "sources").add_bytes(
+        b"official", source_url="https://nse.example/actual.pdf", extension=".pdf"
+    )
+    relative = source.local_path.replace(str(tmp_path) + "\\", "").replace("\\", "/")
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "nifty200_pit_corpus_requirements.json").write_text(
+        json.dumps(
+            {
+                "records": [
+                    {
+                        "source_url": "https://nse.example/unregistered.pdf",
+                        "source_sha256": source.source_sha256,
+                        "relative_path": relative,
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        assert_corpus_complete(tmp_path, [source])
+    except CorpusIncompleteError as exc:
+        assert "missing_catalogue_record" in str(exc)
+    else:
+        raise AssertionError("unregistered source provenance must fail closed")
