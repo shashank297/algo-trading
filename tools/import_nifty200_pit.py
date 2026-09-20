@@ -65,8 +65,11 @@ def verify_manifest(
             raise ValueError("Manifest validation is not PASS; import refused")
         if manifest.get("campaign_readiness") != "PASS":
             raise ValueError("Manifest campaign readiness is not PASS; import refused")
-        if not manifest.get("approved_for_import", False):
-            raise ValueError("Manifest lacks explicit approval_for_import; import refused")
+        approved_for_import = manifest.get("approved_for_import")
+        if not isinstance(approved_for_import, bool) or approved_for_import is not True:
+            raise ValueError("Manifest lacks Boolean true approval_for_import; import refused")
+        if manifest.get("independent_qa") != "PASS":
+            raise ValueError("independent QA is not PASS; import refused")
         if int(manifest.get("unresolved_conflict_count", 1)) != 0:
             raise ValueError("Manifest contains unresolved conflicts; import refused")
     return manifest
@@ -80,7 +83,9 @@ def load_aliases(alias_path: str | Path) -> list[dict[str, Any]]:
     frame = read_table(path)
     required = {
         "alias_id", "instrument_id", "alias_symbol", "exchange", "valid_from", "valid_until",
-        "source_url", "source_sha256", "confidence", "resolution_status",
+        "source_url", "source_sha256", "confidence", "resolution_status", "source_tier",
+        "listing_date", "snapshot_date", "observed_snapshot_date", "validity_basis",
+        "has_explicit_historical_interval",
     }
     missing = required.difference(frame.columns)
     if missing:
@@ -89,12 +94,28 @@ def load_aliases(alias_path: str | Path) -> list[dict[str, Any]]:
     for row in frame.to_dict(orient="records"):
         if str(row.get("confidence", "")).upper() != "CERTIFIED" or str(row.get("resolution_status", "")).upper() != "ACCEPTED":
             continue
+        if str(row.get("source_tier", "")).upper() not in {"A1", "A2"}:
+            raise ValueError(f"Alias {row['alias_id']} is not backed by admissible A1/A2 evidence")
         for field in ("alias_id", "instrument_id", "alias_symbol", "exchange", "source_url", "source_sha256"):
             _required_text(row.get(field), f"alias.{field}")
         if not re.fullmatch(r"[0-9a-fA-F]{64}", str(row["source_sha256"])):
             raise ValueError(f"Alias {row['alias_id']} has an invalid source SHA-256")
-        _optional_date(row.get("valid_from"))
+        valid_from = _optional_date(row.get("valid_from"))
         _optional_date(row.get("valid_until"))
+        listing_date = _optional_date(row.get("listing_date"))
+        snapshot_date = _optional_date(row.get("snapshot_date"))
+        observed_snapshot_date = _optional_date(row.get("observed_snapshot_date"))
+        explicit_interval = bool(row.get("has_explicit_historical_interval", False))
+        if not explicit_interval and snapshot_date is None:
+            raise ValueError(f"Alias {row['alias_id']} lacks a snapshot bound")
+        if not explicit_interval and snapshot_date is not None and (valid_from is None or valid_from < snapshot_date):
+            raise ValueError(f"Alias {row['alias_id']} backdates a non-explicit alias before its snapshot")
+        if observed_snapshot_date is not None and snapshot_date is not None and observed_snapshot_date < snapshot_date:
+            raise ValueError(f"Alias {row['alias_id']} has an invalid observed snapshot date")
+        if listing_date is not None and snapshot_date is not None and listing_date > snapshot_date and not explicit_interval:
+            raise ValueError(f"Alias {row['alias_id']} has a listing date after its snapshot")
+        if not str(row.get("validity_basis") or "").strip():
+            raise ValueError(f"Alias {row['alias_id']} lacks validity_basis")
         rows.append(row)
     validation_errors = validate_alias_intervals(rows)
     if validation_errors:
@@ -118,6 +139,11 @@ def insert_aliases(connection: Any, aliases: list[dict[str, Any]]) -> int:
             valid_until DATE,
             source_url VARCHAR,
             source_sha256 VARCHAR,
+            listing_date DATE,
+            snapshot_date DATE,
+            observed_snapshot_date DATE,
+            validity_basis VARCHAR,
+            has_explicit_historical_interval BOOLEAN NOT NULL DEFAULT FALSE,
             confidence VARCHAR NOT NULL DEFAULT 'MANUAL_REVIEW',
             resolution_status VARCHAR NOT NULL DEFAULT 'UNRESOLVED',
             updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
@@ -127,13 +153,17 @@ def insert_aliases(connection: Any, aliases: list[dict[str, Any]]) -> int:
         connection.execute(
             """INSERT OR REPLACE INTO instrument_alias_history (
                 alias_id, instrument_id, alias_symbol, exchange, valid_from, valid_until,
-                source_url, source_sha256, confidence, resolution_status
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                source_url, source_sha256, listing_date, snapshot_date, observed_snapshot_date,
+                validity_basis, has_explicit_historical_interval, confidence, resolution_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             [
                 str(row["alias_id"]), str(row["instrument_id"]).upper(), str(row["alias_symbol"]).upper(),
                 str(row.get("exchange") or "NSE").upper(), _optional_date(row.get("valid_from")),
                 _optional_date(row.get("valid_until")), str(row["source_url"]), str(row["source_sha256"]).lower(),
-                "CERTIFIED", "ACCEPTED",
+                _optional_date(row.get("listing_date")), _optional_date(row.get("snapshot_date")),
+                _optional_date(row.get("observed_snapshot_date")), str(row["validity_basis"]),
+                bool(row.get("has_explicit_historical_interval", False)), str(row["confidence"]).upper(),
+                str(row["resolution_status"]).upper(),
             ],
         )
     return len(aliases)

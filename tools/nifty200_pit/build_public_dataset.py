@@ -1326,8 +1326,27 @@ def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, An
             selected_rows[symbol_key] = selected
     for row in selected_rows.values():
         symbol = str(row["symbol"]).strip()
-        aliases[(str(row["instrument_id"]), symbol.casefold(), str(row.get("valid_from") or ""), str(row.get("valid_until") or ""))] = {
-            **row, "alias_symbol": row["symbol"], "confidence": "CERTIFIED",
+        symbol_key = symbol.casefold()
+        alias_row = dict(row)
+        snapshot_observed_date = _parse_day(row.get("snapshot_date") or row.get("observed_snapshot_date"))
+        if snapshot_observed_date is None and symbol_key in snapshot_dates_by_symbol:
+            snapshot_observed_date = min(snapshot_dates_by_symbol[symbol_key])
+        if not bool(row.get("has_explicit_historical_interval")):
+            # A listing date proves existence, not uninterrupted symbol/ISIN
+            # continuity.  Preserve it for audit, but bound the exported alias
+            # by the date on which this identity was actually observed.
+            if snapshot_observed_date is None:
+                continue
+            alias_row["listing_date"] = row.get("listing_date")
+            alias_row["snapshot_date"] = snapshot_observed_date.isoformat()
+            alias_row["valid_from"] = snapshot_observed_date.isoformat()
+            alias_row["validity_basis"] = row.get("validity_basis") or (
+                "CURRENT_SNAPSHOT_ONLY" if row.get("source_url") == SECURITIES_MASTER_URL
+                else "HISTORICAL_POINT_OBSERVATION"
+            )
+        aliases[(str(alias_row["instrument_id"]), symbol.casefold(), str(alias_row.get("valid_from") or ""), str(alias_row.get("valid_until") or ""))] = {
+            **alias_row, "exchange": alias_row.get("exchange") or "NSE",
+            "alias_symbol": alias_row["symbol"], "confidence": "CERTIFIED",
             "resolution_status": "ACCEPTED",
         }
     candidates: dict[tuple[str, str], dict[str, Any]] = {}
@@ -1343,6 +1362,7 @@ def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, An
         snapshot_date_text = str(row.get("snapshot_date") or "")
         item = candidates.setdefault((symbol.casefold(), snapshot_date_text), {
             "instrument_id": None, "isin": None, "alias_symbol": symbol,
+            "exchange": "NSE",
             "company_name": row.get("company_name"), "valid_from": row["snapshot_date"],
             "valid_until": None, "confidence": "UNRESOLVED", "resolution_status": "MANUAL_REVIEW",
             "source_url": row["source_url"], "source_sha256": row["source_sha256"],
@@ -2609,12 +2629,15 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         instrument_master, observations, aliases, identity_change_candidates,
     )
     raw_unresolved_rows = _raw_unresolved_observations(raw_observations, observations, reconciliation.events)
+    calendar_audit_status = "PARTIAL_NOT_CERTIFIED"
     report = validate_campaign(
         interval_result.intervals, reconciliation.events, campaign_from=CAMPAIGN_FROM, campaign_to=CAMPAIGN_TO,
         trading_days=trading_days, expected_member_counts=expected_member_counts,
         initial_anchor_established=anchor_summary.get("status") == "ESTABLISHED",
         conflicts=conflicts, source_hash_errors=source_errors,
         anchor_differences=anchor_differences,
+        calendar_provenance=calendar.version,
+        calendar_certified=calendar_audit_status == "CERTIFIED",
     )
     replay_counts = list(report.metrics["daily_member_counts"].values())
     snapshot_dates = {str(row["snapshot_date"]) for row in snapshots}
@@ -2630,7 +2653,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "event_date_snapshot_count": len({row["snapshot_date"] for row in event_date_snapshots}) if "event_date_snapshots" in locals() else 0,
         "source_hash_error_count": len(source_errors),
         "calendar_version": calendar.version,
-        "calendar_audit_status": "PARTIAL_NOT_CERTIFIED",
+        "calendar_audit_status": calendar_audit_status,
         "calendar_verified_override_count": len(calendar_overrides),
         "minimum_active_constituent_count": min(replay_counts, default=0),
         "maximum_active_constituent_count": max(replay_counts, default=0),

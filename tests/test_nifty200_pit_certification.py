@@ -16,14 +16,14 @@ def _event(number):
 
 def test_exact_member_count_is_required():
     intervals = build_intervals([_event(number) for number in range(200)]).intervals
-    report = validate_campaign(intervals, [_event(number) for number in range(200)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 3), trading_days=[date(2012, 1, 2), date(2012, 1, 3)])
+    report = validate_campaign(intervals, [_event(number) for number in range(200)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 3), trading_days=[date(2012, 1, 2), date(2012, 1, 3)], calendar_provenance="test-calendar", calendar_certified=True)
     assert report.passed
     assert report.metrics["trading_days_checked"] == 2
 
 
 def test_missing_membership_blocks_certification():
     intervals = build_intervals([_event(number) for number in range(199)]).intervals
-    report = validate_campaign(intervals, [_event(number) for number in range(199)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2), trading_days=[date(2012, 1, 2)])
+    report = validate_campaign(intervals, [_event(number) for number in range(199)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2), trading_days=[date(2012, 1, 2)], calendar_provenance="test-calendar", calendar_certified=True)
     assert not report.passed
     assert any(reason.startswith("member_count") for reason in report.reasons)
 
@@ -37,6 +37,8 @@ def test_count_validation_is_not_evaluable_without_initial_anchor():
         campaign_to=date(2012, 1, 2),
         trading_days=[date(2012, 1, 2)],
         initial_anchor_established=False,
+        calendar_provenance="test-calendar",
+        calendar_certified=True,
     )
 
     assert not report.passed
@@ -44,3 +46,21 @@ def test_count_validation_is_not_evaluable_without_initial_anchor():
     assert not any(reason.startswith("member_count:") for reason in report.reasons)
     assert report.metrics["count_validation_evaluable"] is False
     assert report.metrics["count_check_failures"] == 0
+
+
+def test_empty_session_input_is_blocked():
+    report = validate_campaign(
+        [], [], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 3),
+        trading_days=[], calendar_provenance="test-calendar", calendar_certified=True,
+    )
+    assert not report.passed
+    assert "trading_days_empty" in report.reasons
+
+
+def test_missing_calendar_provenance_is_blocked():
+    report = validate_campaign(
+        [], [], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2),
+        trading_days=[date(2012, 1, 2)], calendar_certified=False,
+    )
+    assert not report.passed
+    assert "calendar_not_certified" in report.reasons

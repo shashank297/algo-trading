@@ -108,6 +108,18 @@ def _candidate_ids(rows: Iterable[dict[str, Any]]) -> tuple[str, ...]:
     ))
 
 
+def _evidence_admissible(row: dict[str, Any]) -> bool:
+    """Return whether an identity row is allowed to produce certification."""
+    source_tier = str(row.get("source_tier") or "A1").upper()
+    confidence = str(row.get("confidence") or "CERTIFIED").upper()
+    review_status = str(row.get("review_status") or "ACCEPTED").upper()
+    return (
+        source_tier in {"A1", "A2"}
+        and confidence == "CERTIFIED"
+        and review_status == "ACCEPTED"
+    )
+
+
 def _identity_value(value: object) -> str | None:
     """Return a persisted identity value only when it is not a sentinel."""
     normalized = _norm(value)
@@ -176,9 +188,16 @@ def resolve_observation(
     else:
         rows, rows_by_isin, rows_by_symbol, rows_by_company, aliases_by_symbol = _indexes
     when = _date(obs.get("effective_date"))
+    if when is None:
+        return Resolution(None, None, "MISSING_EFFECTIVE_DATE", "MANUAL_REVIEW", (),
+                          "period-valid identity requires an effective date")
     isin = _norm(obs.get("isin"))
     if isin:
-        exact = [row for row in rows_by_isin.get(isin, []) if _valid_on(row, when)]
+        exact = [
+            row for row in rows_by_isin.get(isin, [])
+            if _valid_on(row, when) and _evidence_admissible(row)
+        ]
+        exact = _unique_instrument_rows(exact)
         exact = [row for row in exact if _durable_id(row.get("instrument_id"))]
         if len(exact) == 1:
             return Resolution(
@@ -196,9 +215,14 @@ def resolve_observation(
                     if (candidate := _durable_id(row.get("instrument_id"))) is not None
                 ),
             )
+        return Resolution(None, None, "CONTRADICTORY_EXPLICIT_ISIN", "MANUAL_REVIEW", (),
+                          "explicit ISIN did not match one admissible period-valid identity")
 
     symbol = _norm(obs.get("symbol"))
-    exact = [row for row in rows_by_symbol.get(symbol, []) if _valid_on(row, when)] if symbol else []
+    exact = [
+        row for row in rows_by_symbol.get(symbol, [])
+        if _valid_on(row, when) and _evidence_admissible(row)
+    ] if symbol else []
     unique_exact = _unique_instrument_rows(exact)
     if len(unique_exact) == 1:
         row = unique_exact[0]
@@ -232,7 +256,10 @@ def resolve_observation(
     raw_company = str(obs.get("company_name") or "")
     company_for_match = re.sub(r"\s+DVR\s*$", "", raw_company, flags=re.I)
     company = _norm_company(company_for_match)
-    exact_company = [row for row in rows_by_company.get(company, []) if _valid_on(row, when)]
+    exact_company = [
+        row for row in rows_by_company.get(company, [])
+        if _valid_on(row, when) and _evidence_admissible(row)
+    ]
     if re.search(r"\bDVR\b", raw_company, re.I):
         exact_company = [row for row in exact_company if _norm(row.get("symbol")).endswith("DVR")]
     unique_company = _unique_instrument_rows(exact_company)
@@ -268,6 +295,10 @@ def resolve_observation(
         or str(row.get("resolution_status", "ACCEPTED")).upper() != "ACCEPTED"
         for row in alias_matches
     )
+    unique_aliases: dict[str, dict[str, Any]] = {}
+    for row in alias_matches:
+        if (instrument_id := _durable_id(row.get("instrument_id"))) is not None:
+            unique_aliases.setdefault(instrument_id, row)
     if has_uncertified_alias and len(rows) > 1000:
         candidates = tuple(sorted({
             str(row["instrument_id"]) for row in alias_matches
@@ -277,22 +308,18 @@ def resolve_observation(
             None, None, "UNCERTIFIED_ALIAS", "MANUAL_REVIEW", candidates,
             "alias identity requires review; a symbol alone is not durable identity evidence",
         )
-    if not has_uncertified_alias and len(alias_matches) == 1:
-        row = alias_matches[0]
+    if not has_uncertified_alias and len(unique_aliases) == 1:
+        row = next(iter(unique_aliases.values()))
         return Resolution(
             _durable_id(row.get("instrument_id")),
             _identity_value(row.get("isin")),
             "EXPLICIT_SYMBOL_ALIAS",
             "CERTIFIED",
         )
-    if len(alias_matches) > 1:
+    if len(unique_aliases) > 1:
         return Resolution(
             None, None, "AMBIGUOUS_ALIAS", "MANUAL_REVIEW",
-            tuple(
-                candidate
-                for row in alias_matches
-                if (candidate := _durable_id(row.get("instrument_id"))) is not None
-            ),
+            tuple(sorted(unique_aliases)),
         )
 
     if symbol and len(rows) > 1000:

@@ -119,6 +119,55 @@ def test_archived_snapshot_obeys_its_observation_date():
     assert on_snapshot.confidence == "CERTIFIED"
 
 
+def test_manual_review_master_row_cannot_certify():
+    result = resolve_observation(
+        Observation(symbol="ABC", effective_date=date(2026, 9, 9)),
+        [{
+            "instrument_id": "NSE-ISIN:INE123", "isin": "INE123", "symbol": "ABC",
+            "snapshot_date": "2026-09-09", "valid_from": "2026-09-09",
+            "source_tier": "B1", "confidence": "MANUAL_REVIEW", "review_status": "MANUAL_REVIEW",
+        }],
+    )
+    assert result.instrument_id is None
+    assert result.confidence == "MANUAL_REVIEW"
+
+
+def test_contradictory_explicit_isin_fails_closed():
+    result = resolve_observation(
+        Observation(symbol="ABC", isin="INE999", effective_date=date(2026, 9, 9)),
+        [{
+            "instrument_id": "NSE-ISIN:INE123", "isin": "INE123", "symbol": "ABC",
+            "snapshot_date": "2026-09-09", "valid_from": "2026-09-09",
+        }],
+    )
+    assert result.instrument_id is None
+    assert result.confidence == "MANUAL_REVIEW"
+
+
+def test_missing_effective_date_cannot_period_certify():
+    result = resolve_observation(
+        Observation(symbol="ABC"),
+        [{
+            "instrument_id": "NSE-ISIN:INE123", "isin": "INE123", "symbol": "ABC",
+            "snapshot_date": "2026-09-09", "valid_from": "2026-09-09",
+        }],
+    )
+    assert result.instrument_id is None
+    assert result.confidence == "MANUAL_REVIEW"
+
+
+def test_duplicate_same_instrument_isin_evidence_is_deduplicated():
+    row = {
+        "instrument_id": "NSE-ISIN:INE123", "isin": "INE123", "symbol": "ABC",
+        "snapshot_date": "2026-09-09", "valid_from": "2026-09-09",
+    }
+    result = resolve_observation(
+        Observation(isin="INE123", effective_date=date(2026, 9, 9)), [row, dict(row)]
+    )
+    assert result.instrument_id == "NSE-ISIN:INE123"
+    assert result.confidence == "CERTIFIED"
+
+
 def test_harvester_stores_and_deduplicates_content_addressed_source(tmp_path, monkeypatch):
     payload = (
         b"SYMBOL,NAME OF COMPANY,DATE OF LISTING,ISIN NUMBER\n"

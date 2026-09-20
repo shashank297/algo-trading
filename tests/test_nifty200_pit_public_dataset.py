@@ -403,6 +403,7 @@ def test_identity_aliases_do_not_duplicate_exact_current_symbols():
 
     assert len(aliases) == 1
     assert aliases[0]["confidence"] == "CERTIFIED"
+    assert aliases[0]["exchange"] == "NSE"
 
 
 def test_historical_master_keeps_unresolved_snapshot_aliases_manual_review():
@@ -521,6 +522,24 @@ def test_certified_alias_interval_validation_rejects_overlap_and_inversion():
     assert "invalid_alias_period:c" in errors
 
 
+def test_current_snapshot_alias_is_bounded_by_observation_date():
+    aliases = _identity_aliases(
+        [{"symbol": "ABC", "snapshot_date": "2026-09-09", "source_url": "snapshot", "source_sha256": "a" * 64}],
+        [{
+            "instrument_id": "NSE-ISIN:INE123", "isin": "INE123", "symbol": "ABC",
+            "company_name": "ABC Ltd", "listing_date": "2012-01-01", "valid_from": "2012-01-01",
+            "valid_until": None, "snapshot_date": "2026-09-09", "observed_snapshot_date": "2026-09-09",
+            "validity_basis": "CURRENT_SNAPSHOT_ONLY", "has_explicit_historical_interval": False,
+            "source_url": "https://archives.nseindia.com/content/equities/EQUITY_L.csv",
+            "source_sha256": "b" * 64, "source_tier": "A1", "confidence": "CERTIFIED",
+            "review_status": "ACCEPTED",
+        }],
+    )
+    assert aliases[0]["valid_from"] == "2026-09-09"
+    assert aliases[0]["listing_date"] == "2012-01-01"
+    assert aliases[0]["validity_basis"] == "CURRENT_SNAPSHOT_ONLY"
+
+
 def test_manual_alias_candidate_is_not_used_as_certified_identity():
     observation = Observation(symbol="OLD", effective_date=date(2020, 1, 2))
     resolution = resolve_observation(
@@ -534,6 +553,21 @@ def test_manual_alias_candidate_is_not_used_as_certified_identity():
 
     assert resolution.instrument_id is None
     assert resolution.confidence == "UNRESOLVED"
+
+
+def test_duplicate_certified_alias_rows_for_one_instrument_are_deduplicated():
+    resolution = resolve_observation(
+        Observation(symbol="OLD", effective_date=date(2020, 1, 2)),
+        [],
+        aliases=[
+            {"instrument_id": "SEC-1", "alias_symbol": "OLD", "valid_from": "2010-01-01",
+             "valid_until": None, "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+            {"instrument_id": "SEC-1", "alias_symbol": "OLD", "valid_from": "2015-01-01",
+             "valid_until": None, "confidence": "CERTIFIED", "resolution_status": "ACCEPTED"},
+        ],
+    )
+    assert resolution.instrument_id == "SEC-1"
+    assert resolution.confidence == "CERTIFIED"
 
 
 def test_official_identity_change_tables_remain_manual_without_historical_isin(tmp_path):
