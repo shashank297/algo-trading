@@ -12,6 +12,7 @@ import csv
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from dataclasses import replace
+import gzip
 import hashlib
 import io
 import json
@@ -77,6 +78,10 @@ HISTORICAL_INDEX_CONSTITUENT_URLS = {
     HISTORICAL_INDEX_CONSTITUENT_2014_JULY_URL,
     HISTORICAL_INDEX_CONSTITUENT_2015_URL,
 }
+# NSE's official series legend classifies these as fully paid equity/main-board
+# series.  Bhavcopy identity evidence is valid for any of them; it does not
+# establish index membership or event timing.
+OFFICIAL_EQUITY_BHAVCOPY_SERIES = frozenset({"EQ", "BE", "BZ", "BL"})
 SYMBOL_CHANGE_URL = "https://nsearchives.nseindia.com/content/equities/symbolchange.csv"
 NAME_CHANGE_URL = "https://nsearchives.nseindia.com/content/equities/namechange.csv"
 RAW_RELATIVE_MARKER = re.compile(r"(?:^|[\\/])(data[\\/]raw[\\/].*)$", re.I)
@@ -850,36 +855,53 @@ def parse_bhavcopy_identities(
 ) -> list[dict[str, Any]]:
     """Read dated NSE ISIN evidence without treating bhavcopy as membership evidence."""
     rows: list[dict[str, Any]] = []
-    with zipfile.ZipFile(source.local_path) as archive:
-        for member in archive.namelist():
-            if not member.lower().endswith(".csv"):
+    path = Path(source.local_path)
+    if path.suffix.lower() == ".gz":
+        members = [(path.name.removesuffix(".gz"), gzip.open(path, "rb").read())]
+    else:
+        with zipfile.ZipFile(path) as archive:
+            members = [
+                (member, archive.read(member))
+                for member in archive.namelist()
+                if member.lower().endswith(".csv")
+            ]
+    for member, data in members:
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = data.decode("cp1252")
+        for original in csv.DictReader(io.StringIO(text)):
+            raw = {str(key).strip().casefold(): value for key, value in original.items() if key is not None}
+            when = _parse_day(
+                raw.get("timestamp")
+                or raw.get("trad dt")
+                or raw.get("traddt")
+                or source.document_date
+            )
+            symbol = str(raw.get("symbol") or raw.get("ticker") or raw.get("tckrsymb") or "").strip()
+            isin = str(raw.get("isin") or raw.get("isin number") or "").strip()
+            series = str(raw.get("series") or raw.get("sctysrs") or "").strip().upper()
+            if (
+                series not in OFFICIAL_EQUITY_BHAVCOPY_SERIES
+                or not when
+                or not symbol
+                or not re.fullmatch(r"IN[A-Z0-9]{10}", isin)
+            ):
                 continue
-            data = archive.read(member)
-            try:
-                text = data.decode("utf-8-sig")
-            except UnicodeDecodeError:
-                text = data.decode("cp1252")
-            for original in csv.DictReader(io.StringIO(text)):
-                raw = {str(key).strip().casefold(): value for key, value in original.items() if key is not None}
-                when = _parse_day(raw.get("timestamp") or raw.get("trad dt") or raw.get("traddt"))
-                symbol = str(raw.get("symbol") or raw.get("ticker") or raw.get("tckrsymb") or "").strip()
-                isin = str(raw.get("isin") or raw.get("isin number") or "").strip()
-                series = str(raw.get("series") or raw.get("sctysrs") or "").strip().upper()
-                if series != "EQ" or not when or not symbol or not re.fullmatch(r"IN[A-Z0-9]{10}", isin):
-                    continue
-                if identity_keys is not None and (when.isoformat(), symbol.upper()) not in identity_keys:
-                    continue
-                if source.document_date and when.isoformat() != source.document_date:
-                    raise ValueError(f"Bhavcopy timestamp disagrees with catalogue: {source.source_url}")
-                rows.append({
-                    "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
-                    "series": series, "company_name": None,
-                    "valid_from": when.isoformat(), "valid_until": (when + timedelta(days=1)).isoformat(),
-                    "snapshot_date": when.isoformat(), "source_url": source.source_url,
-                    "source_sha256": source.source_sha256, "source_tier": source.source_tier,
-                    "source_member": member, "identity_event_type": "DATED_BHAVCOPY_IDENTITY",
-                    "has_explicit_historical_interval": True,
-                })
+            if identity_keys is not None and (when.isoformat(), symbol.upper()) not in identity_keys:
+                continue
+            if source.document_date and when.isoformat() != source.document_date:
+                raise ValueError(f"Bhavcopy timestamp disagrees with catalogue: {source.source_url}")
+            rows.append({
+                "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
+                "series": series,
+                "company_name": str(raw.get("fininstrmnm") or raw.get("security") or "").strip() or None,
+                "valid_from": when.isoformat(), "valid_until": (when + timedelta(days=1)).isoformat(),
+                "snapshot_date": when.isoformat(), "source_url": source.source_url,
+                "source_sha256": source.source_sha256, "source_tier": source.source_tier,
+                "source_member": member, "identity_event_type": "DATED_BHAVCOPY_IDENTITY",
+                "has_explicit_historical_interval": True,
+            })
     return rows
 
 
@@ -2290,6 +2312,11 @@ def _blocker_ledger(
     conflict_by_id = {conflict.conflict_id: conflict for conflict in conflicts}
     event_by_hash = {event.event_hash: event for event in events}
     event_by_observation_id = {event.observation_id: event for event in events if event.observation_id}
+    conflict_observation_ids = {
+        observation_id
+        for conflict in conflicts
+        for observation_id in conflict.observation_ids
+    }
     observation_by_id = {}
     for observation in observations or []:
         if observation.observation_id:
@@ -2458,6 +2485,40 @@ def _blocker_ledger(
                    root_cause="Interval is not certified for import.")
             continue
         append(reason, blocker_type="OTHER", severity="HIGH", root_cause="Unclassified validation reason; manual classification required.")
+
+    # Validation reasons only include unresolved observations that reached a
+    # required-event or conflict gate. Keep the remaining date-bearing raw
+    # observations in the blocker ledger as well, so identity gaps cannot be
+    # hidden merely because reconciliation excluded them from canonical events.
+    for observation in observations or []:
+        if (
+            not observation.effective_date
+            or observation.instrument_id
+            or observation.observation_id in conflict_observation_ids
+        ):
+            continue
+        source_tier = str(observation.source_tier or "").upper()
+        if source_tier == "B1":
+            root_cause = "B1 reconstruction row remains a search index and lacks certifiable period-valid identity evidence."
+            notes = "Not canonicalized; B1 evidence was not promoted and remains MANUAL_REVIEW."
+        else:
+            root_cause = "Official event observation lacks a durable identifier and no exact period-valid identity evidence resolved it."
+            notes = "Not canonicalized; a dated official security master or explicit identity-linking document is still required."
+        append(
+            f"unresolved_observation:{observation.observation_id or observation_hash(observation)}",
+            blocker_type="MISSING_DURABLE_IDENTITY",
+            as_of=observation.effective_date.isoformat(),
+            symbol=observation.symbol or "",
+            company=observation.company_name or "",
+            instrument_id=observation.instrument_id or "",
+            isin=observation.isin or "",
+            source_tier=observation.source_tier or "",
+            source_url=observation.source_url or "",
+            source_sha=observation.source_sha256 or "",
+            severity="HIGH",
+            root_cause=root_cause,
+            notes=notes,
+        )
     return rows
 
 
@@ -2534,6 +2595,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         if (
             ("/content/historical/EQUITIES/" in source.source_url and source.source_url.endswith("bhav.csv.zip"))
             or "/content/cm/" in source.source_url
+            or "/archives/equities/bhavcopy/pr/" in source.source_url
         ):
             instrument_rows.extend(parse_bhavcopy_identities(source))
     instrument_rows = _enrich_bhavcopy_company_names(instrument_rows, current_instrument_master + historical_instrument_master)

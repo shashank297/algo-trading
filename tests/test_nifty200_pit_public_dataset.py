@@ -1,6 +1,8 @@
 from datetime import date
+import gzip
 import hashlib
 from types import SimpleNamespace
+import zipfile
 
 from tools.nifty200_pit.build_public_dataset import (
     _annual_coverage,
@@ -25,6 +27,7 @@ from tools.nifty200_pit.build_public_dataset import (
     _suppress_redundant_workbook_observations,
     _enrich_bhavcopy_company_names,
     _numbered_continuation_prefix,
+    parse_bhavcopy_identities,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, Observation, SourceRecord, ValidationReport, stable_observation_id
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -328,6 +331,27 @@ def test_blocker_ledger_carries_observation_identity_context():
 
     assert rows[0]["symbol"] == "OLDCO"
     assert rows[0]["company"] == "Old Company"
+
+
+def test_blocker_ledger_exposes_unresolved_noncanonical_observations():
+    observation = Observation(
+        observation_id="raw-unresolved",
+        symbol="OLDCO",
+        company_name="Old Company",
+        effective_date=date(2012, 1, 3),
+        source_tier="A1",
+        source_url="https://example.test/oldco",
+        source_sha256="c" * 64,
+    )
+    rows = _blocker_ledger(
+        ValidationReport(EvidenceStatus.BLOCKED, [], {}, "2026-09-20T00:00:00+00:00"),
+        conflicts=[], events=[], observations=[observation], snapshots=[], coverage=[], sources=[],
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["blocker_type"] == "MISSING_DURABLE_IDENTITY"
+    assert rows[0]["date"] == "2012-01-03"
+    assert rows[0]["resolution_status"] == "UNRESOLVED"
 
 
 def test_challenger_events_are_filtered_to_nifty_200_and_remain_unresolved(monkeypatch):
@@ -828,6 +852,64 @@ def test_bhavcopy_company_name_join_requires_exact_symbol_and_isin():
 
     assert rows[0]["company_name"] == "ABC Limited"
     assert rows[0]["company_name_resolution_basis"] == "EXACT_SYMBOL_ISIN_CROSS_SOURCE"
+
+
+def test_bhavcopy_identity_accepts_official_equity_trade_series(tmp_path):
+    path = tmp_path / "cm30SEP2022bhav.csv.zip"
+    csv_text = (
+        "SYMBOL,SERIES,ISIN,TIMESTAMP\n"
+        "PATANJALI,BE,INE619A01035,30-SEP-2022\n"
+        "ZSECURITY,BZ,INE000A01001,30-SEP-2022\n"
+        "BLOCKSEC,BL,INE000A01002,30-SEP-2022\n"
+        "FUND,MF,INE000A01003,30-SEP-2022\n"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("cm30SEP2022bhav.csv", csv_text)
+    source = SourceRecord(
+        source_url="https://archives.nseindia.com/content/historical/EQUITIES/2022/SEP/cm30SEP2022bhav.csv.zip",
+        local_path=str(path), source_sha256="a" * 64,
+        retrieved_at="2026-09-20T00:00:00Z", document_date="2022-09-30",
+    )
+
+    rows = parse_bhavcopy_identities(source)
+
+    assert {row["symbol"] for row in rows} == {"PATANJALI", "ZSECURITY", "BLOCKSEC"}
+    assert {row["series"] for row in rows} == {"BE", "BZ", "BL"}
+
+
+def test_bhavcopy_identity_accepts_dated_nse_security_master_gzip(tmp_path):
+    path = tmp_path / "NSE_CM_security_28032025.csv.gz"
+    csv_text = (
+        "TckrSymb,SctySrs,FinInstrmNm,ISIN\n"
+        "EXAMPLE,BE,Example Limited,INE123A01010\n"
+        "FUND,MF,Example Fund,INE000A01003\n"
+    )
+    with gzip.open(path, "wb") as archive:
+        archive.write(csv_text.encode("utf-8"))
+    source = SourceRecord(
+        source_url="https://nsearchives.nseindia.com/content/cm/NSE_CM_security_28032025.csv.gz",
+        local_path=str(path), source_sha256="b" * 64,
+        retrieved_at="2026-09-20T00:00:00Z", document_date="2025-03-28",
+    )
+
+    rows = parse_bhavcopy_identities(source)
+
+    assert rows == [{
+        "instrument_id": "NSE-ISIN:INE123A01010",
+        "isin": "INE123A01010",
+        "symbol": "EXAMPLE",
+        "series": "BE",
+        "company_name": "Example Limited",
+        "valid_from": "2025-03-28",
+        "valid_until": "2025-03-29",
+        "snapshot_date": "2025-03-28",
+        "source_url": source.source_url,
+        "source_sha256": "b" * 64,
+        "source_tier": "A1",
+        "source_member": path.name.removesuffix(".gz"),
+        "identity_event_type": "DATED_BHAVCOPY_IDENTITY",
+        "has_explicit_historical_interval": True,
+    }]
 
 
 def test_bhavcopy_company_name_join_can_use_exact_isin_after_symbol_change():
