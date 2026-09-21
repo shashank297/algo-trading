@@ -26,12 +26,14 @@ from tools.nifty200_pit.build_public_dataset import (
     _exclude_withdrawn_challenger_assertions,
     _suppress_redundant_workbook_observations,
     _enrich_bhavcopy_company_names,
+    _calendar_gap_rows,
     _numbered_continuation_prefix,
     parse_bhavcopy_identities,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, Observation, SourceRecord, ValidationReport, stable_observation_id
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
 from tools.nifty200_pit.instrument_resolver import resolve_observation, resolve_observations, validate_alias_intervals
+from trading_stack.calendars import SessionOverride
 
 
 def _source() -> SourceRecord:
@@ -910,6 +912,20 @@ def test_bhavcopy_identity_accepts_dated_nse_security_master_gzip(tmp_path):
         "identity_event_type": "DATED_BHAVCOPY_IDENTITY",
         "has_explicit_historical_interval": True,
     }]
+
+
+def test_calendar_gap_rows_separate_verified_exceptions_from_unresolved_leads():
+    digest = "a" * 64
+    rows = _calendar_gap_rows(
+        [date(2012, 1, 2), date(2024, 1, 20)],
+        (SessionOverride(date(2024, 1, 20), "SPECIAL_SESSION", f"https://nse.example/session.pdf#{digest}"),),
+    )
+    by_date = {row["date"]: row for row in rows}
+
+    assert by_date["2012-01-02"]["evidence_status"] == "PACKAGE_ONLY"
+    assert by_date["2012-01-07"]["evidence_status"] == "UNRESOLVED_OFFICIAL_LEAD"
+    assert by_date["2024-01-20"]["evidence_status"] == "VERIFIED_EXCEPTION"
+    assert by_date["2024-01-20"]["source_sha256"] == digest
 
 
 def test_bhavcopy_company_name_join_can_use_exact_isin_after_symbol_change():

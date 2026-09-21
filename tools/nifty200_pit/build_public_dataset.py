@@ -760,6 +760,75 @@ def _verified_calendar_overrides(sources: list[SourceRecord]) -> tuple[SessionOv
                  for digest, day, kind, start, end in rules if digest in verified)
 
 
+def _calendar_gap_rows(
+    trading_days: list[date], calendar_overrides: tuple[SessionOverride, ...],
+) -> list[dict[str, str | bool]]:
+    """Classify calendar coverage for every date in the campaign horizon.
+
+    The maintained NSE calendar package is useful for replay, but it is not
+    itself first-party evidence for this reconstruction.  Hash-verified
+    overrides are therefore recorded separately from package-only dates.  A
+    small set of official annual-report leads discovered during the audit is
+    kept unresolved until the exact source bytes are acquired and hashed.
+    """
+    official_leads = {
+        date(2012, 1, 7): (
+            "https://nsearchives.nseindia.com/global/content/about_us/NSEIL_Annual_Report_2012.pdf",
+            "OFFICIAL_REPORT_NOT_ACQUIRED",
+            "Official annual-report text records a special trading session; exact source bytes are not in the local corpus.",
+        ),
+        date(2012, 3, 3): (
+            "https://nsearchives.nseindia.com/global/content/about_us/NSEIL_Annual_Report_2012.pdf",
+            "OFFICIAL_REPORT_NOT_ACQUIRED",
+            "Official annual-report text records a special trading session; exact source bytes are not in the local corpus.",
+        ),
+    }
+    verified_by_date: dict[date, list[SessionOverride]] = {}
+    for override in calendar_overrides:
+        verified_by_date.setdefault(override.session_date, []).append(override)
+    trading_day_set = set(trading_days)
+    rows: list[dict[str, str | bool]] = []
+    current = CAMPAIGN_FROM
+    while current <= CAMPAIGN_TO:
+        overrides = verified_by_date.get(current, [])
+        lead = official_leads.get(current)
+        if overrides:
+            source_url, _, source_sha256 = overrides[0].reason.partition("#")
+            evidence_status = "VERIFIED_EXCEPTION"
+            evidence_type = ";".join(sorted({override.override_type for override in overrides}))
+            source = source_url
+            source_sha = source_sha256
+            notes = "Calendar exception is backed by a hash-verified first-party source in the corpus."
+        elif lead is not None:
+            evidence_status = "UNRESOLVED_OFFICIAL_LEAD"
+            evidence_type = lead[1]
+            source = lead[0]
+            source_sha = ""
+            notes = lead[2]
+        else:
+            evidence_status = "PACKAGE_ONLY"
+            evidence_type = "MAINTAINED_CALENDAR_PACKAGE"
+            source = ""
+            source_sha = ""
+            notes = "Session/closure status comes from pandas-market-calendars; no complete hashable official date-level corpus was admitted."
+        rows.append({
+            "date": current.isoformat(),
+            "package_is_session": current in trading_day_set,
+            "package_basis": "pandas-market-calendars-with-verified-overrides",
+            "evidence_status": evidence_status,
+            "evidence_type": evidence_type,
+            "source_url": source,
+            "source_sha256": source_sha,
+            "action_needed": (
+                "ACQUIRE_AND_HASH_EXACT_OFFICIAL_SOURCE"
+                if evidence_status != "VERIFIED_EXCEPTION" else "NONE"
+            ),
+            "notes": notes,
+        })
+        current += timedelta(days=1)
+    return rows
+
+
 def _align_date_only_causality(observations: list[Observation], calendar: Any) -> list[Observation]:
     announcements = {row.announcement_date for row in observations if row.announcement_date is not None
                      and row.known_at_basis == "DATE_ONLY_CONSERVATIVE_NEXT_SESSION"}
@@ -2544,6 +2613,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         version="nse-pandas-market-calendars-with-evidenced-exceptions",
     )
     trading_days = calendar.iter_trading_days(CAMPAIGN_FROM, CAMPAIGN_TO)
+    calendar_gap_rows = _calendar_gap_rows(trading_days, calendar_overrides)
     workbook = next((source for source in sources if source.source_url.endswith("IndexInclExcl.xls")), None)
     observations = parse_workbook_events(root, workbook) if workbook else []
     observations.extend(parse_press_releases(sources, calendar=calendar))
@@ -2724,6 +2794,11 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "calendar_version": calendar.version,
         "calendar_audit_status": calendar_audit_status,
         "calendar_verified_override_count": len(calendar_overrides),
+        "calendar_gap_row_count": len(calendar_gap_rows),
+        "calendar_package_only_count": sum(row["evidence_status"] == "PACKAGE_ONLY" for row in calendar_gap_rows),
+        "calendar_unresolved_official_lead_count": sum(
+            row["evidence_status"] == "UNRESOLVED_OFFICIAL_LEAD" for row in calendar_gap_rows
+        ),
         "minimum_active_constituent_count": min(replay_counts, default=0),
         "maximum_active_constituent_count": max(replay_counts, default=0),
         "sessions_not_expected_count": sum(
@@ -2796,6 +2871,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     reports_dir = root / "reports"
     reports_dir.mkdir(parents=True, exist_ok=True)
     _write_csv(reports_dir / "nifty200_pit_monthly_gap_analysis.csv", monthly_gap_rows)
+    _write_csv(reports_dir / "nifty200_pit_calendar_gap_analysis.csv", calendar_gap_rows)
     _write_csv(reports_dir / "nifty200_pit_known_at_audit.csv", known_at_rows)
     _write_csv(reports_dir / "nifty200_pit_historical_identity_resolution.csv", identity_resolution_rows)
     _write_csv(reports_dir / "nifty200_pit_201_member_checkpoint_forensics.csv", checkpoint_forensics)
@@ -2903,6 +2979,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     _write_csv(artifact_dir / "raw_unresolved_observations.csv", raw_unresolved_rows)
     _write_csv(artifact_dir / "official_identity_change_candidates.csv", identity_change_candidates)
     _write_csv(artifact_dir / "official_schedule_dispositions.csv", schedule_dispositions)
+    _write_csv(artifact_dir / "calendar_gap_analysis.csv", calendar_gap_rows)
     _write_csv(artifact_dir / "identity_continuity_audit.csv", identity_continuity_audit["observations"])
     _write_json(artifact_dir / "identity_continuity_evidence.json", identity_continuity_audit["links"])
     _write_csv(artifact_dir / "blocker_ledger.csv", blocker_rows)

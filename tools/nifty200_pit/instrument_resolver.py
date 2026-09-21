@@ -126,6 +126,20 @@ def _identity_value(value: object) -> str | None:
     return normalized or None
 
 
+def _action_key(value: object) -> str:
+    """Normalize an observation action for exact event-level comparisons."""
+    if hasattr(value, "value"):
+        value = value.value
+    return _norm(value)
+
+
+def _event_company_key(value: object) -> str:
+    """Normalize a company name without permitting fuzzy identity matching."""
+    raw_company = str(value or "")
+    company_for_match = re.sub(r"\s+DVR\s*$", "", raw_company, flags=re.I)
+    return _norm_company(company_for_match)
+
+
 def _date_field_is_invalid(value: object) -> bool:
     if value is None:
         return False
@@ -363,13 +377,69 @@ def resolve_observation(
 
 
 def resolve_observations(observations: Iterable[Observation], instrument_master: Iterable[dict[str, Any]], *, aliases: Iterable[dict[str, Any]] = ()) -> list[Observation]:
+    observation_rows = list(observations)
     rows = list(instrument_master)
     indexes = _build_indexes(rows, aliases)
     rows_by_instrument = {str(row.get("instrument_id")): row for row in rows if row.get("instrument_id")}
     alias_rows = list(aliases)
+    initial_resolutions = [
+        resolve_observation(observation, rows, aliases=alias_rows, _indexes=indexes)
+        for observation in observation_rows
+    ]
+
+    # Some official index workbooks carry only a company assertion, while an
+    # official press release for the same event carries a symbol.  The symbol
+    # may receive its ISIN from a separately certified period-valid historical
+    # identity row. Link those assertions only when the event key and
+    # authoritative identity are exact. This is deliberately separate from
+    # the normal identity indexes: B1 rows, fuzzy matches, current-only
+    # evidence, and date/action changes must never create a certified identity.
+    exact_event_identities: dict[tuple[date, str, str], set[tuple[str, str, str]]] = {}
+    for observation, resolution in zip(observation_rows, initial_resolutions):
+        source_tier = str(observation.source_tier or "").upper()
+        explicit_symbol = _norm(observation.symbol)
+        resolved_isin = _identity_value(resolution.isin or observation.isin)
+        event_date = observation.effective_date
+        action = _action_key(observation.action)
+        company = _event_company_key(observation.company_name)
+        if (
+            source_tier in {"A1", "A2"}
+            and explicit_symbol
+            and resolved_isin
+            and event_date is not None
+            and action
+            and company
+            and resolution.confidence == "CERTIFIED"
+            and resolution.instrument_id
+        ):
+            key = (event_date, action, company)
+            exact_event_identities.setdefault(key, set()).add(
+                (resolution.instrument_id, resolved_isin, explicit_symbol)
+            )
+
     result = []
-    for observation in observations:
-        resolution = resolve_observation(observation, rows, aliases=alias_rows, _indexes=indexes)
+    for observation, resolution in zip(observation_rows, initial_resolutions):
+        linked_symbol: str | None = None
+        if not _norm(observation.symbol) and not _norm(observation.isin):
+            event_date = observation.effective_date
+            matches: set[tuple[str, str, str]] = set()
+            if event_date is not None:
+                event_key = (
+                    event_date,
+                    _action_key(observation.action),
+                    _event_company_key(observation.company_name),
+                )
+                matches = exact_event_identities.get(event_key, set())
+            if len(matches) == 1 and str(observation.source_tier or "").upper() in {"A1", "A2"}:
+                instrument_id, isin, linked_symbol = next(iter(matches))
+                resolution = Resolution(
+                    instrument_id,
+                    isin,
+                    "EXACT_DATE_COMPANY_EVENT_IDENTITY",
+                    "CERTIFIED",
+                    reason="linked to one certified A1/A2 identity-bearing observation with exact date, action, and company",
+                )
+
         source_tier = str(observation.source_tier or "").upper()
         identity_certified = resolution.confidence == "CERTIFIED"
         event_evidence_certified = (
@@ -400,6 +470,8 @@ def resolve_observations(observations: Iterable[Observation], instrument_master:
             resolved_row = rows_by_instrument.get(resolution.instrument_id)
             if resolved_row and resolved_row.get("symbol"):
                 payload["symbol"] = resolved_row["symbol"]
+            elif linked_symbol:
+                payload["symbol"] = linked_symbol
         payload["announcement_date"] = _date(payload.get("announcement_date"))
         payload["effective_date"] = _date(payload.get("effective_date"))
         payload["known_at"] = datetime.fromisoformat(str(payload["known_at"])) if payload.get("known_at") else None

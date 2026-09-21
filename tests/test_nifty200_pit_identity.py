@@ -1,7 +1,7 @@
-from datetime import date
+from datetime import date, datetime
 
-from tools.nifty200_pit.instrument_resolver import resolve_observation
-from tools.nifty200_pit.models import Observation
+from tools.nifty200_pit.instrument_resolver import resolve_observation, resolve_observations
+from tools.nifty200_pit.models import Action, Confidence, Observation
 
 
 def _observation(**kwargs):
@@ -40,3 +40,58 @@ def test_exact_period_valid_company_name_can_resolve_missing_symbol():
 def test_merger_successor_is_not_implicitly_merged():
     result = resolve_observation(_observation(symbol="HDFC", company_name="HDFC Ltd"), [{"instrument_id": "BANK", "symbol": "HDFCBANK", "company_name": "HDFC Bank"}])
     assert result.instrument_id is None
+
+
+def _event_observation(**kwargs):
+    values = {
+        "company_name": "Example Industries Ltd",
+        "announcement_date": date(2014, 1, 1),
+        "effective_date": date(2014, 1, 3),
+        "known_at": datetime(2014, 1, 1, 12, 0),
+        "action": Action.ADD,
+        "source_tier": "A1",
+        "source_url": "https://official.example/event.pdf",
+    }
+    values.update(kwargs)
+    return Observation(**values)
+
+
+def _event_master():
+    return [{
+        "instrument_id": "SEC-1",
+        "isin": "INE123",
+        "symbol": "EXAMPLE",
+        "valid_from": "2010-01-01",
+        "source_tier": "A1",
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+    }]
+
+
+def test_exact_date_company_event_linkage_uses_only_one_official_identity():
+    identity = _event_observation(symbol="EXAMPLE")
+    company_only = _event_observation()
+
+    resolved = resolve_observations([identity, company_only], _event_master())
+
+    assert resolved[1].instrument_id == "SEC-1"
+    assert resolved[1].isin == "INE123"
+    assert resolved[1].symbol == "EXAMPLE"
+    assert resolved[1].confidence == "CERTIFIED"
+    assert "exact date, action, and company" in (resolved[1].reason or "")
+
+
+def test_exact_date_company_event_linkage_rejects_b1_and_action_or_date_changes():
+    identity = _event_observation(symbol="EXAMPLE", isin="INE123")
+    b1_company_only = _event_observation(source_tier="B1", confidence=Confidence.PROVISIONAL)
+    wrong_action = _event_observation(action=Action.DROP)
+    wrong_date = _event_observation(effective_date=date(2014, 1, 4))
+
+    resolved = resolve_observations(
+        [identity, b1_company_only, wrong_action, wrong_date], _event_master()
+    )
+
+    assert resolved[1].instrument_id is None
+    assert resolved[1].confidence == "PROVISIONAL"
+    assert resolved[2].instrument_id is None
+    assert resolved[3].instrument_id is None
