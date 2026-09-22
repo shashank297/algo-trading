@@ -1232,6 +1232,149 @@ def _certified_official_name_change_rows(
     return sorted(rows.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
 
 
+def _certified_official_symbol_change_rows(
+    candidates: list[dict[str, Any]], master: list[dict[str, Any]],
+    target_transitions: set[frozenset[str]] | None = None,
+) -> list[dict[str, Any]]:
+    """Certify only symbol changes proven by dated identity on both sides.
+
+    The NSE symbol-change table establishes the old/new relationship and its
+    effective date, but it does not carry an ISIN.  A candidate is promoted
+    only when period-valid A1/A2 identity rows prove the same durable ID and
+    ISIN before and after the change.  This keeps current-only and name-only
+    evidence fail-closed.
+    """
+    explicit = [
+        row for row in master
+        if row.get("has_explicit_historical_interval")
+        and str(row.get("source_tier") or "").upper() in {"A1", "A2"}
+        and str(row.get("confidence") or "CERTIFIED").upper() == "CERTIFIED"
+        and str(row.get("review_status") or "ACCEPTED").upper() == "ACCEPTED"
+        and row.get("instrument_id") and row.get("isin") and row.get("symbol")
+    ]
+
+    def symbol_key(value: object) -> str:
+        return re.sub(r"[^A-Z0-9]", "", str(value or "").upper())
+
+    explicit_by_symbol: dict[str, list[dict[str, Any]]] = {}
+    for row in explicit:
+        explicit_by_symbol.setdefault(symbol_key(row.get("symbol")), []).append(row)
+
+    def evidence_day(row: dict[str, Any]) -> date | None:
+        return _parse_day(row.get("snapshot_date") or row.get("valid_from"))
+
+    def candidates_for(symbol: str, *, before: bool, changed: date) -> list[dict[str, Any]]:
+        rows = list(explicit_by_symbol.get(symbol_key(symbol), []))
+        if before:
+            rows = [row for row in rows if (day := evidence_day(row)) is not None and day < changed]
+            return sorted(rows, key=lambda row: evidence_day(row) or date.min, reverse=True)
+        rows = [row for row in rows if (day := evidence_day(row)) is not None and day >= changed]
+        return sorted(rows, key=lambda row: evidence_day(row) or date.max)
+
+    proven: list[tuple[dict[str, Any], str, str, date, dict[str, Any], dict[str, Any]]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for candidate in candidates:
+        if candidate.get("identity_event_type") != "OFFICIAL_SYMBOL_CHANGE_CANDIDATE":
+            continue
+        basis = str(candidate.get("identity_candidate_basis") or "")
+        match = re.match(r"^official\s+symbol\s+change\s+(.+?)\s*->\s*(.+)$", basis, re.I)
+        if match is None:
+            continue
+        old_symbol, new_symbol = (part.strip() for part in match.groups())
+        changed = _parse_day(candidate.get("valid_until"))
+        if not old_symbol or not new_symbol or changed is None:
+            continue
+        if target_transitions is not None and frozenset((symbol_key(old_symbol), symbol_key(new_symbol))) not in target_transitions:
+            continue
+        key = (symbol_key(old_symbol), symbol_key(new_symbol), changed.isoformat())
+        if key in seen:
+            continue
+        seen.add(key)
+        before_rows = candidates_for(old_symbol, before=True, changed=changed)
+        after_rows = candidates_for(new_symbol, before=False, changed=changed)
+        if not before_rows or not after_rows:
+            continue
+        before = before_rows[0]
+        after = after_rows[0]
+        if (
+            str(before.get("instrument_id")) != str(after.get("instrument_id"))
+            or str(before.get("isin")) != str(after.get("isin"))
+        ):
+            continue
+        proven.append((candidate, old_symbol, new_symbol, changed, before, after))
+
+    def next_change(instrument_id: str, symbol: str, changed: date) -> date | None:
+        dates = [
+            item[3] for item in proven
+            if str(item[4].get("instrument_id")) == instrument_id
+            and symbol_key(item[1]) == symbol_key(symbol)
+            and item[3] > changed
+        ]
+        return min(dates) if dates else None
+
+    def previous_change(instrument_id: str, symbol: str, changed: date) -> date | None:
+        dates = [
+            item[3] for item in proven
+            if str(item[4].get("instrument_id")) == instrument_id
+            and symbol_key(item[2]) == symbol_key(symbol)
+            and item[3] < changed
+        ]
+        return max(dates) if dates else None
+
+    rows: list[dict[str, Any]] = []
+    for candidate, old_symbol, new_symbol, changed, before, after in proven:
+        instrument_id = str(before["instrument_id"])
+        isin = str(before["isin"])
+        source_url = str(candidate.get("symbol_change_source_url") or candidate.get("source_url") or "")
+        source_sha = str(candidate.get("symbol_change_source_sha256") or candidate.get("source_sha256") or "")
+        next_date = next_change(instrument_id, new_symbol, changed)
+        prior_change = previous_change(instrument_id, old_symbol, changed)
+        old_evidence_days: list[date] = []
+        for identity_row in explicit_by_symbol.get(symbol_key(old_symbol), []):
+            identity_day = evidence_day(identity_row)
+            if (
+                str(identity_row.get("instrument_id")) == instrument_id
+                and str(identity_row.get("isin")) == isin
+                and identity_day is not None
+                and identity_day < changed
+            ):
+                old_evidence_days.append(identity_day)
+        old_start = prior_change or min(old_evidence_days, default=evidence_day(before))
+        if old_start is None:
+            continue
+        common = {
+            "instrument_id": instrument_id, "isin": isin, "listing_date": before.get("listing_date"),
+            "source_url": source_url, "source_sha256": source_sha, "source_tier": candidate.get("source_tier", "A1"),
+            "snapshot_date": changed.isoformat(), "observed_snapshot_date": changed.isoformat(),
+            "has_explicit_historical_interval": True, "validity_basis": "EXPLICIT_HISTORICAL_INTERVAL",
+            "exchange": "NSE", "confidence": "CERTIFIED", "resolution_status": "ACCEPTED",
+            "identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CERTIFIED",
+            "symbol_change_source_url": source_url, "symbol_change_source_sha256": source_sha,
+            "identity_candidate_basis": f"official symbol change {old_symbol}->{new_symbol}",
+            "identity_validity_basis": "OFFICIAL_SYMBOL_CHANGE_PLUS_PERIOD_VALID_ISIN",
+            "identity_master_source_url": after.get("source_url", ""),
+            "identity_master_source_sha256": after.get("source_sha256", ""),
+            "identity_reference_before_source_url": before.get("source_url", ""),
+            "identity_reference_before_source_sha256": before.get("source_sha256", ""),
+            "identity_reference_after_source_url": after.get("source_url", ""),
+            "identity_reference_after_source_sha256": after.get("source_sha256", ""),
+        }
+        rows.extend([
+            common | {
+                "symbol": old_symbol, "alias_symbol": old_symbol,
+                "company_name": before.get("company_name", ""),
+                "valid_from": old_start.isoformat(), "valid_until": changed.isoformat(),
+            },
+            common | {
+                "symbol": new_symbol, "alias_symbol": new_symbol,
+                "company_name": after.get("company_name", ""),
+                "valid_from": changed.isoformat(),
+                "valid_until": next_date.isoformat() if next_date else None,
+            },
+        ])
+    return rows
+
+
 def parse_challenger_events(source: SourceRecord) -> list[Observation]:
     """Load traceable public reconstruction rows as unresolved B1 candidates."""
     import pandas as pd
@@ -1393,7 +1536,10 @@ def parse_monthly_snapshots(records: list[SourceRecord]) -> list[dict[str, Any]]
     return snapshots
 
 
-def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _identity_aliases(
+    snapshots: list[dict[str, Any]], master: list[dict[str, Any]],
+    certified_symbol_changes: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     """Combine temporally relevant identities with unresolved snapshot symbols."""
     aliases: dict[tuple[str, str, str, str], dict[str, Any]] = {}
     master_symbols: set[str] = set()
@@ -1465,6 +1611,23 @@ def _identity_aliases(snapshots: list[dict[str, Any]], master: list[dict[str, An
     for row in candidates.values():
         key = (str(row["instrument_id"]), str(row["alias_symbol"]).casefold(), str(row.get("valid_from") or ""), str(row.get("valid_until") or ""))
         aliases.setdefault(key, row)
+    certified = certified_symbol_changes or []
+    certified_keys = {
+        (str(row.get("instrument_id") or ""), symbol_key)
+        for row in certified
+        if (symbol_key := re.sub(r"[^A-Z0-9]", "", str(row.get("alias_symbol") or row.get("symbol") or "").upper()))
+    }
+    if certified_keys:
+        aliases = {
+            key: row for key, row in aliases.items()
+            if (str(row.get("instrument_id") or ""), re.sub(r"[^A-Z0-9]", "", str(row.get("alias_symbol") or row.get("symbol") or "").upper())) not in certified_keys
+        }
+        for row in certified:
+            key = (
+                str(row.get("instrument_id") or ""), str(row.get("alias_symbol") or row.get("symbol") or "").casefold(),
+                str(row.get("valid_from") or ""), str(row.get("valid_until") or ""),
+            )
+            aliases[key] = dict(row)
     rows = sorted(aliases.values(), key=lambda row: (str(row.get("alias_symbol", "")), str(row.get("instrument_id", "")), str(row.get("valid_from", ""))))
     for row in rows:
         identity_key = "|".join(str(row.get(field) or "") for field in ("instrument_id", "alias_symbol", "valid_from", "valid_until", "source_sha256"))
@@ -2695,7 +2858,23 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
             row["valid_until"] = current["valid_from"]
     identity_change_candidates = parse_official_identity_change_candidates(sources, instrument_master)
     instrument_master.extend(_certified_official_name_change_rows(identity_change_candidates))
-    aliases = _identity_aliases(snapshots, instrument_master)
+    forensic_h_transitions: set[frozenset[str]] = set()
+    forensic_path = root / "reports/nifty200_pit_divergent_interval_forensics_20260922.csv"
+    if forensic_path.is_file():
+        with forensic_path.open(newline="", encoding="utf-8-sig") as handle:
+            for row in csv.DictReader(handle):
+                if row.get("primary_root_cause") != "H":
+                    continue
+                before = re.sub(r"[^A-Z0-9]", "", str(row.get("symbol") or "").upper())
+                after = re.sub(r"[^A-Z0-9]", "", str(row.get("paired_symbol") or "").upper())
+                if before and after:
+                    forensic_h_transitions.add(frozenset((before, after)))
+    certified_symbol_change_rows = _certified_official_symbol_change_rows(
+        identity_change_candidates, instrument_master, target_transitions=forensic_h_transitions,
+    )
+    aliases = _identity_aliases(
+        snapshots, instrument_master, certified_symbol_changes=certified_symbol_change_rows,
+    )
     observations = resolve_observations(observations, instrument_master, aliases=aliases)
     observations, instrument_master, aliases, identity_continuity_audit = _apply_documented_isin_continuity(
         observations, instrument_master, aliases, sources,
@@ -2830,6 +3009,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         "unique_historical_instruments": len({row.get("instrument_id") for row in instrument_master}),
         **identity_metrics,
         "documented_isin_continuity_links": len(identity_continuity_audit["links"]),
+        "certified_symbol_change_alias_rows": len(certified_symbol_change_rows),
         "redundant_workbook_observation_count": len(considered_observations) - len(reconciliation_observations),
         "contradicted_challenger_count": len(challenger_dispositions),
         "valid_200_checkpoints": sum(row["status"] == "PASS" and row.get("expected_member_count", "200") == "200" for row in coverage),
@@ -3092,7 +3272,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
         f"- Monthly snapshot rows: {len(snapshots)} across {len(by_date)} checkpoints.\n"
         f"- Durable identity mappings: {sum(row.get('confidence') == 'CERTIFIED' for row in aliases)} certified; "
         f"{sum(row.get('confidence') != 'CERTIFIED' for row in aliases)} remain manual-review candidates.\n"
-        f"- Official symbol/name-change candidates: {len(identity_change_candidates)}; none are auto-certified because these tables do not carry historical ISINs.\n"
+        f"- Official symbol/name-change candidates: {len(identity_change_candidates)}; scoped certified symbol-change alias rows: {len(certified_symbol_change_rows)} where the official relation and period-valid A1/A2 identity agree; remaining candidates stay manual-review.\n"
         f"- Coverage gaps or non-200 checkpoints: {len(coverage_gaps)} campaign months.\n"
         f"- NSE sessions checked: {len(trading_days)}; replay count range: {min(replay_counts, default=0)}..{max(replay_counts, default=0)}.\n"
         f"- Blocker ledger rows: {len(blocker_rows)}; known_at unresolved canonical events: "

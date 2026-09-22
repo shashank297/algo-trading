@@ -1,5 +1,6 @@
 from datetime import date, datetime
 
+from tools.nifty200_pit.build_public_dataset import _certified_official_symbol_change_rows
 from tools.nifty200_pit.instrument_resolver import resolve_observation, resolve_observations
 from tools.nifty200_pit.models import Action, Confidence, Observation
 
@@ -95,3 +96,104 @@ def test_exact_date_company_event_linkage_rejects_b1_and_action_or_date_changes(
     assert resolved[1].confidence == "PROVISIONAL"
     assert resolved[2].instrument_id is None
     assert resolved[3].instrument_id is None
+
+
+def _symbol_change_candidate(**kwargs):
+    values = {
+        "identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CANDIDATE",
+        "identity_candidate_basis": "official symbol change OLD->NEW",
+        "valid_until": "2020-01-10",
+        "symbol_change_source_url": "https://official.example/symbolchange.csv",
+        "symbol_change_source_sha256": "s" * 64,
+        "source_tier": "A1",
+    }
+    values.update(kwargs)
+    return values
+
+
+def _dated_identity(symbol, snapshot_date, *, isin="INE123", source_sha256="b" * 64):
+    return {
+        "instrument_id": f"NSE-ISIN:{isin}",
+        "isin": isin,
+        "symbol": symbol,
+        "company_name": f"{symbol} Company",
+        "snapshot_date": snapshot_date,
+        "valid_from": snapshot_date,
+        "source_url": f"https://official.example/{snapshot_date}.csv",
+        "source_sha256": source_sha256,
+        "source_tier": "A1",
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+    }
+
+
+def test_official_symbol_change_is_certified_from_period_valid_identity_on_both_sides():
+    rows = _certified_official_symbol_change_rows(
+        [_symbol_change_candidate()],
+        [
+            _dated_identity("OLD", "2018-01-01"),
+            _dated_identity("OLD", "2020-01-09"),
+            _dated_identity("NEW", "2020-01-11"),
+        ],
+    )
+
+    assert len(rows) == 2
+    old, new = rows
+    assert (old["alias_symbol"], old["valid_from"], old["valid_until"]) == (
+        "OLD", "2018-01-01", "2020-01-10"
+    )
+    assert (new["alias_symbol"], new["valid_from"], new["valid_until"]) == (
+        "NEW", "2020-01-10", None
+    )
+    assert {row["identity_event_type"] for row in rows} == {"OFFICIAL_SYMBOL_CHANGE_CERTIFIED"}
+    assert {row["instrument_id"] for row in rows} == {"NSE-ISIN:INE123"}
+    assert {row["symbol_change_source_sha256"] for row in rows} == {"s" * 64}
+
+
+def test_official_symbol_change_stays_unresolved_when_identity_differs():
+    rows = _certified_official_symbol_change_rows(
+        [_symbol_change_candidate()],
+        [_dated_identity("OLD", "2020-01-09"), _dated_identity("NEW", "2020-01-11", isin="INE999")],
+    )
+
+    assert rows == []
+
+
+def test_symbol_change_certification_can_be_scoped_to_forensic_transitions():
+    rows = _certified_official_symbol_change_rows(
+        [_symbol_change_candidate()],
+        [_dated_identity("OLD", "2020-01-09"), _dated_identity("NEW", "2020-01-11")],
+        target_transitions={frozenset(("OLD", "OTHER"))},
+    )
+
+    assert rows == []
+
+
+def test_chained_symbol_changes_produce_non_overlapping_alias_periods():
+    candidates = [
+        _symbol_change_candidate(
+            identity_candidate_basis="official symbol change OLD->MID",
+            valid_until="2020-01-10",
+        ),
+        _symbol_change_candidate(
+            identity_candidate_basis="official symbol change MID->NEW",
+            valid_until="2020-02-10",
+        ),
+    ]
+    rows = _certified_official_symbol_change_rows(
+        candidates,
+        [
+            _dated_identity("OLD", "2020-01-09"),
+            _dated_identity("MID", "2020-01-11"),
+            _dated_identity("MID", "2020-02-01"),
+            _dated_identity("NEW", "2020-02-11"),
+        ],
+    )
+
+    mid_periods = {
+        (row["valid_from"], row["valid_until"])
+        for row in rows
+        if row["alias_symbol"] == "MID"
+    }
+    assert mid_periods == {("2020-01-10", "2020-02-10")}
