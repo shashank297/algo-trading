@@ -1,0 +1,22 @@
+# parent_source_sha256=c9b9feef248ca89f7d8c8f12009e3d5c409eb4d6c793eee061fb93bf0af1231e
+# source_page=14
+# extraction_method=VERIFIED_VISUAL_TRANSCRIPTION
+# verification_scope=complete 29-page PDF visually inspected; NIFTY 200 table transcribed exactly from page 14
+The changes will be effective from September 30, 2021 (close of September 29, 2021).
+10) NIFTY 200
+The following companies are being excluded:
+Sr. No. Company Name Symbol
+1 Abbott India Ltd. ABBOTINDIA
+2 Bombay Burmah Trading Corporation Ltd. BBTC
+3 CESC Ltd. CESC
+4 Godrej Agrovet Ltd. GODREJAGRO
+5 Indiabulls Housing Finance Ltd. IBULHSGFIN
+6 V-Guard Industries Ltd. VGUARD
+The following companies are being included:
+Sr. No. Company Name Symbol
+1 Astral Ltd. ASTRAL
+2 Hindustan Copper Ltd. HINDCOPPER
+3 Indian Bank INDIANB
+4 Indian Railway Finance Corporation Ltd. IRFC
+5 National Aluminium Co. Ltd. NATIONALUM
+6 Tata Communications Ltd. TATACOMM

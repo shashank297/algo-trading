@@ -373,7 +373,7 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
     for source in records:
         if not source.local_path.lower().endswith(".pdf") or not re.search(r"press[_-]release", source.source_url, re.I):
             continue
-        pages = extract_pdf_pages(source.local_path)
+        pages, used_visual_transcription = _load_verified_visual_transcription(source, extract_pdf_pages(source.local_path))
         document_text = "\n".join(pages)
         if not re.search(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", document_text, re.I):
             continue
@@ -382,9 +382,12 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
         parsed = parse_nifty200_text(
             document_text, source_url=source.source_url, source_sha256=source.source_sha256,
             announcement_date=announcement, source_page=None, source_tier=source.source_tier,
-            extractor_version="nifty200-pit-parser-v3", effective_date=document_effective,
+            extractor_version="nifty200-pit-parser-v5-visual" if used_visual_transcription else "nifty200-pit-parser-v3",
+            effective_date=document_effective,
         )
-        if not any(row.symbol and row.action for row in parsed):
+        if used_visual_transcription:
+            parsed = [replace(row, extraction_method="PDF_VISUAL_TRANSCRIPTION") for row in parsed]
+        if not used_visual_transcription and not any(row.symbol and row.action for row in parsed):
             layout_text = "\n".join(extract_pdf_pages(source.local_path, layout=True))
             parsed = parse_nifty200_text(
                 layout_text, source_url=source.source_url, source_sha256=source.source_sha256,
@@ -444,6 +447,40 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
             ))
             previous_nifty200_context = _nifty200_final_section_context(page_text)
     return observations
+
+
+def _load_verified_visual_transcription(
+    source: SourceRecord, pages: list[str],
+) -> tuple[list[str], bool]:
+    """Inject a source-bound manual transcription only for scanned PDFs.
+
+    The transcription is a derivative of a hashed first-party PDF, not a new
+    source.  A mismatched parent hash or page declaration fails closed.
+    """
+    if any(page.strip() for page in pages):
+        return pages, False
+    source_path = Path(source.local_path)
+    sidecar = source_path.with_name(f"{source_path.stem}.page14.txt")
+    if not sidecar.is_file():
+        return pages, False
+    metadata: dict[str, str] = {}
+    body: list[str] = []
+    for line in sidecar.read_text(encoding="utf-8").splitlines():
+        if line.startswith("# ") and "=" in line:
+            key, value = line[2:].split("=", 1)
+            metadata[key.strip()] = value.strip()
+        elif not line.startswith("#"):
+            body.append(line)
+    if metadata.get("parent_source_sha256") != source.source_sha256:
+        raise ValueError(f"Visual transcription parent hash mismatch: {sidecar}")
+    if metadata.get("extraction_method") != "VERIFIED_VISUAL_TRANSCRIPTION":
+        raise ValueError(f"Visual transcription method is not verified: {sidecar}")
+    page_number = int(metadata.get("source_page", "0"))
+    if page_number < 1 or page_number > len(pages):
+        raise ValueError(f"Visual transcription page is outside PDF: {sidecar}")
+    augmented = list(pages)
+    augmented[page_number - 1] = "\n".join(body)
+    return augmented, True
 
 
 def _apply_official_rescheduling(

@@ -415,6 +415,39 @@ def test_press_release_parser_propagates_document_effective_date(monkeypatch):
     assert rows[0].effective_date == date(2022, 9, 30)
 
 
+def test_press_release_parser_uses_hash_bound_visual_transcription_for_scanned_pdf(tmp_path, monkeypatch):
+    from tools.nifty200_pit import build_public_dataset
+
+    pdf_path = tmp_path / "ind_prs23082021.pdf"
+    sidecar = pdf_path.with_name("ind_prs23082021.page14.txt")
+    source_sha = "c9b9feef248ca89f7d8c8f12009e3d5c409eb4d6c793eee061fb93bf0af1231e"
+    sidecar.write_text(
+        "# parent_source_sha256=" + source_sha + "\n"
+        "# source_page=14\n"
+        "# extraction_method=VERIFIED_VISUAL_TRANSCRIPTION\n"
+        "The changes will be effective from September 30, 2021.\n"
+        "10) NIFTY 200\n"
+        "The following companies are being excluded:\n"
+        "1 Abbott India Ltd. ABBOTINDIA\n"
+        "The following companies are being included:\n"
+        "1 Astral Ltd. ASTRAL\n",
+        encoding="utf-8",
+    )
+    source = SourceRecord(
+        source_url="https://www.niftyindices.com/Press_Release/ind_prs23082021.pdf",
+        local_path=str(pdf_path), source_sha256=source_sha, retrieved_at="2026-09-20T12:24:01Z",
+    )
+    monkeypatch.setattr(build_public_dataset, "extract_pdf_pages", lambda _path: [""] * 29)
+
+    rows = build_public_dataset.parse_press_releases([source])
+
+    assert [(row.symbol, row.action.value, row.source_page) for row in rows] == [
+        ("ABBOTINDIA", "DROP", 14), ("ASTRAL", "ADD", 14),
+    ]
+    assert all(row.extractor_version == "nifty200-pit-parser-v5-visual" for row in rows)
+    assert all(row.extraction_method == "PDF_VISUAL_TRANSCRIPTION" for row in rows)
+
+
 def test_identity_aliases_do_not_duplicate_exact_current_symbols():
     master = [{
         "instrument_id": "NSE-ISIN:INE1", "isin": "INE1", "symbol": "ABC",
