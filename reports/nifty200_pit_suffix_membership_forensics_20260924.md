@@ -18,7 +18,7 @@ Audit date: 2026-09-24. Scope is limited to the suffix 2016-01-29 through 2022-0
 - The 6 remaining intervals are the YESBANK state family from 2020-02-28 through 2020-07-31. The 2020-03-19 DROP is applied to an absent durable identity under seeded replay and is not cured by endpoint reconciliation.
 - Invalid transitions: ABSENT→DROP=2, PRESENT→ADD=0. Missing-prior-ADD conflicts=2; duplicate-DROP conflicts=0; identity-mismatch classifications E/D=0; checkpoint-state inconsistency I=0.
 - Conflict overlap: {'NO_ORIGINAL_DIVERGENCE_INTERVAL': 23, 'IN_ORIGINAL_DIVERGENCE_NO_FINAL_MEMBERSHIP_CONSEQUENCE': 11, 'DIRECTLY_CAUSING_REMAINING_ECONOMIC_DIVERGENCE': 1}. The many-to-many conflict↔interval↔event mapping is explicit in `nifty200_pit_suffix_conflict_resolution_20260924.csv`.
-- Conflict recomputation: before=35 `MANUAL_QA_REQUIRED`; after={'RESOLVED_BY_SUFFIX_SEED': 24, 'REPRESENTATION_ONLY': 9, 'UNRESOLVED_EVIDENCE_GAP': 2}. The 24 seed-carried cases are resolved by the audited suffix seed, 9 are evidence-backed representation/corporate-action transitions, and 2 remain unresolved evidence gaps.
+- Conflict recomputation: before=35 `MANUAL_QA_REQUIRED`; after=resolved 24, representation-only 9, nonblocking duplicate 0, genuine membership conflict 0, unresolved evidence gap 2. The 24 seed-carried cases are resolved by the audited suffix seed, 9 are evidence-backed representation/corporate-action transitions, and 2 remain unresolved evidence gaps.
 - Production replay defect: NO. The production state machine already replays durable IDs exactly once with deterministic `(effective_date, event_hash)` ordering; the stale-symbol behavior was confined to the temporary audit helper and was not committed.
 
 ## First five causal traces
@@ -61,4 +61,4 @@ CAMPAIGN STAGE A:
 BLOCKED
 ```
 - Calendar and 2015-12-31 frontier were untouched. Production DuckDB/WAL were untouched. No Stage A, strategy research/backtests, broker calls, trading, push, or merge occurred.
-- Verification: arithmetic checks, deterministic rerun, CSV uniqueness checks, `git diff --check`, and focused pure replay assertions were run. This is report-only; no production code or evidence corpus was changed.
+- Verification: arithmetic checks, deterministic rerun, CSV uniqueness checks, `git diff --check`, and a focused pure replay calculation were run. This is report-only; no production code or evidence corpus was changed.
