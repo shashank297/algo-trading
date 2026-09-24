@@ -1,0 +1,42 @@
+{
+  "scope": "two-source-final-identity-continuity-closure",
+  "retrieved_at": "2026-09-24T12:35:52+05:30",
+  "records": [
+    {
+      "source_url": "https://www.grasim.com/Upload/PDF/Q2FY17_results.pdf",
+      "local_path": "reports/nifty200_pit_corporate_action_identity_sources_20260924/b70a7d5d4d324de72c825c8262786fa8683ec96511e27e6c90a9552cba811db7.pdf",
+      "source_sha256": "b70a7d5d4d324de72c825c8262786fa8683ec96511e27e6c90a9552cba811db7",
+      "content_type": "application/pdf",
+      "http_status": 200,
+      "file_size": 582103,
+      "document_date": "2016-10-28",
+      "source_tier": "A1",
+      "validation": "PDF signature and page structure validated; text extraction confirmed subdivision effective 2016-10-08"
+    },
+    {
+      "source_url": "https://niftyindices.com/Press_Release/ind_prs12082016.pdf",
+      "local_path": "reports/nifty200_pit_corporate_action_identity_sources_20260924/5a62ae30702b448323496a7099a40cef446941cabd1b1677af63d6ff2aef6742.pdf",
+      "source_sha256": "5a62ae30702b448323496a7099a40cef446941cabd1b1677af63d6ff2aef6742",
+      "content_type": "application/pdf",
+      "http_status": 200,
+      "file_size": 286768,
+      "document_date": "2016-08-12",
+      "source_tier": "A1",
+      "validation": "PDF signature and 15-page structure validated; NIFTY 200 replacement lists contain no GRASIM entry"
+    }
+  ],
+  "not_retrieved": [
+    {
+      "source_url": "https://nsdl.co.in/downloadables/pdf/2020-0033-Policy-Yes%20Bank%20Limited%20Reconstruction%20Scheme%2C%202020.pdf",
+      "reason": "HTTPS endpoint returned a repeated 301 self-redirect to the comma-form canonical filename; no PDF bytes were returned, so no SHA-256 or pipeline registration was performed"
+    },
+    {
+      "source_url": "https://nsdl.co.in/downloadables/pdf/2020-0029-Policy-Yes%20Bank%20Limited%20Reconstruction%20Scheme%202020.pdf",
+      "reason": "HTTPS endpoint returned a repeated redirect loop; no PDF bytes were returned, so no SHA-256 or pipeline registration was performed"
+    },
+    {
+      "source_url": "https://nsdl.co.in/downloadables/pdf/2020-0034-Policy-Yes%20Bank%20Limited%20Reconstruction%20Scheme%2C%202020.pdf",
+      "reason": "HTTPS endpoint was not retrievable as validated PDF bytes during this closure; no SHA-256 or pipeline registration was performed"
+    }
+  ]
+}
