@@ -110,7 +110,14 @@ Full suffix replay is unchanged: `CERTIFICATION_GRADE_EXACT = 68 / 74`, `ECONOMI
 - NSE source hash was recomputed after preservation and matches the manifest and catalogue.
 - PDF signature, byte length, page count, and page-1 assertion were validated.
 - YES BANK responses were checked for PDF signature; the preserved 11,255-byte responses were HTML and rejected.
-- CSV uniqueness/arithmetic and `git diff --check` are required before commit.
+- Source manifest and source catalogue JSON parse successfully.
+- Closure CSV validation passed: 5 rows, 5 unique record IDs, one validated NSE source, and all replay effects unchanged.
+- Full pytest passed: `1020 passed, 3 warnings`.
+- Ruff passed; compileall passed; focused Mypy on `tools/nifty200_pit` passed with no issues.
+- Broad Mypy reported one unrelated pre-existing error at `utils/retry.py:128`; no task code caused it.
+- Pyright reported `0 errors, 874 warnings`; warnings are pre-existing and unrelated to this source-only change.
+- Deterministic certification replay was not recomputed because no YESBANK continuity edge was registered; the unchanged baseline remains `68/74`, `6`, and `26`.
+- `git diff --check` passed.
 - No production DuckDB/WAL, calendar, frontier, anchor, post-2022 governance, Stage A, research, backtest, broker, or trading work was performed.
 - No push or merge occurred.
 
