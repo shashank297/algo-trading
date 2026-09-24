@@ -1,0 +1,28 @@
+{
+  "scope": "yesbank-first-party-continuity-adjudication",
+  "retrieved_at": "2026-09-24T23:18:50+05:30",
+  "records": [
+    {
+      "source_url": "https://nsearchives.nseindia.com/content/circulars/INSP43833.pdf",
+      "local_path": "reports/nifty200_pit_yesbank_first_party_continuity_sources_20260924/nse_INSP43833.pdf",
+      "source_sha256": "c8d17de1f2d3e805d0776fc3cfd5d748cabb8a258d57e5eb27abd8138cf808e9",
+      "content_type": "application/pdf",
+      "http_status": 200,
+      "file_size": 498374,
+      "document_date": "2020-03-15",
+      "document_identifier": "NSE/CML/43833",
+      "source_tier": "A1",
+      "validation": "PDF signature and 2-page structure validated; page 1 states trading is permitted under new ISIN INE528G01035 from March 16, 2020"
+    }
+  ],
+  "not_validated": [
+    {
+      "source_url": "https://www.yesbank.in/content/published/api/v1.1/assets/CONTBD330CE6A3224A7EA5BCC44ABAFE0AFB/native/annual_report_2019_2020_pdf.pdf?channelToken=21f7ccfa2fc3401091938f541a6f8f2a&download=false",
+      "reason": "Official endpoint returned HTTP 404 through bounded PowerShell retrieval; direct no-query response was HTML, not a PDF"
+    },
+    {
+      "source_url": "https://www.yesbank.in/content/published/api/v1.1/assets/CONTC3D5352CA29B4123BD2A51B6CF6078B8/native/mgt7_extract_of_annual_return_march_31_2022_pdf.pdf?channelToken=21f7ccfa2fc3401091938f541a6f8f2a&download=false",
+      "reason": "Official endpoint returned HTTP 404 through bounded PowerShell retrieval; direct no-query response was HTML, not a PDF"
+    }
+  ]
+}
