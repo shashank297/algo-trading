@@ -46,6 +46,7 @@ All attempts were read-only with respect to the repository and used a `Mozilla/5
 | NSDL 0033 | official `https://nsdl.co.in/...2020-0033...pdf` | connection reset | no | no PDF, MIME, length, or hash |
 | NSDL 0034 | official `https://nsdl.co.in/...2020-0034...pdf` | connection reset | no | no PDF, MIME, length, or hash |
 | NSDL 0029 | exact decoded filename probe | client URL parser rejected embedded spaces before an HTTP request | no | encoding probe produced no server evidence |
+| NSDL 0029 | PowerShell `Invoke-WebRequest` | underlying connection closed during receive | no | no validated response metadata or PDF bytes |
 
 Earlier repository evidence also recorded a repeated self-redirect/redirect-loop response for Circular 0029. The new bounded attempts do not cure that acquisition gap. Temporary response paths, if any, were outside the repository and no response was accepted as a PDF.
 
