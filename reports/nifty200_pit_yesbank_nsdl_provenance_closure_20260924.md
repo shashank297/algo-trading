@@ -36,14 +36,16 @@ Search-index text for Circular 0029 is consistent with the exact assertion that 
 
 ## Bounded acquisition record
 
-All attempts were read-only with respect to the repository and used a `Mozilla/5.0` user agent, a 20-second timeout, and at most five redirects. No retry loop or alternate mirror was used.
+All attempts were read-only with respect to the repository and used a `Mozilla/5.0` user agent, a 20-second timeout, and at most five redirects. The latest bounded retry was at `2026-09-24T23:06:43.6485572+05:30`. No retry loop or alternate mirror was used.
 
 | source | request path | result | admissible bytes | reason |
 |---|---|---|---|---|
 | NSDL 0029 | official `https://nsdl.co.in/...2020-0029...pdf` | connection reset while following the official endpoint | no | no PDF, MIME, length, or hash |
+| NSDL 0029 | official URL, no-follow header capture | connection reset before any response headers; captured header file was zero bytes | no | no HTTP status or `Location` header was available |
 | NSDL 0029 | official `https://www.nsdl.co.in/...2020-0029...pdf` | connection reset | no | no PDF, MIME, length, or hash |
 | NSDL 0033 | official `https://nsdl.co.in/...2020-0033...pdf` | connection reset | no | no PDF, MIME, length, or hash |
 | NSDL 0034 | official `https://nsdl.co.in/...2020-0034...pdf` | connection reset | no | no PDF, MIME, length, or hash |
+| NSDL 0029 | exact decoded filename probe | client URL parser rejected embedded spaces before an HTTP request | no | encoding probe produced no server evidence |
 
 Earlier repository evidence also recorded a repeated self-redirect/redirect-loop response for Circular 0029. The new bounded attempts do not cure that acquisition gap. Temporary response paths, if any, were outside the repository and no response was accepted as a PDF.
 
