@@ -634,8 +634,17 @@ def _apply_documented_isin_continuity(
          "a3135b48b38e6f314d9524fc63c7ac0ff2a95234077e9beaddccf296c2cd635c",
          "9809dd7f425e1fb372458874fb492321a7d5a96c367a1a8446bc16144cf75f68",
          "bea670d1419fbb711d65e11ff3f03e223b91c931313460ee4933b388c2c25922"),
+        ("GRASIM", "INE047A01013", "INE047A01021", "2016-09-30", "2016-10-30", 9,
+         "b70a7d5d4d324de72c825c8262786fa8683ec96511e27e6c90a9552cba811db7",
+         "85d073115ed588f5a00e0e511f852c9259eef2d305cdc55196b566637fce6b57",
+         "c2c0d671d8d4bbc8d20dbd5e18ebcb57267c603c3db8c8c69746fc73e86c624c"),
     ]
+    identity_support = {
+        ("GRASIM", "INE047A01013", "INE047A01021"):
+        "a440b212d603643847859e643b34bfee79e049911307187b717e86b8d493b2eb",
+    }
     needed = {digest for rule in rules for digest in rule[6:]}
+    needed.update(identity_support.values())
     verified = {source.source_sha256: source for source in sources
                 if source.source_sha256 in needed and source.source_tier in {"A1", "A2"}
                 and Path(source.local_path).is_file()
@@ -644,6 +653,9 @@ def _apply_documented_isin_continuity(
     links: list[dict[str, Any]] = []
     for symbol, old, new, before_day, after_day, page, notice_sha, before_sha, after_sha in rules:
         if not all(digest in verified for digest in (notice_sha, before_sha, after_sha)):
+            continue
+        identity_sha = identity_support.get((symbol, old, new))
+        if identity_sha and identity_sha not in verified:
             continue
         if not all(any(row.get("symbol") == symbol and row.get("isin") == isin
                        and row.get("series") == "EQ" and str(row.get("snapshot_date")) == day
@@ -655,6 +667,8 @@ def _apply_documented_isin_continuity(
             "symbol": symbol, "old_isin": old, "new_isin": new,
             "identity_event_type": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
             "source_url": verified[notice_sha].source_url, "source_sha256": notice_sha, "source_page": page,
+            "identity_source_url": verified[identity_sha].source_url if identity_sha else "",
+            "identity_source_sha256": identity_sha or "",
             "before_reference_date": before_day, "before_source_url": verified[before_sha].source_url,
             "before_source_sha256": before_sha, "after_reference_date": after_day,
             "after_source_url": verified[after_sha].source_url, "after_source_sha256": after_sha,
