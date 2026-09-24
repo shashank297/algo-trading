@@ -1,0 +1,55 @@
+{
+  "scope": "yesbank-bse-archive-continuity",
+  "retrieval_method": "bounded_curl_once_per_official_bse_url",
+  "records": [
+    {
+      "source_url": "https://www.bseindia.com/bseplus/AnnualReport/532648/5326480320.pdf",
+      "local_path": "reports/nifty200_pit_yesbank_bse_archive_continuity_sources_20260925/bse_5326480320.pdf",
+      "retrieved_at": "2026-09-25T02:27:18.280382+05:30",
+      "http_status": 200,
+      "content_type": "application/pdf",
+      "file_size": 14441184,
+      "sha256": "3ad2f51f9660d3415e0a9bb1a8cc61aac16c0b0f1a894fdacdd68aa754ad7e16",
+      "pdf_pages": 359,
+      "report_period": "FY 2019-20",
+      "document_date": "2020-03-31",
+      "source_tier": "A1",
+      "validation": {
+        "pdf_parse": "PASS",
+        "issuer": "YES BANK Limited",
+        "period_assertion": "Annual Report 2019-20",
+        "page": 106,
+        "section": "Management Discussion and Analysis - Equity Capital and Reserve and surplus",
+        "semantic_assertion": "On March 13, 2020, the Government of India notified the Yes Bank Ltd. Reconstruction Scheme, 2020; the report records the reconstruction-scheme equity issue."
+      }
+    },
+    {
+      "source_url": "https://www.bseindia.com/bseplus/AnnualReport/532648/69137532648.pdf",
+      "local_path": "reports/nifty200_pit_yesbank_bse_archive_continuity_sources_20260925/bse_69137532648.pdf",
+      "retrieved_at": "2026-09-25T02:27:21.304480+05:30",
+      "http_status": 200,
+      "content_type": "application/pdf",
+      "file_size": 7314802,
+      "sha256": "b292add537db526e808a6831885468ebb6fbdbc551596d858c1650a8edfcf204",
+      "pdf_pages": 256,
+      "report_period": "FY 2020-21",
+      "document_date": "2021-03-31",
+      "source_tier": "A1",
+      "validation": {
+        "pdf_parse": "PASS",
+        "issuer": "YES BANK Limited",
+        "period_assertion": "Annual Report 2020-21",
+        "page": 134,
+        "printed_page": 131,
+        "section": "General Shareholders Information - Listing on Stock Exchanges, ISIN & Stock Code",
+        "semantic_assertion": "Domestic Listing - New ISIN INE528G01035 | Old ISIN-INE528G01027 (Equity)."
+      }
+    }
+  ],
+  "governance": {
+    "rule": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
+    "decision": "ADMISSIBLE_MULTI_SOURCE_CONTINUITY",
+    "independent_qa": "NOT_ASSERTED",
+    "import_approval": "NOT_GRANTED"
+  }
+}

@@ -600,7 +600,7 @@ def _apply_documented_isin_continuity(
     observations: list[Observation], master: list[dict[str, Any]], aliases: list[dict[str, Any]],
     sources: list[SourceRecord],
 ) -> tuple[list[Observation], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
-    """Apply only exact source-hash-verified NSE reference-file continuity links."""
+    """Apply only exact source-hash-verified continuity links."""
     rules = [
         ("J&KBANK", "INE168A01017", "INE168A01041", "2014-09-04", "2014-09-05", 35,
          "786b5c5e35f33103410dae2473e6bbae728d3bddbf818a9a1d30988bbb2446a0",
@@ -638,10 +638,16 @@ def _apply_documented_isin_continuity(
          "b70a7d5d4d324de72c825c8262786fa8683ec96511e27e6c90a9552cba811db7",
          "85d073115ed588f5a00e0e511f852c9259eef2d305cdc55196b566637fce6b57",
          "c2c0d671d8d4bbc8d20dbd5e18ebcb57267c603c3db8c8c69746fc73e86c624c"),
+        ("YESBANK", "INE528G01027", "INE528G01035", "2020-02-28", "2020-03-19", 106,
+         "3ad2f51f9660d3415e0a9bb1a8cc61aac16c0b0f1a894fdacdd68aa754ad7e16",
+         "2c5b8348dec6e64e0064bb8a77abe5811a2cc4eb1f720ac001ff923d6ae86b33",
+         "9c590311f613e0c1f33d07ab52a3ba4426bd867ac3a258f7dce38748d6db55b7"),
     ]
     identity_support = {
         ("GRASIM", "INE047A01013", "INE047A01021"):
         "a440b212d603643847859e643b34bfee79e049911307187b717e86b8d493b2eb",
+        ("YESBANK", "INE528G01027", "INE528G01035"):
+        "b292add537db526e808a6831885468ebb6fbdbc551596d858c1650a8edfcf204",
     }
     needed = {digest for rule in rules for digest in rule[6:]}
     needed.update(identity_support.values())
