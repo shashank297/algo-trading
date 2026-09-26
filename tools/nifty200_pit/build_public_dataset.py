@@ -643,6 +643,11 @@ def _apply_documented_isin_continuity(
          "2c5b8348dec6e64e0064bb8a77abe5811a2cc4eb1f720ac001ff923d6ae86b33",
          "9c590311f613e0c1f33d07ab52a3ba4426bd867ac3a258f7dce38748d6db55b7"),
     ]
+    direct_old_new_rules = [
+        ("YESBANK", "INE528G01019", "INE528G01027", "2017-09-18", "2017-09-29", 1,
+         "6bee48b705e78b19574ba0a393fc52d493dd8f071c28e0f32bba855229b595e9",
+         "02c7a906d55e08a0d3fde86d440577b23a47f21cd09581ef953e90ccc79f752e"),
+    ]
     identity_support = {
         ("GRASIM", "INE047A01013", "INE047A01021"):
         "a440b212d603643847859e643b34bfee79e049911307187b717e86b8d493b2eb",
@@ -650,6 +655,7 @@ def _apply_documented_isin_continuity(
         "b292add537db526e808a6831885468ebb6fbdbc551596d858c1650a8edfcf204",
     }
     needed = {digest for rule in rules for digest in rule[6:]}
+    needed.update(digest for rule in direct_old_new_rules for digest in rule[6:])
     needed.update(identity_support.values())
     verified = {source.source_sha256: source for source in sources
                 if source.source_sha256 in needed and source.source_tier in {"A1", "A2"}
@@ -679,6 +685,27 @@ def _apply_documented_isin_continuity(
             "before_source_sha256": before_sha, "after_reference_date": after_day,
             "after_source_url": verified[after_sha].source_url, "after_source_sha256": after_sha,
             "date_semantics": "REFERENCE_OBSERVATIONS_ONLY_EXISTING_ISIN_VALIDITY_NOT_CERTIFIED_BY_THIS_LINK",
+            "independent_qa": "NOT_ASSERTED",
+        })
+    for symbol, old, new, assertion_day, after_day, page, notice_sha, after_sha in direct_old_new_rules:
+        if not all(digest in verified for digest in (notice_sha, after_sha)):
+            continue
+        if not any(row.get("symbol") == symbol and row.get("isin") == new
+                   and row.get("series") == "EQ" and str(row.get("snapshot_date")) == after_day
+                   for row in parse_bhavcopy_identities(verified[after_sha])):
+            continue
+        parents[(symbol, new)] = old
+        links.append({
+            "symbol": symbol, "old_isin": old, "new_isin": new,
+            "identity_event_type": "DOCUMENTED_STOCK_SPLIT_CONTINUITY",
+            "source_url": verified[notice_sha].source_url, "source_sha256": notice_sha, "source_page": page,
+            "identity_source_url": verified[notice_sha].source_url,
+            "identity_source_sha256": notice_sha,
+            "before_reference_date": assertion_day, "before_source_url": verified[notice_sha].source_url,
+            "before_source_sha256": notice_sha, "after_reference_date": after_day,
+            "after_source_url": verified[after_sha].source_url, "after_source_sha256": after_sha,
+            "corporate_action_date": "2017-09-22", "effective_trading_date": "2017-09-21",
+            "date_semantics": "DIRECT_FIRST_PARTY_OLD_NEW_ASSERTION_WITH_POST_IDENTITY_CORROBORATION",
             "independent_qa": "NOT_ASSERTED",
         })
 
