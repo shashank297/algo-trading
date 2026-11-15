@@ -170,6 +170,130 @@ def _valid_on(row: dict[str, Any], when: date | None) -> bool:
     return (effective_start is None or when >= effective_start) and (end is None or when < end)
 
 
+_OPEN_ENDED_TRANSITION_TYPES = {
+    "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD",
+    "OFFICIAL_NAME_CHANGE_CERTIFIED_FORWARD",
+}
+
+
+def _is_dvr_row(row: dict[str, Any]) -> bool:
+    return (
+        _norm(row.get("symbol")).endswith("DVR")
+        or bool(re.search(r"\bDVR\b", str(row.get("company_name") or ""), re.I))
+    )
+
+
+def _company_scope_rows(
+    company_name: object, rows_by_company: dict[str, list[dict[str, Any]]], *, dvr_only: bool | None = None,
+) -> list[dict[str, Any]]:
+    raw_company = str(company_name or "")
+    company_for_match = re.sub(r"\s+DVR\s*$", "", raw_company, flags=re.I)
+    company = _norm_company(company_for_match)
+    if not company:
+        return []
+    rows = rows_by_company.get(company, [])
+    require_dvr = bool(re.search(r"\bDVR\b", raw_company, re.I)) if dvr_only is None else dvr_only
+    if require_dvr:
+        return [row for row in rows if _norm(row.get("symbol")).endswith("DVR")]
+    return rows
+
+
+def _explicit_identity_segment(row: dict[str, Any]) -> bool:
+    """Whether row dates establish a segment rather than an open snapshot."""
+    if not row.get("has_explicit_historical_interval"):
+        return False
+    if _date_field_is_invalid(row.get("valid_from")) or _date_field_is_invalid(row.get("valid_until")):
+        return False
+    start = _date(row.get("valid_from"))
+    end = _date(row.get("valid_until"))
+    if start is None or (end is not None and start >= end):
+        return False
+    if end is not None:
+        return True
+    return str(row.get("identity_event_type") or "").upper() in _OPEN_ENDED_TRANSITION_TYPES
+
+
+def _competing_isin_resolution(
+    scope_rows: list[dict[str, Any]], when: date,
+) -> Resolution | None:
+    """Resolve only a uniquely dated identity when a scope contains ISIN changes."""
+    isins = {_norm(row.get("isin")) for row in scope_rows if _norm(row.get("isin"))}
+    if len(isins) <= 1:
+        return None
+
+    candidate_pairs: set[tuple[str | None, str]] = set()
+    admissible_pairs: set[tuple[str, str]] = set()
+    unresolved_rows: list[dict[str, Any]] = []
+    for row in scope_rows:
+        isin = _norm(row.get("isin"))
+        if not isin:
+            continue
+        if _date_field_is_invalid(row.get("valid_from")) or _date_field_is_invalid(row.get("valid_until")):
+            unresolved_rows.append(row)
+            continue
+        if not _valid_on(row, when):
+            continue
+        if not _explicit_identity_segment(row):
+            unresolved_rows.append(row)
+            continue
+
+        pair = (_durable_id(row.get("instrument_id")), isin)
+        candidate_pairs.add(pair)
+        if pair[0] is not None and _evidence_admissible(row):
+            admissible_pairs.add((pair[0], pair[1]))
+
+    if len(candidate_pairs) != 1 or len(admissible_pairs) != 1:
+        return Resolution(
+            None, None, "AMBIGUOUS_COMPETING_ISIN_HISTORY", "MANUAL_REVIEW",
+            _candidate_ids(scope_rows),
+            "competing ISIN history lacks one admissible dated identity segment",
+        )
+
+    chosen_id, chosen_isin = next(iter(admissible_pairs))
+    if any(
+        _norm(row.get("isin")) != chosen_isin
+        or _durable_id(row.get("instrument_id")) not in {None, chosen_id}
+        for row in unresolved_rows
+    ):
+        return Resolution(
+            None, None, "AMBIGUOUS_COMPETING_ISIN_HISTORY", "MANUAL_REVIEW",
+            _candidate_ids(scope_rows),
+            "an open snapshot or unproven competing row may cover the event date",
+        )
+
+    return Resolution(
+        chosen_id, chosen_isin, "DATED_COMPETING_ISIN_SEGMENT", "CERTIFIED",
+        (chosen_id,),
+    )
+
+
+def _exact_isin_scope_rows(
+    isin_rows: list[dict[str, Any]],
+    rows_by_symbol: dict[str, list[dict[str, Any]]],
+    rows_by_company: dict[str, list[dict[str, Any]]],
+) -> tuple[list[list[dict[str, Any]]], bool]:
+    """Derive coherent symbol/company scopes from an exact-ISIN history."""
+    if not isin_rows or any(not (_norm(row.get("symbol")) or _norm_company(row.get("company_name"))) for row in isin_rows):
+        return [], False
+
+    durable_ids = {_durable_id(row.get("instrument_id")) for row in isin_rows}
+    share_classes = {_is_dvr_row(row) for row in isin_rows}
+    if None in durable_ids or len(durable_ids) != 1 or len(share_classes) != 1:
+        return [], False
+
+    scopes: dict[tuple[object, ...], list[dict[str, Any]]] = {}
+    for row in isin_rows:
+        if symbol := _norm(row.get("symbol")):
+            scopes.setdefault(("symbol", symbol), rows_by_symbol.get(symbol, []))
+        if row.get("company_name"):
+            dvr = _is_dvr_row(row)
+            company_rows = _company_scope_rows(row.get("company_name"), rows_by_company, dvr_only=dvr)
+            company_key = _norm_company(re.sub(r"\s+DVR\s*$", "", str(row.get("company_name") or ""), flags=re.I))
+            if company_key:
+                scopes.setdefault(("company", company_key, dvr), company_rows)
+    return list(scopes.values()), bool(scopes)
+
+
 def resolve_observation(
     observation: Observation | dict[str, Any],
     instrument_master: Iterable[dict[str, Any]],
@@ -193,8 +317,63 @@ def resolve_observation(
                           "period-valid identity requires an effective date")
     isin = _norm(obs.get("isin"))
     if isin:
+        exact_history = rows_by_isin.get(isin, [])
+        if exact_history:
+            dated_identity_rows = [
+                row for row in exact_history
+                if _valid_on(row, when) and _evidence_admissible(row)
+            ]
+            observed_symbol = _norm(obs.get("symbol"))
+            valid_symbols = {_norm(row.get("symbol")) for row in dated_identity_rows if row.get("symbol")}
+            observed_company = _norm_company(obs.get("company_name"))
+            valid_companies = {
+                _norm_company(row.get("company_name"))
+                for row in dated_identity_rows if row.get("company_name")
+            }
+            if (
+                (observed_symbol and observed_symbol not in valid_symbols)
+                or (observed_company and valid_companies and observed_company not in valid_companies)
+            ):
+                return Resolution(
+                    None, None, "CONTRADICTORY_EXPLICIT_ISIN", "MANUAL_REVIEW",
+                    _candidate_ids(exact_history),
+                    "the supplied symbol or company contradicts the event-date ISIN identity",
+                )
+            scopes, coherent = _exact_isin_scope_rows(exact_history, rows_by_symbol, rows_by_company)
+            if not coherent:
+                return Resolution(
+                    None, None, "UNSCOPED_EXPLICIT_ISIN", "MANUAL_REVIEW",
+                    _candidate_ids(exact_history),
+                    "exact ISIN history has no coherent symbol/company/share-class scope",
+                )
+            scoped_resolutions = [
+                result for scope_rows in scopes
+                if (result := _competing_isin_resolution(scope_rows, when)) is not None
+            ]
+            if any(result.confidence != "CERTIFIED" for result in scoped_resolutions):
+                unresolved = next(result for result in scoped_resolutions if result.confidence != "CERTIFIED")
+                return unresolved
+            if scoped_resolutions:
+                identities = {(result.instrument_id, result.isin) for result in scoped_resolutions}
+                if len(identities) != 1:
+                    return Resolution(
+                        None, None, "AMBIGUOUS_EXPLICIT_ISIN_SCOPES", "MANUAL_REVIEW",
+                        _candidate_ids(exact_history),
+                        "derived scopes do not agree on one event-date identity",
+                    )
+                resolved_id, resolved_isin = next(iter(identities))
+                if resolved_isin != isin:
+                    return Resolution(
+                        None, None, "CONTRADICTORY_EXPLICIT_ISIN", "MANUAL_REVIEW",
+                        _candidate_ids(exact_history),
+                        "the supplied ISIN is not the uniquely dated identity for its scope",
+                    )
+                return Resolution(
+                    resolved_id, resolved_isin, "DATED_COMPETING_ISIN_SEGMENT", "CERTIFIED",
+                    (resolved_id,) if resolved_id else (),
+                )
         exact = [
-            row for row in rows_by_isin.get(isin, [])
+            row for row in exact_history
             if _valid_on(row, when) and _evidence_admissible(row)
         ]
         exact = _unique_instrument_rows(exact)
@@ -219,8 +398,13 @@ def resolve_observation(
                           "explicit ISIN did not match one admissible period-valid identity")
 
     symbol = _norm(obs.get("symbol"))
+    symbol_history = rows_by_symbol.get(symbol, []) if symbol else []
+    if symbol_history:
+        competing = _competing_isin_resolution(symbol_history, when)
+        if competing is not None:
+            return competing
     exact = [
-        row for row in rows_by_symbol.get(symbol, [])
+        row for row in symbol_history
         if _valid_on(row, when) and _evidence_admissible(row)
     ] if symbol else []
     unique_exact = _unique_instrument_rows(exact)
@@ -254,14 +438,14 @@ def resolve_observation(
         )
 
     raw_company = str(obs.get("company_name") or "")
-    company_for_match = re.sub(r"\s+DVR\s*$", "", raw_company, flags=re.I)
-    company = _norm_company(company_for_match)
+    exact_company = _company_scope_rows(raw_company, rows_by_company)
+    competing = _competing_isin_resolution(exact_company, when)
+    if competing is not None:
+        return competing
     exact_company = [
-        row for row in rows_by_company.get(company, [])
+        row for row in exact_company
         if _valid_on(row, when) and _evidence_admissible(row)
     ]
-    if re.search(r"\bDVR\b", raw_company, re.I):
-        exact_company = [row for row in exact_company if _norm(row.get("symbol")).endswith("DVR")]
     unique_company = _unique_instrument_rows(exact_company)
     if len(unique_company) == 1:
         row = unique_company[0]
@@ -308,6 +492,22 @@ def resolve_observation(
             None, None, "UNCERTIFIED_ALIAS", "MANUAL_REVIEW", candidates,
             "alias identity requires review; a symbol alone is not durable identity evidence",
         )
+    alias_history = list(rows_by_symbol.get(symbol, [])) + list(aliases_by_symbol.get(symbol, [])) if symbol else []
+    alias_competition = _competing_isin_resolution(alias_history, when) if alias_history else None
+    if alias_competition is not None:
+        if alias_competition.confidence != "CERTIFIED":
+            return alias_competition
+        alias_identity = next(iter(unique_aliases.values()), None)
+        if alias_identity is None or (
+            _durable_id(alias_identity.get("instrument_id")) != alias_competition.instrument_id
+            or _norm(alias_identity.get("isin")) != alias_competition.isin
+        ):
+            return Resolution(
+                None, None, "AMBIGUOUS_COMPETING_ISIN_HISTORY", "MANUAL_REVIEW",
+                _candidate_ids(alias_history),
+                "dated competing identity does not match the certified symbol alias",
+            )
+        return alias_competition
     if not has_uncertified_alias and len(unique_aliases) == 1:
         row = next(iter(unique_aliases.values()))
         return Resolution(
@@ -365,7 +565,10 @@ def resolve_observation(
 def resolve_observations(observations: Iterable[Observation], instrument_master: Iterable[dict[str, Any]], *, aliases: Iterable[dict[str, Any]] = ()) -> list[Observation]:
     rows = list(instrument_master)
     indexes = _build_indexes(rows, aliases)
-    rows_by_instrument = {str(row.get("instrument_id")): row for row in rows if row.get("instrument_id")}
+    rows_by_instrument: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if row.get("instrument_id"):
+            rows_by_instrument.setdefault(str(row["instrument_id"]), []).append(row)
     alias_rows = list(aliases)
     result = []
     for observation in observations:
@@ -374,6 +577,7 @@ def resolve_observations(observations: Iterable[Observation], instrument_master:
         identity_certified = resolution.confidence == "CERTIFIED"
         event_evidence_certified = (
             identity_certified
+            and str(observation.review_status) != "MANUAL_REVIEW"
             and source_tier in {"A1", "A2"}
             and observation.announcement_date is not None
             and observation.effective_date is not None
@@ -397,9 +601,22 @@ def resolve_observations(observations: Iterable[Observation], instrument_master:
             "observation_id": observation.observation_id or stable_observation_id(observation),
         }
         if not payload.get("symbol") and resolution.instrument_id:
-            resolved_row = rows_by_instrument.get(resolution.instrument_id)
-            if resolved_row and resolved_row.get("symbol"):
-                payload["symbol"] = resolved_row["symbol"]
+            observation_date = _date(observation.effective_date)
+            valid_rows = [
+                row for row in rows_by_instrument.get(resolution.instrument_id, [])
+                if row.get("symbol") and row.get("has_explicit_historical_interval")
+                and _valid_on(row, observation_date) and _evidence_admissible(row)
+            ]
+            if not valid_rows:
+                valid_rows = [
+                    row for row in rows_by_instrument.get(resolution.instrument_id, [])
+                    if row.get("symbol") and _valid_on(row, observation_date) and _evidence_admissible(row)
+                ]
+            symbols: dict[str, object] = {}
+            for row in valid_rows:
+                symbols.setdefault(_norm(row.get("symbol")), row.get("symbol"))
+            if len(symbols) == 1:
+                payload["symbol"] = next(iter(symbols.values()))
         payload["announcement_date"] = _date(payload.get("announcement_date"))
         payload["effective_date"] = _date(payload.get("effective_date"))
         payload["known_at"] = datetime.fromisoformat(str(payload["known_at"])) if payload.get("known_at") else None

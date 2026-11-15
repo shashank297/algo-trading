@@ -19,12 +19,14 @@ from tools.nifty200_pit.build_public_dataset import (
     _anchor_replay_forensics,
     parse_official_identity_change_candidates,
     _certified_official_name_change_rows,
+    _certified_official_forward_identity_rows,
     _raw_unresolved_observations,
     parse_press_releases,
     _exclude_withdrawn_challenger_assertions,
     _suppress_redundant_workbook_observations,
     _enrich_bhavcopy_company_names,
     _numbered_continuation_prefix,
+    SYMBOL_CHANGE_URL,
 )
 from tools.nifty200_pit.models import Conflict, EvidenceStatus, Observation, SourceRecord, ValidationReport, stable_observation_id
 from tools.nifty200_pit.parse_pdf import parse_nifty200_text
@@ -589,14 +591,22 @@ def test_official_identity_change_tables_remain_manual_without_historical_isin(t
 
     rows = parse_official_identity_change_candidates(records, master)
 
-    assert {row["identity_event_type"] for row in rows} == {
+    # Name/symbol links remain candidates unless separate historical identity evidence exists.
+    candidate_rows = [r for r in rows if r["identity_event_type"] in {
+        "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_EVIDENCE",
+    }]
+    forward_rows = [r for r in rows if r["identity_event_type"] in {
+        "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD", "OFFICIAL_NAME_CHANGE_CERTIFIED_FORWARD",
+    }]
+    assert {r["identity_event_type"] for r in candidate_rows} == {
         "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "OFFICIAL_NAME_CHANGE_EVIDENCE",
     }
-    assert all(row["confidence"] == "MANUAL_REVIEW" for row in rows)
-    name_row = next(row for row in rows if row["identity_event_type"] == "OFFICIAL_NAME_CHANGE_EVIDENCE")
+    assert all(r["confidence"] == "MANUAL_REVIEW" for r in candidate_rows)
+    name_row = next(r for r in candidate_rows if r["identity_event_type"] == "OFFICIAL_NAME_CHANGE_EVIDENCE")
     assert name_row["name_evidence_confidence"] == "CERTIFIED"
     assert name_row["historical_identity_status"] == "MANUAL_REVIEW"
     assert name_row["has_explicit_historical_interval"] is False
+    assert forward_rows == []
 
 
 def test_name_change_does_not_certify_historical_isin_from_current_master():
@@ -693,8 +703,13 @@ def test_symbol_change_candidate_does_not_create_historical_interval(tmp_path):
 
     rows = parse_official_identity_change_candidates(records, master)
 
-    assert rows[0]["has_explicit_historical_interval"] is False
-    assert rows[0]["historical_identity_status"] == "MANUAL_REVIEW"
+    # The backward-bounded candidate row must NOT create a historical interval
+    candidate_row = next(
+        r for r in rows if r["identity_event_type"] == "OFFICIAL_SYMBOL_CHANGE_CANDIDATE"
+    )
+    assert candidate_row["has_explicit_historical_interval"] is False
+    assert candidate_row["historical_identity_status"] == "MANUAL_REVIEW"
+    assert not [r for r in rows if r["identity_event_type"] == "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD"]
 
 
 def test_identity_aliases_prefer_dated_historical_source_for_checkpoint():
@@ -860,3 +875,146 @@ def test_archived_index_constituent_parser_requires_dated_official_identity(tmp_
     assert rows[0]["instrument_id"] == "NSE-ISIN:INE123A01010"
     assert rows[0]["valid_from"] == "2014-01-13"
     assert rows[0]["identity_event_type"] == "ARCHIVED_OFFICIAL_INDEX_CONSTITUENT_SNAPSHOT"
+
+
+# ---------------------------------------------------------------------------
+# _certified_official_forward_identity_rows tests
+# ---------------------------------------------------------------------------
+
+def test_certified_forward_identity_rows_extracts_only_certified_forward_rows():
+    candidates = [
+        {"identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CANDIDATE", "instrument_id": "NSE-ISIN:INE1",
+         "symbol": "OLD", "confidence": "MANUAL_REVIEW", "has_explicit_historical_interval": False},
+        {"identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD", "instrument_id": "NSE-ISIN:INE1",
+         "symbol": "NEW", "valid_from": "2019-10-30", "confidence": "CERTIFIED", "has_explicit_historical_interval": True},
+        {"identity_event_type": "OFFICIAL_NAME_CHANGE_EVIDENCE", "instrument_id": "NSE-ISIN:INE2",
+         "symbol": "ATGL", "confidence": "MANUAL_REVIEW", "has_explicit_historical_interval": False},
+        {"identity_event_type": "OFFICIAL_NAME_CHANGE_CERTIFIED_FORWARD", "instrument_id": "NSE-ISIN:INE2",
+         "symbol": "ATGL", "valid_from": "2021-01-13", "confidence": "CERTIFIED", "has_explicit_historical_interval": True},
+    ]
+    result = _certified_official_forward_identity_rows(candidates)
+    assert result == []
+
+
+def test_certified_forward_identity_rows_empty_for_manual_only_candidates():
+    candidates = [{"identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CANDIDATE",
+                   "instrument_id": "NSE-ISIN:INE1", "symbol": "OLD",
+                   "confidence": "MANUAL_REVIEW", "has_explicit_historical_interval": False}]
+    assert _certified_official_forward_identity_rows(candidates) == []
+
+
+def test_forward_identity_rows_integration_symbol_change(tmp_path):
+    sym_path = tmp_path / "symbolchange.csv"
+    sym_path.write_text("Old Name,MAGMA,POONAWALLA,05-AUG-2021\n", encoding="utf-8")
+    records = [SourceRecord(
+        "https://nsearchives.nseindia.com/content/equities/symbolchange.csv",
+        str(sym_path), "a" * 64, "2026-09-18T00:00:00Z",
+    )]
+    master = [{"instrument_id": "NSE-ISIN:INE511C01022", "isin": "INE511C01022",
+               "symbol": "POONAWALLA", "company_name": "Poonawalla Fincorp Ltd.",
+               "valid_from": "2021-08-05", "snapshot_date": "2026-09-19"}]
+
+    all_candidates = parse_official_identity_change_candidates(records, master)
+    forward_rows = _certified_official_forward_identity_rows(all_candidates)
+
+    assert forward_rows == []
+
+
+def test_symbol_change_forward_rows_close_on_the_next_change_date_rdel(tmp_path):
+    sym_path = tmp_path / "symbolchange.csv"
+    sym_path.write_text(
+        "Old Name,Old Symbol,New Symbol,Change Date\n"
+        "Pipavav Defence,PIPAVAVYD,PIPAVAVDOC,29-SEP-2011\n"
+        "Pipavav Defence,PIPAVAVDOC,RDEL,18-MAR-2016\n"
+        "Reliance Defence,RDEL,RNAVAL,18-SEP-2017\n",
+        encoding="utf-8",
+    )
+    records = [SourceRecord(
+        SYMBOL_CHANGE_URL, str(sym_path), "c" * 64, "2026-10-03T00:00:00Z",
+    )]
+    master = [
+        {
+            "instrument_id": "NSE-ISIN:INE542F01012", "isin": "INE542F01012",
+            "symbol": "PIPAVAVDOC", "company_name": "Pipavav Defence and Offshore Engineering Company Ltd.",
+            "valid_from": "2009-10-09", "valid_until": "2016-03-18",
+            "has_explicit_historical_interval": True,
+        },
+        {
+            "instrument_id": "NSE-ISIN:INE542F01012", "isin": "INE542F01012",
+            "symbol": "RDEL", "company_name": "Reliance Defence and Engineering Ltd.",
+            "valid_from": "2016-03-18", "valid_until": "2017-09-18",
+            "has_explicit_historical_interval": True,
+        },
+        {
+            "instrument_id": "NSE-ISIN:INE542F01012", "isin": "INE542F01012",
+            "symbol": "RNAVAL", "company_name": "Reliance Naval and Engineering Ltd.",
+            "valid_from": "2017-09-18", "valid_until": None,
+            "has_explicit_historical_interval": True,
+        },
+    ]
+
+    rows = parse_official_identity_change_candidates(records, master)
+    assert not [row for row in rows if row["identity_event_type"] == "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD"]
+
+
+def test_forward_identity_rows_integration_name_change(tmp_path):
+    name_path = tmp_path / "namechange.csv"
+    name_path.write_text(
+        "NCH_SYMBOL,NCH_PREV_NAME,NCH_NEW_NAME,NCH_DT\n"
+        "PATANJALI,Ruchi Soya Industries Limited,Patanjali Foods Limited,13-JUL-2022\n",
+        encoding="utf-8",
+    )
+    records = [SourceRecord(
+        "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+        str(name_path), "b" * 64, "2026-09-18T00:00:00Z",
+    )]
+    master = [{"instrument_id": "NSE-ISIN:INE619A01035", "isin": "INE619A01035",
+               "symbol": "PATANJALI", "company_name": "Patanjali Foods Limited",
+               "valid_from": "2022-07-13", "snapshot_date": "2026-09-19"}]
+
+    all_candidates = parse_official_identity_change_candidates(records, master)
+    forward_rows = _certified_official_forward_identity_rows(all_candidates)
+
+    assert forward_rows == []
+
+
+def test_forward_row_not_emitted_when_new_name_differs_from_master(tmp_path):
+    """No forward row when new_name in namechange.csv does not match master company_name
+    (guards against backdating via intermediate historical name changes)."""
+    name_path = tmp_path / "namechange.csv"
+    name_path.write_text(
+        "NCH_SYMBOL,NCH_PREV_NAME,NCH_NEW_NAME,NCH_DT\n"
+        "POONAWALLA,Magma Shrachi Finance Limited,Magma Fincorp Limited,08-APR-2008\n",
+        encoding="utf-8",
+    )
+    records = [SourceRecord(
+        "https://nsearchives.nseindia.com/content/equities/namechange.csv",
+        str(name_path), "b" * 64, "2026-09-18T00:00:00Z",
+    )]
+    master = [{"instrument_id": "NSE-ISIN:INE511C01022", "isin": "INE511C01022",
+               "symbol": "POONAWALLA", "company_name": "Poonawalla Fincorp Ltd.",
+               "valid_from": "2021-08-05", "snapshot_date": "2026-09-19"}]
+
+    all_candidates = parse_official_identity_change_candidates(records, master)
+    forward_rows = _certified_official_forward_identity_rows(all_candidates)
+
+    assert forward_rows == [], "No forward row when new_name != master company_name"
+
+
+def test_monthly_checkpoint_with_same_count_but_different_member_is_not_pass():
+    checkpoint_date = date(2022, 3, 31)
+    interval = SimpleNamespace(
+        instrument_id="NSE-ISIN:INE123456789", symbol_at_entry="REPLAY_MEMBER",
+        effective_from=date(2020, 1, 1), effective_until=None,
+    )
+    coverage = [{"period": "2022-03", "snapshot_member_count": "1", "expected_member_count": "1"}]
+    snapshots = [{
+        "snapshot_date": checkpoint_date.isoformat(), "symbol": "OFFICIAL_MEMBER",
+        "instrument_id": "NSE-ISIN:INE987654321",
+        "source_url": "https://example.invalid/checkpoint.zip", "source_sha256": "b" * 64,
+    }]
+
+    result = _monthly_gap_rows(coverage, snapshots, [interval], [])[0]
+
+    assert result["status"] != "PASS"
+    assert result["snapshot_vs_replay_diff"] == 0

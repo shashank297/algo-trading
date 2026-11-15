@@ -16,14 +16,14 @@ def _event(number):
 
 def test_exact_member_count_is_required():
     intervals = build_intervals([_event(number) for number in range(200)]).intervals
-    report = validate_campaign(intervals, [_event(number) for number in range(200)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 3), trading_days=[date(2012, 1, 2), date(2012, 1, 3)], calendar_provenance="test-calendar", calendar_certified=True)
+    report = validate_campaign(intervals, [_event(number) for number in range(200)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 3), trading_days=[date(2012, 1, 2), date(2012, 1, 3)], initial_anchor_established=True, calendar_provenance="test-calendar", calendar_certified=True)
     assert report.passed
     assert report.metrics["trading_days_checked"] == 2
 
 
 def test_missing_membership_blocks_certification():
     intervals = build_intervals([_event(number) for number in range(199)]).intervals
-    report = validate_campaign(intervals, [_event(number) for number in range(199)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2), trading_days=[date(2012, 1, 2)], calendar_provenance="test-calendar", calendar_certified=True)
+    report = validate_campaign(intervals, [_event(number) for number in range(199)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2), trading_days=[date(2012, 1, 2)], initial_anchor_established=True, calendar_provenance="test-calendar", calendar_certified=True)
     assert not report.passed
     assert any(reason.startswith("member_count") for reason in report.reasons)
 
@@ -64,3 +64,16 @@ def test_missing_calendar_provenance_is_blocked():
     )
     assert not report.passed
     assert "calendar_not_certified" in report.reasons
+
+
+def test_missing_anchor_argument_does_not_assume_established():
+    intervals = build_intervals([_event(number) for number in range(1)]).intervals
+    report = validate_campaign(
+        intervals, [_event(0)], campaign_from=date(2012, 1, 2), campaign_to=date(2012, 1, 2),
+        trading_days=[date(2012, 1, 2)], required_member_count=1,
+        calendar_provenance="test-calendar", calendar_certified=True,
+    )
+
+    assert not report.passed
+    assert "initial_anchor_not_established" in report.reasons
+    assert report.metrics["count_validation_evaluable"] is False

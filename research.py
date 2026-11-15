@@ -460,7 +460,7 @@ def main(argv: list[str] | None = None) -> int:
         risk_required = args.command in {
             "experiment", "portfolio-experiment", "paper", "mass-research",
             "agent-research", "robustness",
-        } or args.mode == "paper"
+        } or args.mode in {"paper", "event-driven"}
         risk_engine = None
         if risk_required:
             risk_policy_kwargs = dict(research_config.get("risk", {}))
@@ -475,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
             runtime_config["research"] = runtime_research
             risk_engine = build_risk_engine(runtime_config)
         india_calendar = configured_nse_calendar(config)
-        pipeline = StrategyPipeline(db, risk_engine=risk_engine, india_calendar=india_calendar)
+        pipeline = StrategyPipeline(db, risk_engine=risk_engine, india_calendar=india_calendar, require_authoritative_certification=risk_required)
         universe_service = UniverseResearchService(db)
         # Phase 2.2 — Build derived bars
         if args.command == "build-derived-bars":
@@ -1153,6 +1153,7 @@ def main(argv: list[str] | None = None) -> int:
                 parameters=parameters,
                 starting_capital=args.capital,
                 cost_model=cost_model or research_config.get("costs", {}),
+                universe_snapshot_id=args.universe_snapshot,
             )
         if "forward_result" in outcome:
             forward = outcome["forward_result"]

@@ -18,6 +18,7 @@ from smartapi.websocket_client import (
     StreamRecoveryError,
 )
 from storage.duckdb_manager import DuckDBManager
+from risk.engine import RiskEngine
 from trading_stack.pipeline import StrategyPipeline
 from trading_stack.portfolio import PortfolioEventBacktester
 
@@ -119,7 +120,7 @@ def test_websocket_client_queues_and_edge_branches(tmp_path):
 
 def test_pipeline_cost_attribution_and_metadata(tmp_path):
     db = DuckDBManager(str(tmp_path / "pipe_attr.duckdb"))
-    pipe = StrategyPipeline(db=db, require_authoritative_certification=False)
+    pipe = StrategyPipeline(db=db, risk_engine=RiskEngine(), require_authoritative_certification=False)
 
     # Insert historical candles (at least 50 for lookback)
     db.conn.execute("INSERT INTO instrument_master (symbol, exch_seg, token) VALUES ('RELIANCE', 'NSE', '2885');")

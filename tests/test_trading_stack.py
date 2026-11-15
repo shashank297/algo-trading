@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from dataclasses import asdict
@@ -10,9 +11,11 @@ from pathlib import Path
 
 import pandas as pd
 
+from risk.engine import RiskEngine
 from storage.duckdb_manager import DuckDBManager
 from trading_stack.backtest import EventDrivenBacktester, ExecutionModel, PaperBroker, VectorizedBacktester
 from trading_stack.calendars import build_default_calendars
+from trading_stack.datasets import SynchronizedPanelBuilder
 from trading_stack.domain import AssetClass, OrderSide
 from trading_stack.features import FeatureFactory
 from trading_stack.economic import cost_schedule_identity, marked_to_market_equity
@@ -48,6 +51,117 @@ class TradingStackTests(unittest.TestCase):
                 timeframe="1d",
                 mode="event-driven",
             )
+
+    def test_pipeline_init_never_falls_back_to_dummy_risk_engine(self) -> None:
+        db = DuckDBManager(":memory:")
+        pipe_exploratory = StrategyPipeline(db, require_authoritative_certification=False)
+        self.assertIsNone(pipe_exploratory.risk_engine)
+        pipe_authoritative = StrategyPipeline(db, require_authoritative_certification=True)
+        self.assertIsNone(pipe_authoritative.risk_engine)
+
+    def test_event_driven_mode_unconditionally_requires_certification_and_risk_engine(self) -> None:
+        db = DuckDBManager(":memory:")
+        # Even with risk engine provided, require_authoritative_certification=False must fail closed
+        pipe_unauth = StrategyPipeline(db, risk_engine=RiskEngine(), require_authoritative_certification=False)
+        with self.assertRaisesRegex(ValueError, "require_authoritative_certification=True"):
+            pipe_unauth.run(
+                strategy_name="trend_following",
+                symbol="RELIANCE",
+                timeframe="1d",
+                mode="event-driven",
+            )
+        # Even on an authoritative pipeline, passing require_authoritative_certification=False kwarg must fail closed
+        pipe_auth = StrategyPipeline(db, risk_engine=RiskEngine(), require_authoritative_certification=True)
+        with self.assertRaisesRegex(ValueError, "require_authoritative_certification=True"):
+            pipe_auth.run(
+                strategy_name="trend_following",
+                symbol="RELIANCE",
+                timeframe="1d",
+                mode="event-driven",
+                require_authoritative_certification=False,
+            )
+
+    def test_exploratory_vectorized_labeling_and_isolation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = DuckDBManager(str(Path(temp_dir) / "test_iso.duckdb"))
+            try:
+                frame = pd.DataFrame(
+                    {
+                        "timestamp": pd.date_range("2026-08-10", periods=20, freq="B", tz=IST),
+                        "open": [100.0 + i for i in range(20)],
+                        "high": [101.0 + i for i in range(20)],
+                        "low": [99.0 + i for i in range(20)],
+                        "close": [100.5 + i for i in range(20)],
+                        "volume": [100_000] * 20,
+                    }
+                )
+                db.upsert_candles(frame, "RELIANCE", "1", "NSE", "1d")
+                pipeline = StrategyPipeline(db, require_authoritative_certification=False)
+                outcome = pipeline.run(
+                    strategy_name="trend_following",
+                    symbol="RELIANCE",
+                    timeframe="1d",
+                    mode="vectorized",
+                )
+                notes = json.loads(outcome["result"].notes)
+                self.assertEqual(notes.get("execution_authority"), "EXPLORATORY_VECTORIZED")
+                self.assertIsNone(pipeline._last_frame_certification_id)
+                cert_id_in_db = db.conn.execute(
+                    "SELECT frame_certification_id FROM strategy_runs WHERE run_id = ?",
+                    [outcome["result"].run_id],
+                ).fetchone()[0]
+                self.assertIsNone(cert_id_in_db)
+            finally:
+                db.close()
+
+    def test_load_candles_and_panel_builder_eq_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            db = DuckDBManager(str(Path(temp_dir) / "test_fallback.duckdb"))
+            try:
+                stock_bars = pd.DataFrame(
+                    {
+                        "timestamp": pd.date_range("2026-08-10", periods=15, freq="B", tz=IST),
+                        "open": [2000.0 + i for i in range(15)],
+                        "high": [2010.0 + i for i in range(15)],
+                        "low": [1990.0 + i for i in range(15)],
+                        "close": [2005.0 + i for i in range(15)],
+                        "volume": [500_000] * 15,
+                    }
+                )
+                idx_bars = pd.DataFrame(
+                    {
+                        "timestamp": pd.date_range("2026-08-10", periods=15, freq="B", tz=IST),
+                        "open": [10000.0 + i * 10 for i in range(15)],
+                        "high": [10050.0 + i * 10 for i in range(15)],
+                        "low": [9950.0 + i * 10 for i in range(15)],
+                        "close": [10020.0 + i * 10 for i in range(15)],
+                        "volume": [10_000_000] * 15,
+                    }
+                )
+                # Store with -EQ suffix for equity and canonical NIFTY200 for index
+                db.upsert_candles(stock_bars, "RELIANCE-EQ", "1", "NSE", "1d")
+                db.upsert_candles(idx_bars, "NIFTY200", "1", "NSE", "1d")
+
+                # Test load_candles resolves RELIANCE -> RELIANCE-EQ
+                pipeline = StrategyPipeline(db, require_authoritative_certification=False)
+                loaded = pipeline.load_candles("RELIANCE", "1d", bypass_quality_gate=True)
+                self.assertEqual(len(loaded), 15)
+                self.assertEqual(str(loaded["symbol"].iloc[0]), "RELIANCE-EQ")
+
+                # Test SynchronizedPanelBuilder loads RELIANCE with the canonical NIFTY200 benchmark
+                panel_builder = SynchronizedPanelBuilder(db, require_authoritative_certification=False)
+                dataset = panel_builder.build(
+                    symbols=["RELIANCE"],
+                    timeframe="1d",
+                    benchmark_symbol="NIFTY200",
+                )
+                self.assertEqual(len(dataset.panel), 15)
+                self.assertEqual(dataset.benchmark_provider_symbol, "NIFTY200")
+                self.assertEqual(dataset.benchmark_relationship, "EXACT")
+                self.assertTrue(dataset.panel["benchmark_close"].notna().all())
+                self.assertEqual(dataset.panel["symbol"].iloc[0], "RELIANCE")
+            finally:
+                db.close()
     def test_vectorized_backtester_generates_metrics(self) -> None:
         """A trend strategy on rising prices should backtest cleanly."""
 

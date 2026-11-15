@@ -2,15 +2,50 @@
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 import pytest
-from fastapi.testclient import TestClient
+
+try:
+    import httpx
+except ModuleNotFoundError:
+    import httpx2 as httpx  # type: ignore[no-redef]
 
 from tools.dashboard.api.main import app
 
 
+class ASGIInMemoryTestClient:
+    """In-memory ASGI test client using httpx.ASGITransport to prevent Windows socket deadlock."""
+
+    def __init__(self, asgi_app: Any, base_url: str = "http://testserver") -> None:
+        self.app = asgi_app
+        self.base_url = base_url
+        self._transport = httpx.ASGITransport(app=asgi_app, raise_app_exceptions=False)
+
+    def request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
+        async def _call() -> httpx.Response:
+            async with httpx.AsyncClient(transport=self._transport, base_url=self.base_url) as client:
+                return await client.request(method, url, **kwargs)
+
+        return asyncio.run(_call())
+
+    def get(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self.request("POST", url, **kwargs)
+
+    def put(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self.request("PUT", url, **kwargs)
+
+    def delete(self, url: str, **kwargs: Any) -> httpx.Response:
+        return self.request("DELETE", url, **kwargs)
+
+
 @pytest.fixture
 def client():
-    return TestClient(app)
+    return ASGIInMemoryTestClient(app)
 
 
 def test_dashboard_api_routes(client, monkeypatch, tmp_path):

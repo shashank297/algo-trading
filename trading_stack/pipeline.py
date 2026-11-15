@@ -67,11 +67,8 @@ class StrategyPipeline:
         else:
             self.strict_calendar = strict_calendar
         self.feature_factory = feature_factory or FeatureFactory()
-        # Exploratory vectorized pipelines may use the legacy permissive engine;
-        # authoritative execution must be explicitly configured and injected.
-        self.risk_engine = risk_engine if risk_engine is not None else (
-            None if require_authoritative_certification else RiskEngine()
-        )
+        # Authoritative execution must be explicitly configured and injected.
+        self.risk_engine = risk_engine
         self.promotion_engine = PromotionEngine(self.db)
         self.require_authoritative_certification = require_authoritative_certification
         self._last_frame_certification_id: str | None = None
@@ -108,6 +105,21 @@ class StrategyPipeline:
             [symbol, timeframe],
         ).df()
         if frame.empty:
+            alt_symbols = [f"{symbol}-EQ"] if not symbol.endswith("-EQ") else [symbol.removesuffix("-EQ")]
+            for alt in alt_symbols:
+                frame = self.db.conn.execute(
+                    """
+                    SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume,
+                           adjustment, provider_name, dataset_id
+                    FROM historical_candles
+                    WHERE symbol = ? AND timeframe = ?
+                    ORDER BY timestamp ASC
+                    """,
+                    [alt, timeframe],
+                ).df()
+                if not frame.empty:
+                    break
+        if frame.empty:
             raise ValueError(f"No stored candles found for {symbol} {timeframe}")
 
         adj_enum = (
@@ -115,6 +127,8 @@ class StrategyPipeline:
             else PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
         )
         ca_df = self.db.get_corporate_actions(symbol)
+        if ca_df.empty and not frame.empty and str(frame["symbol"].iloc[0]) != symbol:
+            ca_df = self.db.get_corporate_actions(str(frame["symbol"].iloc[0]))
         frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
         universe_name: str | None = None
         if universe_snapshot_id and universe_snapshot_id not in {"CONFIGURED_UNIVERSE", "CUSTOM"}:
@@ -248,6 +262,13 @@ class StrategyPipeline:
                         "SELECT check_type, issue_count FROM quality_report WHERE symbol = ? AND timeframe = ? ORDER BY checked_at DESC",
                         [symbol, timeframe],
                     ).fetchall()
+                    if not quality_rows and not frame.empty:
+                        matched_sym = str(frame["symbol"].iloc[0])
+                        if matched_sym != symbol:
+                            quality_rows = self.db.conn.execute(
+                                "SELECT check_type, issue_count FROM quality_report WHERE symbol = ? AND timeframe = ? ORDER BY checked_at DESC",
+                                [matched_sym, timeframe],
+                            ).fetchall()
                     for q_type, count in quality_rows:
                         if count and int(count) > 0:
                             raise DataQualityError(f"DataQualityError: {symbol} {timeframe} failed {q_type} check with {count} issues.")
@@ -278,9 +299,12 @@ class StrategyPipeline:
         """Run a strategy and persist the result bundle."""
 
         parameters = parameters or {}
-        if mode != "vectorized":
-            self._require_authoritative_risk()
         certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification
+        if mode == "event-driven":
+            if self.risk_engine is None or not self.require_authoritative_certification or require_authoritative_certification is False:
+                raise ValueError("Authoritative event-driven execution requires require_authoritative_certification=True and an explicitly injected configured RiskEngine")
+        elif mode != "vectorized":
+            self._require_authoritative_risk()
         raw_bars = self.load_candles(
             symbol, timeframe, adjustment=adjustment, require_authoritative_certification=certify,
             universe_snapshot_id=universe_snapshot_id,

@@ -59,7 +59,7 @@ jobs:
           coverage report --include="experiments/robustness.py,experiments/statistical_tests.py" --fail-under=95
       - name: Dependency vulnerability audit
 
-        run: pip-audit -r requirements.txt
+        run: pip-audit -r requirements.lock --no-deps
 
   secrets:
     runs-on: ubuntu-latest

@@ -233,6 +233,8 @@ def filter_frame_by_pit(
 ) -> tuple[pd.DataFrame, str | None]:
     """Apply effective-date and knowledge-time PIT eligibility to a candle frame."""
     if not universe_name or universe_name in {"CONFIGURED_UNIVERSE", "CUSTOM", ""}:
+        if required:
+            raise ValueError("PIT universe scope is required for authoritative candle filtering.")
         return frame, None
     eligible, pit_hash = _pit_eligibility_mask(
         db, frame, universe_name, timezone_name=timezone_name, required=required
@@ -647,7 +649,9 @@ class SynchronizedPanelBuilder:
                ORDER BY CASE relationship WHEN 'EXACT' THEN 0 ELSE 1 END LIMIT 1""",
             [symbol],
         ).fetchone()
-        return (str(row[0]), str(row[1])) if row else (symbol, None)
+        if row:
+            return (str(row[0]), str(row[1]))
+        return symbol, None
 
     def _valid_sessions(self, bars: pd.DataFrame, timeframe: str) -> pd.DataFrame:
         timestamps = pd.to_datetime(bars["timestamp"], utc=True)
@@ -680,12 +684,25 @@ class SynchronizedPanelBuilder:
                FROM historical_candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp""",
             [symbol, timeframe],
         ).df()
+        if frame.empty:
+            alt_symbols = [f"{symbol}-EQ"] if not symbol.endswith("-EQ") else [symbol.removesuffix("-EQ")]
+            for alt in alt_symbols:
+                frame = self.db.conn.execute(
+                    """SELECT symbol, exchange, timeframe, timestamp, open, high, low, close, volume,
+                              adjustment, provider_name, dataset_id
+                       FROM historical_candles WHERE symbol = ? AND timeframe = ? ORDER BY timestamp""",
+                    [alt, timeframe],
+                ).df()
+                if not frame.empty:
+                    break
         adj_enum = (
             adjustment if isinstance(adjustment, PriceAdjustment)
             else PriceAdjustment(str(getattr(adjustment, "value", adjustment)).upper())
         )
         if not frame.empty:
             ca_df = self.db.get_corporate_actions(symbol)
+            if ca_df.empty and not frame.empty and str(frame["symbol"].iloc[0]) != symbol:
+                ca_df = self.db.get_corporate_actions(str(frame["symbol"].iloc[0]))
             frame = PriceAdjustmentEngine.adjust_ohlcv(frame, ca_df, adjustment=adj_enum)
 
             must_certify = self.require_authoritative_certification if require_authoritative_certification is None else require_authoritative_certification

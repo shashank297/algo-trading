@@ -55,7 +55,7 @@ def validate_campaign(
     trading_days: Iterable[date] | None = None,
     required_member_count: int = 200,
     expected_member_counts: Mapping[Any, int] | None = None,
-    initial_anchor_established: bool = True,
+    initial_anchor_established: bool = False,
     conflicts: Iterable[Conflict] = (),
     source_hash_errors: Iterable[str] = (),
     anchor_differences: Iterable[str] = (),
@@ -107,10 +107,17 @@ def validate_campaign(
         reasons.append("initial_anchor_not_established")
     reasons.extend(str(error) for error in anchor_differences)
     for event in event_rows:
+        if event.confidence.value != "CERTIFIED" or event.review_status.value != "ACCEPTED":
+            reasons.append(f"non_certifiable_event:{event.event_hash}")
+        if str(event.source_tier).upper() not in {"A1", "A2"}:
+            reasons.append(f"non_authoritative_event:{event.event_hash}")
         if not event.instrument_id:
             reasons.append(f"missing_instrument_id:{event.event_hash}")
         if not event.effective_date or not event.known_at:
             reasons.append(f"missing_event_causality:{event.event_hash}")
+        elif (event.known_at.astimezone(timezone(timedelta(hours=5, minutes=30))).date()
+              if event.known_at.utcoffset() is not None else event.known_at.date()) > event.effective_date:
+            reasons.append(f"event_known_after_effective_date:{event.event_hash}")
         if not re.fullmatch(r"[0-9a-f]{64}", event.source_sha256 or ""):
             reasons.append(f"missing_source_sha:{event.event_hash}")
         if event.synthetic or str(event.source_tier).upper() == "E":

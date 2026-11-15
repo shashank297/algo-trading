@@ -15,6 +15,7 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+import logging
 from pathlib import Path
 import re
 import subprocess
@@ -25,7 +26,16 @@ from typing import Any, Mapping, TypedDict
 from tools.nifty200_pit.intervals import build_intervals
 from tools.nifty200_pit.intervals import active_intervals
 from tools.nifty200_pit.manifest import write_artifacts, write_table
-from tools.nifty200_pit.models import Action, Conflict, Observation, SourceRecord, stable_observation_id
+from tools.nifty200_pit.models import (
+    Action,
+    Confidence,
+    Conflict,
+    Observation,
+    ReviewStatus,
+    SourceRecord,
+    stable_observation_id,
+)
+from tools.nifty200_pit.ocr import OCRUnavailable, extract_ocr_pages
 from tools.nifty200_pit.parse_pdf import (
     extract_pdf_pages,
     find_document_date,
@@ -36,6 +46,7 @@ from tools.nifty200_pit.parse_pdf import (
 from tools.nifty200_pit.reconciliation import reconcile_observations
 from tools.nifty200_pit.reconciliation import observation_hash
 from tools.nifty200_pit.instrument_resolver import resolve_observations, validate_alias_intervals
+from tools.nifty200_pit.identity_transitions import apply_transition_boundaries
 from tools.nifty200_pit.source_catalogue import sha256_file
 from tools.nifty200_pit.validation import validate_campaign, verify_source_hashes
 from trading_stack.calendars import SessionOverride, build_nse_calendar
@@ -255,9 +266,12 @@ def parse_workbook_events(root: Path, source: SourceRecord) -> list[Observation]
     return rows
 
 
-_NUMBERED_INDEX_HEADING_RE = re.compile(r"^\s*(?:\([A-Za-z]?\d{1,3}\)|[A-Za-z]?\d{1,3}[.)]|\d{1,3}\s+).*\b(?:INDEX|NIFTY|CNX)\b", re.I)
+_NUMBERED_INDEX_HEADING_RE = re.compile(
+    r"^\s*(?:\([A-Za-z\d]{1,3}\)|[A-Za-z\d]{1,3}\)|\b[A-Za-z]?\d{1,3}\.|\d{1,3}\s+).*\b(?:INDEX|NIFTY|CNX)\b",
+    re.I,
+)
 _NIFTY200_INDEX_HEADING_RE = re.compile(
-    r"^\s*(?:\([A-Za-z]?\d{1,3}\)|[A-Za-z]?\d{1,3}[.)]|\d{1,3}\s+).*\b(?:NIFTY|CNX)\s*[- ]?200\b",
+    r"^\s*(?:\([A-Za-z\d]{1,3}\)|[A-Za-z\d]{1,3}\)|\b[A-Za-z]?\d{1,3}\.|\d{1,3}\s+).*\b(?:NIFTY|CNX)\s*[- ]?200\b",
     re.I,
 )
 _TABLE_ROW_NUMBER_RE = re.compile(r"^\s*(\d{1,3})\s+.+\s+[A-Z0-9][A-Z0-9&.-]{1,19}\s*$")
@@ -362,14 +376,41 @@ def _numbered_continuation_prefix(page_text: str, expected_first_row: int) -> st
     return prefix
 
 
-def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = None) -> list[Observation]:
+def parse_press_releases(
+    records: list[SourceRecord],
+    *,
+    calendar: Any | None = None,
+    retain_unassociated: bool = False,
+) -> list[Observation]:
+    logger = logging.getLogger("tools.nifty200_pit.parser")
     observations: list[Observation] = []
     for source in records:
         if not source.local_path.lower().endswith(".pdf") or not re.search(r"press[_-]release", source.source_url, re.I):
             continue
         pages = extract_pdf_pages(source.local_path)
+        used_ocr = False
+        if not any(page.strip() for page in pages):
+            try:
+                pages = extract_ocr_pages(source.local_path)
+                used_ocr = True
+            except OCRUnavailable:
+                logger.warning('Scanned release requires OCR: %s', source.source_url)
+                observations.append(Observation(
+                    source_url=source.source_url, source_sha256=source.source_sha256,
+                    source_tier=source.source_tier, extraction_method='OCR_REQUIRED',
+                    confidence=Confidence.UNRESOLVED, review_status=ReviewStatus.MANUAL_REVIEW,
+                    reason='scanned_release_requires_ocr',
+                ))
+                continue
         document_text = "\n".join(pages)
         if not re.search(r"\b(?:NIFTY|CNX)\s*[- ]?200\b", document_text, re.I):
+            if used_ocr:
+                observations.append(Observation(
+                    source_url=source.source_url, source_sha256=source.source_sha256,
+                    source_tier=source.source_tier, extraction_method='OCR',
+                    confidence=Confidence.UNRESOLVED, review_status=ReviewStatus.MANUAL_REVIEW,
+                    reason='ocr_no_readable_nifty200_section', raw_text=document_text,
+                ))
             continue
         document_effective = find_effective_date(document_text) or _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES.get(source.source_url)
         announcement = find_document_date(source.source_url, document_text)
@@ -378,13 +419,20 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
             announcement_date=announcement, source_page=None, source_tier=source.source_tier,
             extractor_version="nifty200-pit-parser-v3", effective_date=document_effective,
         )
-        if not any(row.symbol and row.action for row in parsed):
+        if not used_ocr and not any(row.symbol and row.action for row in parsed):
             layout_text = "\n".join(extract_pdf_pages(source.local_path, layout=True))
             parsed = parse_nifty200_text(
                 layout_text, source_url=source.source_url, source_sha256=source.source_sha256,
                 announcement_date=announcement, source_page=None, source_tier=source.source_tier,
                 extractor_version="nifty200-pit-parser-v4-layout", effective_date=document_effective,
             )
+        if used_ocr and not any(row.symbol and row.action for row in parsed):
+            observations.append(Observation(
+                source_url=source.source_url, source_sha256=source.source_sha256,
+                source_tier=source.source_tier, extraction_method='OCR',
+                confidence=Confidence.UNRESOLVED, review_status=ReviewStatus.MANUAL_REVIEW,
+                reason='ocr_no_readable_event_rows', raw_text=document_text,
+            ))
         allowed_pages: set[int] = set()
         previous_context: tuple[int, str] | None = None
         for page_number, page_text in enumerate(pages, start=1):
@@ -401,14 +449,41 @@ def parse_press_releases(records: list[SourceRecord], *, calendar: Any | None = 
         for row in parsed:
             if not row.symbol or not row.action:
                 continue
+            if used_ocr:
+                row = replace(row, extraction_method='OCR', confidence=Confidence.UNRESOLVED,
+                              review_status=ReviewStatus.MANUAL_REVIEW, reason='ocr_requires_manual_review',
+                              extractor_version='nifty200-pit-parser-v3-rapidocr-v1')
+            symbol = row.symbol
+            assert symbol is not None
             matching_pages = [
                 page_number for page_number, page_text in enumerate(pages, start=1)
-                if row.symbol in page_text
-                or row.symbol in re.sub(r"\s+", "", page_text)
+                if (
+                    bool(row.raw_text) and ' '.join((row.raw_text or '').split()) in ' '.join(page_text.split())
+                    if used_ocr else symbol in page_text or symbol in re.sub(r"\s+", "", page_text)
+                )
             ]
             matched_page: int | None = next((item for item in matching_pages if item in allowed_pages), None)
+            if used_ocr and len([item for item in matching_pages if item in allowed_pages]) != 1:
+                matched_page = None
             if matched_page is not None:
                 observations.append(replace(row, source_page=matched_page))
+            else:
+                logger.warning(
+                    "Parsed observation %s (%s) from %s on page(s) %s could not be associated with allowed NIFTY-200 page(s) %s; not attributed to NIFTY-200",
+                    row.symbol,
+                    row.action,
+                    source.source_url,
+                    matching_pages,
+                    sorted(allowed_pages),
+                )
+                if retain_unassociated or used_ocr:
+                    observations.append(replace(
+                        row,
+                        source_page=None if used_ocr else matching_pages[0] if matching_pages else None,
+                        confidence=Confidence.UNRESOLVED,
+                        review_status=ReviewStatus.MANUAL_REVIEW,
+                        reason=f"{'ocr_page_attribution_ambiguous' if used_ocr else 'continuation_page_unassociated'}: pages={matching_pages} allowed={sorted(allowed_pages)}",
+                    ))
         continue
         document_effective = find_effective_date("\n".join(pages)) or _PRESS_RELEASE_EFFECTIVE_DATE_OVERRIDES.get(source.source_url)
         previous_nifty200_context: tuple[int, str] | None = None
@@ -776,14 +851,15 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
     if not required.issubset({str(column).strip().upper() for column in reader.fieldnames or []}):
         return []
     rows: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[tuple[str, str, str]] = set()
     for original in reader:
         raw = {str(key).strip().upper(): value for key, value in original.items() if key is not None}
         symbol = str(raw.get("SYMBOL") or "").strip()
         isin = str(raw.get("ISIN NUMBER") or "").strip()
         if not symbol or not isin or isin.casefold() in {"na", "nan"}:
             continue
-        key = (symbol.casefold(), isin.casefold())
+        series = str(raw.get("SERIES") or "").strip().upper()
+        key = (symbol.casefold(), isin.casefold(), series)
         if key in seen:
             continue
         seen.add(key)
@@ -791,6 +867,7 @@ def parse_security_master(source: SourceRecord) -> list[dict[str, Any]]:
         rows.append({
             "instrument_id": f"NSE-ISIN:{isin}", "isin": isin, "symbol": symbol,
             "company_name": str(raw.get("NAME OF COMPANY") or "").strip() or None,
+            "series": series or None,
             "listing_date": listing_date.isoformat() if listing_date else None,
             "valid_from": listing_date.isoformat() if listing_date else None,
             "valid_until": None, "source_url": source.source_url,
@@ -860,7 +937,15 @@ def parse_bhavcopy_identities(
                 text = data.decode("cp1252")
             for original in csv.DictReader(io.StringIO(text)):
                 raw = {str(key).strip().casefold(): value for key, value in original.items() if key is not None}
-                when = _parse_day(raw.get("timestamp") or raw.get("trad dt") or raw.get("traddt"))
+                timestamp = raw.get("timestamp") or raw.get("trad dt") or raw.get("traddt")
+                when = _parse_day(timestamp)
+                if when is None and timestamp:
+                    # Some legacy NSE archives use DD-Mon-YY. Keep the existing
+                    # check against the registered full session date below.
+                    try:
+                        when = datetime.strptime(timestamp.strip(), "%d-%b-%y").date()
+                    except ValueError:
+                        pass
                 symbol = str(raw.get("symbol") or raw.get("ticker") or raw.get("tckrsymb") or "").strip()
                 isin = str(raw.get("isin") or raw.get("isin number") or "").strip()
                 series = str(raw.get("series") or raw.get("sctysrs") or "").strip().upper()
@@ -999,6 +1084,9 @@ def parse_official_identity_change_candidates(
     These tables establish an exchange-published change relationship but do not
     carry historical ISINs. They are therefore retained as candidates and never
     promoted into the resolver's certified alias set automatically.
+
+    These rows remain candidates. The exchange change tables do not carry the
+    historical ISIN, so they cannot establish a durable identity segment.
     """
     master_by_symbol: dict[str, list[dict[str, Any]]] = {}
     for row in master:
@@ -1022,6 +1110,7 @@ def parse_official_identity_change_candidates(
                     )
                     if not old_symbol or not new_symbol or old_symbol.casefold() == new_symbol.casefold() or candidate is None:
                         continue
+                    # Backward-bounded candidate: old symbol was valid until D
                     result.append({
                         **candidate,
                         "identity_master_source_url": candidate.get("source_url", ""),
@@ -1097,6 +1186,19 @@ def parse_official_identity_change_candidates(
         )
         unique[key] = row
     return sorted(unique.values(), key=lambda row: (str(row.get("symbol") or ""), str(row.get("valid_until") or "")))
+
+
+def _certified_official_forward_identity_rows(
+    candidates: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Do not infer historical identity from a name/symbol-change notice.
+
+    These notices establish a label transition, but they do not independently
+    establish the durable instrument identity or historical ISIN. A candidate
+    can be promoted only by a separately verified historical identity segment.
+    """
+    del candidates
+    return []
 
 
 def _certified_official_name_change_rows(
@@ -1511,16 +1613,35 @@ def _monthly_gap_rows(
         source = source_by_month.get(month)
         official_found = bool(month_rows or source)
         checkpoint_date = min((date.fromisoformat(str(row["snapshot_date"])[:10]) for row in month_rows), default=None)
+        checkpoint_rows = [
+            row for row in month_rows
+            if checkpoint_date is not None
+            and date.fromisoformat(str(row["snapshot_date"])[:10]) == checkpoint_date
+        ]
         replay_count = None
+        replay_rows: list[Any] = []
         if checkpoint_date is not None:
-            replay_count = len({row.instrument_id for row in active_intervals(intervals, checkpoint_date)})
+            replay_rows = active_intervals(intervals, checkpoint_date)
+            replay_count = len({row.instrument_id for row in replay_rows})
+        checkpoint_symbols = {
+            str(row.get("symbol") or "").strip().casefold() for row in checkpoint_rows
+            if str(row.get("symbol") or "").strip()
+        }
+        replay_symbols = {
+            str(row.symbol_at_entry or "").strip().casefold() for row in replay_rows
+            if str(row.symbol_at_entry or "").strip()
+        }
+        checkpoint_ids = {str(row.get("instrument_id") or "").strip() for row in checkpoint_rows}
+        replay_ids = {str(row.instrument_id or "").strip() for row in replay_rows}
+        identity_matches = (
+            checkpoint_ids == replay_ids
+            if checkpoint_ids and "" not in checkpoint_ids and "" not in replay_ids
+            else checkpoint_symbols == replay_symbols
+        )
         observed = int(item["snapshot_member_count"])
         expected = int(item.get("expected_member_count", "200"))
         source_issue, source_note = _monthly_source_issue(source)
-        if observed == expected:
-            status = "PASS"
-            action = "none"
-        elif not official_found:
+        if not month_rows:
             status = "A_NO_SNAPSHOT_EVIDENCE"
             action = "retrieve an official historical checkpoint or record an external evidence gap"
         elif source_issue in {"E_HTML_RESPONSE_NOT_ARCHIVE", "E_INVALID_ARCHIVE", "E_CORRUPTED_ARCHIVE", "E_SOURCE_FILE_MISSING", "E_SOURCE_HASH_MISMATCH"}:
@@ -1529,9 +1650,19 @@ def _monthly_gap_rows(
         elif observed == 0:
             status = "E_SOURCE_PRESENT_ZERO_ROWS"
             action = "inspect the downloaded archive member/table and parser output"
-        else:
+        elif observed != expected:
             status = "B_SNAPSHOT_NON_EXPECTED_COUNT"
             action = "manual table audit to distinguish parser extraction from documented methodology/count difference"
+        elif (
+            replay_count != observed
+            or len(checkpoint_symbols) != observed
+            or not identity_matches
+        ):
+            status = "B_SNAPSHOT_REPLAY_MEMBER_MISMATCH"
+            action = "reconcile the exact checkpoint member and durable identity sets against replay"
+        else:
+            status = "PASS"
+            action = "none"
         rows.append({
             "month": month,
             "official_snapshot_found": str(official_found).upper(),
@@ -2478,7 +2609,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     trading_days = calendar.iter_trading_days(CAMPAIGN_FROM, CAMPAIGN_TO)
     workbook = next((source for source in sources if source.source_url.endswith("IndexInclExcl.xls")), None)
     observations = parse_workbook_events(root, workbook) if workbook else []
-    observations.extend(parse_press_releases(sources, calendar=calendar))
+    observations.extend(parse_press_releases(sources, calendar=calendar, retain_unassociated=True))
     challenger = next((source for source in sources if source.source_url == CHALLENGER_EVENTS_URL), None)
     if challenger:
         observations.extend(parse_challenger_events(challenger))
@@ -2531,12 +2662,13 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
             instrument_rows.extend(parse_bhavcopy_identities(source))
     instrument_rows = _enrich_bhavcopy_company_names(instrument_rows, current_instrument_master + historical_instrument_master)
     instrument_master: list[dict[str, Any]] = []
-    seen_identity_rows: set[tuple[str, str, str]] = set()
+    seen_identity_rows: set[tuple[str, str, str, str]] = set()
     for row in instrument_rows:
         key = (
             str(row.get("instrument_id") or ""),
             str(row.get("symbol") or "").casefold(),
             str(row.get("snapshot_date") or ""),
+            str(row.get("series") or ""),
         )
         if key in seen_identity_rows:
             continue
@@ -2556,6 +2688,12 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
             row["valid_until"] = current["valid_from"]
     identity_change_candidates = parse_official_identity_change_candidates(sources, instrument_master)
     instrument_master.extend(_certified_official_name_change_rows(identity_change_candidates))
+    # Extend with certified forward-validity rows so the resolver accepts
+    # post-change symbols for dates on or after the official change date.
+    instrument_master.extend(_certified_official_forward_identity_rows(identity_change_candidates))
+    instrument_master, transition_boundary_audit = apply_transition_boundaries(
+        instrument_master, [source.to_dict() for source in sources],
+    )
     aliases = _identity_aliases(snapshots, instrument_master)
     observations = resolve_observations(observations, instrument_master, aliases=aliases)
     observations, instrument_master, aliases, identity_continuity_audit = _apply_documented_isin_continuity(
@@ -2836,6 +2974,7 @@ def build_dataset(root: str | Path = ".") -> dict[str, Any]:
     _write_csv(artifact_dir / "official_schedule_dispositions.csv", schedule_dispositions)
     _write_csv(artifact_dir / "identity_continuity_audit.csv", identity_continuity_audit["observations"])
     _write_json(artifact_dir / "identity_continuity_evidence.json", identity_continuity_audit["links"])
+    _write_json(artifact_dir / "identity_transition_boundaries.json", transition_boundary_audit)
     _write_csv(artifact_dir / "blocker_ledger.csv", blocker_rows)
     _write_csv(artifact_dir / "historical_identity_resolution.csv", identity_resolution_rows)
     _write_csv(artifact_dir / "checkpoint_forensics.csv", checkpoint_forensics)

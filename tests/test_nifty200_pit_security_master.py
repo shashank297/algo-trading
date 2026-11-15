@@ -33,6 +33,7 @@ def test_security_master_does_not_resolve_before_listing():
     assert result.confidence == "UNRESOLVED"
 
 
+
 def test_current_security_master_does_not_backdate_from_listing_date():
     result = resolve_observation(
         Observation(symbol="ABC", effective_date=date(2026, 3, 30)),
@@ -201,3 +202,235 @@ def test_harvester_stores_and_deduplicates_content_addressed_source(tmp_path, mo
 def test_security_master_rejects_non_evidence(payload):
     with pytest.raises(ValueError):
         _validate_csv(payload)
+
+
+# ---------------------------------------------------------------------------
+# Forward-validity regression tests (FIND-01 MISSING_DURABLE_IDENTITY fix)
+# ---------------------------------------------------------------------------
+
+_FORWARD_MASTER_ROW = {
+    "instrument_id": "NSE-ISIN:INE1",
+    "isin": "INE1",
+    "symbol": "NEW",
+    "company_name": "New Co Ltd",
+    "valid_from": "2019-10-30",
+    "valid_until": None,
+    "has_explicit_historical_interval": True,
+    "snapshot_date": "2026-09-19",
+    "confidence": "CERTIFIED",
+    "review_status": "ACCEPTED",
+}
+
+
+def test_official_symbol_change_establishes_forward_validity():
+    """A certified forward-validity row allows the resolver to certify the
+    new symbol for dates on or after the official change date."""
+    result = resolve_observation(
+        Observation(symbol="NEW", effective_date=date(2019, 10, 30)),
+        [_FORWARD_MASTER_ROW],
+    )
+    assert result.instrument_id == "NSE-ISIN:INE1"
+    assert result.confidence == "CERTIFIED"
+
+
+def test_resolver_accepts_new_symbol_on_and_after_change_date():
+    """Post-change symbol resolves to CERTIFIED on and after the effective date."""
+    on_date = resolve_observation(
+        Observation(symbol="NEW", effective_date=date(2019, 10, 30)),
+        [_FORWARD_MASTER_ROW],
+    )
+    after_date = resolve_observation(
+        Observation(symbol="NEW", effective_date=date(2025, 3, 28)),
+        [_FORWARD_MASTER_ROW],
+    )
+    assert on_date.instrument_id == "NSE-ISIN:INE1"
+    assert on_date.confidence == "CERTIFIED"
+    assert after_date.instrument_id == "NSE-ISIN:INE1"
+    assert after_date.confidence == "CERTIFIED"
+
+
+def test_resolver_rejects_new_symbol_before_change_date():
+    """Post-change symbol must NOT resolve before the official change date."""
+    result = resolve_observation(
+        Observation(symbol="NEW", effective_date=date(2019, 10, 29)),
+        [_FORWARD_MASTER_ROW],
+    )
+    assert result.instrument_id is None
+
+
+def test_poonawalla_resolves_after_symbol_change():
+    """POONAWALLA (ex-MAGMA) resolves to INE511C01022 from 2021-08-05 onward."""
+    poonawalla_row = {
+        "instrument_id": "NSE-ISIN:INE511C01022",
+        "isin": "INE511C01022",
+        "symbol": "POONAWALLA",
+        "company_name": "Poonawalla Fincorp Ltd.",
+        "valid_from": "2021-08-05",
+        "valid_until": None,
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+        "identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD",
+    }
+    # Post-change observation certifies
+    after = resolve_observation(
+        Observation(symbol="POONAWALLA", effective_date=date(2025, 3, 28)),
+        [poonawalla_row],
+    )
+    assert after.instrument_id == "NSE-ISIN:INE511C01022"
+    assert after.confidence == "CERTIFIED"
+
+    # Pre-change observation does NOT certify under POONAWALLA
+    before = resolve_observation(
+        Observation(symbol="POONAWALLA", effective_date=date(2021, 8, 4)),
+        [poonawalla_row],
+    )
+    assert before.instrument_id is None
+
+
+def test_360one_resolves_after_symbol_change():
+    """360ONE (ex-IIFLWAM) resolves to INE466L01038 from 2023-01-23 onward."""
+    threesixty_row = {
+        "instrument_id": "NSE-ISIN:INE466L01038",
+        "isin": "INE466L01038",
+        "symbol": "360ONE",
+        "company_name": "360 ONE WAM Ltd.",
+        "valid_from": "2023-01-23",
+        "valid_until": None,
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+        "identity_event_type": "OFFICIAL_SYMBOL_CHANGE_CERTIFIED_FORWARD",
+    }
+    after = resolve_observation(
+        Observation(symbol="360ONE", effective_date=date(2025, 9, 30)),
+        [threesixty_row],
+    )
+    assert after.instrument_id == "NSE-ISIN:INE466L01038"
+    assert after.confidence == "CERTIFIED"
+
+    before = resolve_observation(
+        Observation(symbol="360ONE", effective_date=date(2023, 1, 20)),
+        [threesixty_row],
+    )
+    assert before.instrument_id is None
+
+
+def test_patanjali_resolves_after_name_change():
+    """PATANJALI (ex-RUCHISOYA) resolves to INE619A01035 from 2022-07-13 onward."""
+    patanjali_row = {
+        "instrument_id": "NSE-ISIN:INE619A01035",
+        "isin": "INE619A01035",
+        "symbol": "PATANJALI",
+        "company_name": "Patanjali Foods Ltd.",
+        "valid_from": "2022-07-13",
+        "valid_until": None,
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+        "identity_event_type": "OFFICIAL_NAME_CHANGE_CERTIFIED_FORWARD",
+    }
+    after = resolve_observation(
+        Observation(symbol="PATANJALI", effective_date=date(2022, 9, 30)),
+        [patanjali_row],
+    )
+    assert after.instrument_id == "NSE-ISIN:INE619A01035"
+    assert after.confidence == "CERTIFIED"
+
+    before = resolve_observation(
+        Observation(symbol="PATANJALI", effective_date=date(2022, 7, 12)),
+        [patanjali_row],
+    )
+    assert before.instrument_id is None
+
+
+def test_no_isin_cross_contamination_ruchisoya_patanjali():
+    """Pre-CIRP RUCHISOYA (INE619A01027) and post-rename PATANJALI (INE619A01035)
+    must remain completely distinct and never cross-resolve.
+    """
+    ruchisoya_row = {
+        "instrument_id": "NSE-ISIN:INE619A01027",
+        "isin": "INE619A01027",
+        "symbol": "RUCHISOYA",
+        "company_name": "Ruchi Soya Industries Ltd.",
+        "valid_from": "2002-01-01",
+        "valid_until": "2019-11-20",
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+    }
+    patanjali_row = {
+        "instrument_id": "NSE-ISIN:INE619A01035",
+        "isin": "INE619A01035",
+        "symbol": "PATANJALI",
+        "company_name": "Patanjali Foods Ltd.",
+        "valid_from": "2022-07-13",
+        "valid_until": None,
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+    }
+    master = [ruchisoya_row, patanjali_row]
+
+    ruchi_result = resolve_observation(
+        Observation(symbol="RUCHISOYA", effective_date=date(2013, 4, 1)), master
+    )
+    assert ruchi_result.instrument_id == "NSE-ISIN:INE619A01027"
+    assert ruchi_result.isin == "INE619A01027"
+
+    patanjali_result = resolve_observation(
+        Observation(symbol="PATANJALI", effective_date=date(2022, 9, 30)), master
+    )
+    assert patanjali_result.instrument_id == "NSE-ISIN:INE619A01035"
+    assert patanjali_result.isin == "INE619A01035"
+
+    # Cross-resolution must fail
+    ruchi_as_patanjali = resolve_observation(
+        Observation(symbol="RUCHISOYA", isin="INE619A01035", effective_date=date(2013, 4, 1)), master
+    )
+    assert ruchi_as_patanjali.instrument_id is None
+
+
+def test_no_isin_cross_contamination_iiflwam_360one():
+    """Pre-split IIFLWAM (INE466L01020) and post-rename 360ONE (INE466L01038)
+    must remain completely distinct and never cross-resolve.
+    """
+    iiflwam_row = {
+        "instrument_id": "NSE-ISIN:INE466L01020",
+        "isin": "INE466L01020",
+        "symbol": "IIFLWAM",
+        "company_name": "IIFL Wealth Management Ltd.",
+        "valid_from": "2019-09-19",
+        "valid_until": "2023-01-23",
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+    }
+    threesixty_row = {
+        "instrument_id": "NSE-ISIN:INE466L01038",
+        "isin": "INE466L01038",
+        "symbol": "360ONE",
+        "company_name": "360 ONE WAM Ltd.",
+        "valid_from": "2023-01-23",
+        "valid_until": None,
+        "has_explicit_historical_interval": True,
+        "confidence": "CERTIFIED",
+        "review_status": "ACCEPTED",
+    }
+    master = [iiflwam_row, threesixty_row]
+
+    iifl_result = resolve_observation(
+        Observation(symbol="IIFLWAM", effective_date=date(2022, 1, 1)), master
+    )
+    assert iifl_result.instrument_id == "NSE-ISIN:INE466L01020"
+
+    threesixty_result = resolve_observation(
+        Observation(symbol="360ONE", effective_date=date(2025, 9, 30)), master
+    )
+    assert threesixty_result.instrument_id == "NSE-ISIN:INE466L01038"
+
+    # Must not cross-contaminate
+    cross = resolve_observation(
+        Observation(symbol="IIFLWAM", isin="INE466L01038", effective_date=date(2022, 1, 1)), master
+    )
+    assert cross.instrument_id is None

@@ -15,6 +15,7 @@ from smartapi.websocket_client import (
     SmartAPIWebSocketClient,
 )
 from storage.duckdb_manager import DuckDBManager
+from risk.engine import RiskEngine
 from trading_stack.calendars import build_nse_calendar
 from trading_stack.datasets import SynchronizedPanelBuilder, DataQualityError
 from trading_stack.pipeline import StrategyPipeline
@@ -110,7 +111,7 @@ def test_panel_builder_uncertified_and_corporate_actions(tmp_path):
 
 def test_pipeline_benchmark_and_adjustments(tmp_path):
     db = DuckDBManager(str(tmp_path / "pipe_bench.duckdb"))
-    pipe = StrategyPipeline(db=db, require_authoritative_certification=False)
+    pipe = StrategyPipeline(db=db, risk_engine=RiskEngine(), require_authoritative_certification=False)
 
     # Insert candles for symbol and benchmark
     db.conn.execute("INSERT INTO instrument_master (symbol, exch_seg, token) VALUES ('RELIANCE', 'NSE', '2885');")

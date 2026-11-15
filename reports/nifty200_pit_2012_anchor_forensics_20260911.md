@@ -14,10 +14,10 @@ The 2012-01-02 anchor is not defensibly established. This diagnostic reverse rep
 ## Measured result
 
 - Forward checkpoint: 2013-04-18; rows: 200; source SHA-256: 4942c0f021abcd6ed9702c343c2696ec44cfa8022c7e37448f8a78c075c4a16d.
-- Reverse canonical events: 77; candidate initial rows: 199.
+- Reverse canonical events: 80; candidate initial rows: 200.
 - Anchor rows: raw=200; unique members=200; unique durable IDs=200; unique ISINs=200; duplicate rows=0; unresolved identities=0.
-- NSE sessions replayed: 3613; exact-200 sessions: 111; non-200 sessions: 3502; below 200=3502; above 200=0; last divergence=2026-08-20.
-- First count divergence: 2012-01-02 at 199 members; event rows applied that day: none; cause is the unproven initial set, not a fabricated event.
+- NSE sessions replayed: 3613; exact-200 sessions: 891; non-200 sessions: 2722; below 200=0; above 200=2722; last divergence=2025-09-29.
+- First count divergence: 2014-09-19 at 201 members; event rows applied that day: DROP:CRISIL;DROP:GESHIP;DROP:VAKRANGEE;DROP:RENUKA;DROP:BAJAJHLDNG;ADD:DELTACORP;ADD:AMTEKAUTO;DROP:CYIENT;ADD:NATIONALUM;DROP:COROMANDEL;ADD:CASTROLIND;ADD:SKSMICRO;DROP:SUPREMEIND;ADD:MARICO;ADD:DHFL;ADD:IOC;DROP:GSKCONS;DROP:GILLETTE;ADD:MUTHOOTFIN;ADD:KSCL;DROP:BERGEPAINT;ADD:TVSMOTOR;ADD:DCBBANK;ADD:ENGINERSIN;ADD:EDELWEISS;ADD:REPCOHOME;DROP:RELIGARE;DROP:VIJAYABANK;DROP:ECLERX;ADD:CARERATING;ADD:PRESTIGE;DROP:ADANIPOWER;DROP:BHUSANSTL;DROP:TRENT;DROP:MCDOWELL-N;ADD:APLLTD;DROP:BAJAJFINSV;ADD:WABAG; cause is the unproven initial set, not a fabricated event.
 - Valid official checkpoints compared: 107; set matches: 5; set mismatches: 102; first mismatch: 2013-09-30.
 
 ## Interpretation

@@ -165,7 +165,7 @@ def test_pipeline_certification_and_dq_edges(tmp_path):
 def test_pipeline_paper_session_edge_branches(tmp_path):
     """Cover cross-sectional missing universe, strict calendar OOS, empty paper risk orders."""
     db = DuckDBManager(str(tmp_path / "pipe_paper_edge.duckdb"))
-    pipe = StrategyPipeline(db=db, require_authoritative_certification=False)
+    pipe = StrategyPipeline(db=db, risk_engine=RiskEngine(), require_authoritative_certification=False)
 
     # --- Line 396: _apply_paper_risk with empty orders → early return ---
     empty_result = MagicMock()
@@ -187,7 +187,7 @@ def test_pipeline_paper_session_edge_branches(tmp_path):
             )
 
     # --- Lines 349-351: strict calendar with out-of-session bars ---
-    pipe_strict = StrategyPipeline(db=db, require_authoritative_certification=False, strict_calendar=True)
+    pipe_strict = StrategyPipeline(db=db, risk_engine=RiskEngine(), require_authoritative_certification=False, strict_calendar=True)
 
     single_meta = MagicMock()
     single_meta.scope = StrategyScope.SINGLE_ASSET

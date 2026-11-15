@@ -52,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default=".")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("harvest-nse", "harvest-wayback", "import-candidates", "parse", "resolve-instruments", "reconcile", "build-intervals", "validate", "manifest", "build-public-dataset"):
+    for name in ("harvest-nse", "harvest-wayback", "import-candidates", "parse", "resolve-instruments", "reconcile", "build-intervals", "validate", "manifest", "build-public-dataset", "assemble-bounded-package"):
         command = sub.add_parser(name)
         if name == "harvest-wayback":
             command.add_argument("--url", action="append", required=True)
@@ -69,14 +69,46 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--campaign-from", default="2012-01-01")
             command.add_argument("--campaign-to", default="2026-08-31")
             command.add_argument("--require-member-count", type=int, default=200)
+            command.add_argument("--evidence-package", help="Hash-bound bounded JSON evidence package")
+            command.add_argument("--output", help="New JSON validation report for a bounded package")
         elif name == "manifest":
             command.add_argument("--output", default=None)
+        elif name == "assemble-bounded-package":
+            command.add_argument("--campaign-from", default="2016-01-29")
+            command.add_argument("--campaign-to", default="2022-03-31")
+            command.add_argument("--output-dir", required=True, help="Directory to output assembled bounded package artifacts")
+            command.add_argument("--authoritative-evidence-dir", default=None, help="Path to authoritative evidence worktree")
+            command.add_argument("--anchor-derivation-inputs", default=None, help="Source-linked unresolved anchor derivation inputs JSON")
+            command.add_argument("--count-evidence-inputs", default=None, help="Path to circular-backed count evidence periods JSON")
+            command.add_argument("--admit-anchor-evidence", action="store_true", help="Admit anchor evidence with opening session timestamp")
+            command.add_argument("--admit-continuity-evidence", action="store_true", help="Admit verified corporate restructuring continuity links with session opening timestamps")
+            command.add_argument("--overwrite", action="store_true", help="Overwrite non-empty output directory")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     root = Path(args.root).resolve()
+    if args.command == "validate" and args.evidence_package:
+        from tools.nifty200_pit.bounded_validation import validate_bounded_package
+        if args.require_member_count != 200:
+            raise ValueError("Bounded validation requires source-backed 200/201 counts in the calendar artifact")
+        report = validate_bounded_package(
+            root / args.evidence_package, campaign_from=date.fromisoformat(args.campaign_from),
+            campaign_to=date.fromisoformat(args.campaign_to),
+        )
+        payload = json.dumps(report.to_dict(), indent=2, default=str)
+        if args.output:
+            output = root / args.output
+            if output.suffix.lower() != ".json":
+                raise ValueError("Bounded report output must be JSON")
+            # Never replace a historical report or an input artifact.
+            with output.open("x", encoding="utf-8") as handle:
+                handle.write(payload)
+        print(payload)
+        return 0 if report.passed else 2
+    if args.command == "validate" and args.output:
+        raise ValueError("--output requires --evidence-package")
     raw, derived, artifacts = _paths(root)
     if args.command == "harvest-nse":
         print(f"Harvested {len(harvest_nse(root))} official source records")
@@ -137,7 +169,28 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "build-public-dataset":
         from tools.nifty200_pit.build_public_dataset import build_dataset
         print(json.dumps(build_dataset(root), indent=2))
+    elif args.command == "assemble-bounded-package":
+        from tools.nifty200_pit.bounded_producer import assemble_bounded_package
+        authoritative_dir = Path(args.authoritative_evidence_dir).resolve() if args.authoritative_evidence_dir else None
+        output_dir = Path(args.output_dir).resolve() if Path(args.output_dir).is_absolute() else (root / args.output_dir).resolve()
+        pkg_res = assemble_bounded_package(
+            root=root,
+            authoritative_root=authoritative_dir,
+            anchor_derivation_inputs=(root / args.anchor_derivation_inputs).resolve() if args.anchor_derivation_inputs else None,
+            count_evidence_inputs=(root / args.count_evidence_inputs).resolve() if args.count_evidence_inputs else None,
+            admit_anchor_evidence=args.admit_anchor_evidence,
+            admit_continuity_evidence=args.admit_continuity_evidence,
+            output_dir=output_dir,
+            campaign_from=date.fromisoformat(args.campaign_from),
+            campaign_to=date.fromisoformat(args.campaign_to),
+            overwrite=args.overwrite,
+        )
+        print(f"Assembled bounded package in {output_dir}")
+        print(f"Manifest written to: {pkg_res.package_path}")
+        print(f"Artifacts: {list(pkg_res.manifest['artifacts'].keys())}")
+        print(f"Gap report: {pkg_res.gap_report['overall_evaluation']}")
     return 0
+
 
 
 def _event(row: dict[str, Any]) -> CanonicalEvent:

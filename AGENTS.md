@@ -50,3 +50,7 @@ Git history is not readable in this workspace, so use concise imperative commits
 ## Security & Data Safety
 
 Never commit `config/config.yaml`, API keys, TOTP secrets, broker tokens, DuckDB files, or logs. Use environment variables documented in `config/config.example.yaml`. Live order routing must remain disabled. Never fabricate pre-listing prices or silently mix adjusted and unadjusted datasets.
+
+## Token-efficient terminal output
+
+On native Windows, prefer explicit RTK equivalents for verbose read-only output when supported: `rtk git status`, `rtk git diff`, `rtk git log`, `rtk grep`, `rtk pytest`, and `rtk ls`/`rtk tree`. Use the normal command when exact or complete output is required, or when RTK does not support the needed options.
